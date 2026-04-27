@@ -654,7 +654,9 @@ Resources:
         - email
       AdminCreateUserConfig:
         AllowAdminCreateUserOnly: true
-      MfaConfiguration: OPTIONAL
+      # Keep the initial production deploy simple and reliable. We can harden
+      # this to required MFA after the first admin sign-in flow is verified.
+      MfaConfiguration: "OFF"
       AccountRecoverySetting:
         RecoveryMechanisms:
           - Name: verified_email
