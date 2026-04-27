@@ -1,0 +1,1107 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Career Jump - consolidated low-cost serverless runtime.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump
+  Stage:
+    Type: String
+    Default: prod
+  BootstrapUserEmail:
+    Type: String
+    Default: dipak.bhujbal23@gmail.com
+  AdminBootstrapEmail:
+    Type: String
+    Default: dipak.bhujbal23@gmail.com
+  SesFromEmail:
+    Type: String
+    Default: dipak.bhujbal.jobapps@gmail.com
+  OriginVerifyHeaderValue:
+    Type: String
+    Default: career-jump-origin-verify-change-me
+    NoEcho: true
+  BudgetEmail:
+    Type: String
+    Default: dipak.bhujbal23@gmail.com
+
+Globals:
+  Function:
+    Runtime: nodejs22.x
+    Architectures:
+      - arm64
+    Timeout: 60
+    MemorySize: 512
+    Environment:
+      Variables:
+        APP_NAME: Career Jump
+        APP_ENV: prod
+        DEFAULT_TENANT_EMAIL: !Ref BootstrapUserEmail
+        ADMIN_BOOTSTRAP_EMAIL: !Ref AdminBootstrapEmail
+        SES_FROM_EMAIL: !Ref SesFromEmail
+        ORIGIN_VERIFY_HEADER_VALUE: !Ref OriginVerifyHeaderValue
+        CORS_ALLOWED_ORIGIN: "*"
+        COGNITO_USER_POOL_ID: !Ref UserPool
+        COGNITO_CLIENT_ID: !Ref UserPoolClient
+        ADMIN_COGNITO_USER_POOL_ID: !Ref AdminUserPool
+        ADMIN_COGNITO_CLIENT_ID: !Ref AdminUserPoolClient
+        AWS_STATE_TABLE: !Ref StateTable
+        AWS_REGISTRY_TABLE: !Ref RegistryTable
+        AWS_RAW_SCANS_TABLE: !Ref RawScansTable
+        AWS_USERS_TABLE: !Ref UsersTable
+        AWS_JOBS_TABLE: !Ref JobsTable
+        AWS_EVENTS_TABLE: !Ref EventsTable
+        AWS_SUPPORT_TABLE: !Ref SupportTable
+        AWS_BILLING_TABLE: !Ref BillingTable
+    Tags:
+      app: !Ref AppName
+      stage: !Ref Stage
+      cost-guardrail: under-5-usd
+
+Resources:
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-state"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAtEpoch
+        Enabled: true
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  RegistryTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-registry"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  RawScansTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-raw-scans"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: latest-scan-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAtEpoch
+        Enabled: true
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-users"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: email-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  JobsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-jobs"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+        - AttributeName: gsi2pk
+          AttributeType: S
+        - AttributeName: gsi2sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: company-index
+          KeySchema:
+            - AttributeName: gsi2pk
+              KeyType: HASH
+            - AttributeName: gsi2sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAtEpoch
+        Enabled: true
+
+  EventsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-events"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: eventType-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+      TimeToLiveSpecification:
+        AttributeName: expiresAtEpoch
+        Enabled: true
+
+  SupportTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-support"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+        - AttributeName: gsi2pk
+          AttributeType: S
+        - AttributeName: gsi2sk
+          AttributeType: S
+        - AttributeName: gsi3pk
+          AttributeType: S
+        - AttributeName: gsi3sk
+          AttributeType: S
+        - AttributeName: gsi4pk
+          AttributeType: S
+        - AttributeName: gsi4sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: user-tickets-index
+          KeySchema:
+            - AttributeName: gsi2pk
+              KeyType: HASH
+            - AttributeName: gsi2sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: assigned-index
+          KeySchema:
+            - AttributeName: gsi3pk
+              KeyType: HASH
+            - AttributeName: gsi3sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: tag-index
+          KeySchema:
+            - AttributeName: gsi4pk
+              KeyType: HASH
+            - AttributeName: gsi4sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  BillingTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-billing"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+        - AttributeName: gsi1pk
+          AttributeType: S
+        - AttributeName: gsi1sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      GlobalSecondaryIndexes:
+        - IndexName: stripe-customer-index
+          KeySchema:
+            - AttributeName: gsi1pk
+              KeyType: HASH
+            - AttributeName: gsi1sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AppName}-${Stage}-${AWS::AccountId}-frontend"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AppName}-${Stage}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+
+  FrontendResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-security-headers"
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://*.amazoncognito.com; img-src 'self' data:; frame-ancestors 'none'"
+            Override: true
+
+  ApiNoCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-api-no-cache"
+        DefaultTTL: 0
+        MaxTTL: 1
+        MinTTL: 0
+        ParametersInCacheKeyAndForwardedToOrigin:
+          CookiesConfig:
+            CookieBehavior: none
+          EnableAcceptEncodingBrotli: true
+          EnableAcceptEncodingGzip: true
+          HeadersConfig:
+            HeaderBehavior: whitelist
+            Headers:
+              - authorization
+              - content-type
+              - origin
+              - x-cj-session-id
+              - x-cj-device-fingerprint
+          QueryStringsConfig:
+            QueryStringBehavior: all
+
+  ApiOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-api-origin-request"
+        CookiesConfig:
+          CookieBehavior: none
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - authorization
+            - content-type
+            - origin
+            - cloudfront-viewer-country
+            - x-cj-session-id
+            - x-cj-device-fingerprint
+            - x-forwarded-for
+        QueryStringsConfig:
+          QueryStringBehavior: all
+
+  FrontendSpaRewriteFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AppName}-${Stage}-spa-rewrite"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: Rewrite extensionless frontend routes to index.html without touching API paths or real asset requests.
+        Runtime: cloudfront-js-1.0
+      FunctionCode: |
+        function handler(event) {
+          var request = event.request;
+          var uri = request.uri || "/";
+
+          // Keep API and health traffic untouched so backend auth/geofence
+          // responses survive all the way back to the browser.
+          if (uri === "/health" || uri.indexOf("/api/") === 0) {
+            return request;
+          }
+
+          // Let requests for concrete files pass through unchanged.
+          if (uri.indexOf(".") !== -1) {
+            return request;
+          }
+
+          // Every extensionless app route should hydrate through the single
+          // SPA shell rather than relying on global 403/404 rewrites.
+          request.uri = "/index.html";
+          return request;
+        }
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AppName}-${Stage} frontend"
+        DefaultRootObject: index.html
+        Origins:
+          - Id: FrontendWebsiteOrigin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref FrontendOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          - Id: ApiOrigin
+            DomainName: !Select [2, !Split ["/", !GetAtt ApiFunctionUrl.FunctionUrl]]
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+            OriginCustomHeaders:
+              - HeaderName: X-Origin-Verify
+                HeaderValue: !Ref OriginVerifyHeaderValue
+        DefaultCacheBehavior:
+          TargetOriginId: FrontendWebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt FrontendSpaRewriteFunction.FunctionMetadata.FunctionARN
+          ResponseHeadersPolicyId: !Ref FrontendResponseHeadersPolicy
+        CacheBehaviors:
+          - PathPattern: /api/*
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+              - PUT
+              - POST
+              - PATCH
+              - DELETE
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: !Ref ApiNoCachePolicy
+            OriginRequestPolicyId: !Ref ApiOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref FrontendResponseHeadersPolicy
+          - PathPattern: /health
+            TargetOriginId: ApiOrigin
+            ViewerProtocolPolicy: https-only
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            CachePolicyId: !Ref ApiNoCachePolicy
+            OriginRequestPolicyId: !Ref ApiOriginRequestPolicy
+            ResponseHeadersPolicyId: !Ref FrontendResponseHeadersPolicy
+        PriceClass: PriceClass_100
+        Restrictions:
+          GeoRestriction:
+            RestrictionType: whitelist
+            Locations:
+              - US
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AppName}-${Stage}"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: username
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 16
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+      UserPoolTags:
+        app: !Ref AppName
+        stage: !Ref Stage
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AppName}-${Stage}-web"
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      CallbackURLs:
+        - "https://careerjump.local/"
+      LogoutURLs:
+        - "https://careerjump.local/"
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 1
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "careerjump-${Stage}-${AWS::AccountId}"
+      UserPoolId: !Ref UserPool
+
+  BootstrapUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref UserPool
+      Username: !Ref BootstrapUserEmail
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref BootstrapUserEmail
+        - Name: email_verified
+          Value: "true"
+        - Name: custom:username
+          Value: Dipak
+
+  AdminUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "${AppName}-${Stage}-admin"
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      MfaConfiguration: OPTIONAL
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 16
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  AdminUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AppName}-${Stage}-admin-web"
+      UserPoolId: !Ref AdminUserPool
+      GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      CallbackURLs:
+        - "https://admin.careerjump.local/"
+      LogoutURLs:
+        - "https://admin.careerjump.local/"
+      SupportedIdentityProviders:
+        - COGNITO
+      ExplicitAuthFlows:
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+
+  AdminUserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "careerjump-admin-${Stage}-${AWS::AccountId}"
+      UserPoolId: !Ref AdminUserPool
+
+  AdminBootstrapUser:
+    Type: AWS::Cognito::UserPoolUser
+    Properties:
+      UserPoolId: !Ref AdminUserPool
+      Username: !Ref AdminBootstrapEmail
+      DesiredDeliveryMediums:
+        - EMAIL
+      UserAttributes:
+        - Name: email
+          Value: !Ref AdminBootstrapEmail
+        - Name: email_verified
+          Value: "true"
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-api"
+      Handler: src/aws/api.handler
+      Timeout: 30
+      FunctionUrlConfig:
+        AuthType: NONE
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SupportTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BillingTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref RunOrchestratorFunction
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Environment:
+        Variables:
+          RUN_ORCHESTRATOR_FUNCTION_NAME: !Ref RunOrchestratorFunction
+      ReservedConcurrentExecutions: 20
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  RunOrchestratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-run-orchestrator"
+      Handler: src/aws/orchestrator.handler
+      Timeout: 60
+      MemorySize: 256
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref ScanCompanyFunction
+      Environment:
+        Variables:
+          SCAN_COMPANY_FUNCTION_NAME: !Ref ScanCompanyFunction
+      LoggingConfig:
+        LogFormat: JSON
+      Events:
+        WeekdayEtScan:
+          Type: ScheduleV2
+          Properties:
+            ScheduleExpression: "cron(0 6,9,12,15,18,21 ? * MON-FRI *)"
+            ScheduleExpressionTimezone: "America/New_York"
+            State: ENABLED
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  ScanCompanyFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-scan-company"
+      Handler: src/aws/scan-company.handler
+      Timeout: 180
+      MemorySize: 256
+      ReservedConcurrentExecutions: 40
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - LambdaInvokePolicy:
+            FunctionName: !Ref FinalizeRunFunction
+      Environment:
+        Variables:
+          FINALIZE_RUN_FUNCTION_NAME: !Ref FinalizeRunFunction
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  FinalizeRunFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-finalize-run"
+      Handler: src/aws/finalize-run.handler
+      Timeout: 300
+      MemorySize: 512
+      ReservedConcurrentExecutions: 1
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref EventsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BillingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  ApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ApiFunction}"
+      RetentionInDays: 1
+
+  RunOrchestratorLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RunOrchestratorFunction}"
+      RetentionInDays: 1
+
+  ScanCompanyLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${ScanCompanyFunction}"
+      RetentionInDays: 1
+
+  FinalizeRunLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${FinalizeRunFunction}"
+      RetentionInDays: 1
+
+  # Error metric filters and alarms keep Lambda runtime failures visible without adding paid APM services.
+  LambdaErrorTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-${Stage}-lambda-errors"
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  LambdaErrorEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref LambdaErrorTopic
+      Protocol: email
+      Endpoint: !Ref BudgetEmail
+
+  ApiErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ApiLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: ApiErrors
+          MetricValue: "1"
+
+  RunOrchestratorErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref RunOrchestratorLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: OrchestratorErrors
+          MetricValue: "1"
+
+  ScanCompanyErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref ScanCompanyLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: ScanErrors
+          MetricValue: "1"
+
+  FinalizeRunErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref FinalizeRunLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: FinalizeErrors
+          MetricValue: "1"
+
+  ApiErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-api-errors"
+      AlarmDescription: API Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: ApiErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  RunOrchestratorErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-orchestrator-errors"
+      AlarmDescription: Run orchestrator Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: OrchestratorErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  ScanCompanyErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-scan-company-errors"
+      AlarmDescription: Scan company Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: ScanErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  FinalizeRunErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-finalize-run-errors"
+      AlarmDescription: Finalize run Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: FinalizeErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  CostBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub "${AppName}-${Stage}-monthly-guardrail"
+        BudgetLimit:
+          Amount: 5
+          Unit: USD
+        TimeUnit: MONTHLY
+        BudgetType: COST
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 60
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmail
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref BudgetEmail
+
+Outputs:
+  ApiFunctionUrl:
+    Description: Cognito-protected Lambda Function URL for the API.
+    Value: !GetAtt ApiFunctionUrl.FunctionUrl
+  FrontendBucketName:
+    Description: S3 bucket for static frontend assets.
+    Value: !Ref FrontendBucket
+  FrontendCloudFrontUrl:
+    Description: HTTPS CloudFront URL for the AWS frontend.
+    Value: !Sub "https://${FrontendDistribution.DomainName}"
+  FrontendDistributionId:
+    Description: CloudFront distribution ID for frontend cache invalidations.
+    Value: !Ref FrontendDistribution
+  CognitoDomain:
+    Description: Cognito hosted UI domain.
+    Value: !Sub "https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+  CognitoUserPoolId:
+    Description: Cognito user pool ID.
+    Value: !Ref UserPool
+  CognitoClientId:
+    Description: Cognito app client ID.
+    Value: !Ref UserPoolClient
+  AdminCognitoDomain:
+    Description: Admin Cognito hosted UI domain.
+    Value: !Sub "https://${AdminUserPoolDomain}.auth.${AWS::Region}.amazoncognito.com"
+  AdminCognitoUserPoolId:
+    Description: Admin Cognito user pool ID.
+    Value: !Ref AdminUserPool
+  AdminCognitoClientId:
+    Description: Admin Cognito app client ID.
+    Value: !Ref AdminUserPoolClient
+  StateTableName:
+    Description: DynamoDB state table.
+    Value: !Ref StateTable
+  RegistryTableName:
+    Description: DynamoDB registry table.
+    Value: !Ref RegistryTable
+  RawScansTableName:
+    Description: DynamoDB raw scans table.
+    Value: !Ref RawScansTable
+  UsersTableName:
+    Description: DynamoDB users table.
+    Value: !Ref UsersTable
+  JobsTableName:
+    Description: DynamoDB jobs table.
+    Value: !Ref JobsTable
+  EventsTableName:
+    Description: DynamoDB events table.
+    Value: !Ref EventsTable
+  SupportTableName:
+    Description: DynamoDB support table.
+    Value: !Ref SupportTable
+  BillingTableName:
+    Description: DynamoDB billing table.
+    Value: !Ref BillingTable

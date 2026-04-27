@@ -1,0 +1,35 @@
+{
+  "includeKeywords": [
+    "technical program manager",
+    "senior technical program manager",
+    "sr technical program manager",
+    "lead technical program manager",
+    "staff technical program manager",
+    "principal technical program manager",
+    "staff program manager",
+    "Staff Technical Program Manager",
+    "tpm",
+    "sr tpm",
+    "program manager",
+    "director, program",
+    "director program",
+    "director, technical program",
+    "director technical program"
+  ],
+  "excludeKeywords": [
+    "intern",
+    "university",
+    "campus",
+    "contract",
+    "temp",
+    "recruiter",
+    "engineering manager",
+    "finance manager",
+    "customer success manager",
+    "product manager",
+    "operations manager",
+    "learning & development manager",
+    "accounting manager",
+    "Staff, Product Manager"
+  ]
+}

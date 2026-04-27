@@ -1,0 +1,162 @@
+<svg width="900" height="560" viewBox="0 0 900 560" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Arial, sans-serif">
+
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <marker id="arrow-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#2E7D32"/>
+    </marker>
+    <marker id="arrow-red" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#C62828"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#1565C0"/>
+    </marker>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000022"/>
+    </filter>
+  </defs>
+
+  <rect width="900" height="560" fill="#F2F3F3"/>
+  <text x="450" y="32" text-anchor="middle" font-size="18" font-weight="700" fill="#232F3E">Job Lifecycle — State Transitions</text>
+
+  <!-- START -->
+  <circle cx="90" cy="130" r="22" fill="#232F3E"/>
+  <text x="90" y="135" text-anchor="middle" font-size="11" fill="white" font-weight="700">START</text>
+
+  <!-- Fetched (ATS raw) -->
+  <g filter="url(#shadow)">
+    <rect x="200" y="100" width="160" height="60" rx="8" fill="#546E7A" stroke="#37474F" stroke-width="1.5"/>
+    <rect x="200" y="100" width="160" height="22" rx="8" fill="#37474F"/>
+    <rect x="200" y="110" width="160" height="12" fill="#37474F"/>
+    <text x="280" y="117" text-anchor="middle" font-size="11" font-weight="700" fill="white">Fetched</text>
+    <text x="280" y="137" text-anchor="middle" font-size="10" fill="#CFD8DC">Raw ATS posting</text>
+    <text x="280" y="151" text-anchor="middle" font-size="10" fill="#90A4AE">count only · no record stored</text>
+  </g>
+
+  <!-- Available -->
+  <g filter="url(#shadow)">
+    <rect x="440" y="100" width="160" height="65" rx="8" fill="white" stroke="#2E7D32" stroke-width="2"/>
+    <rect x="440" y="100" width="160" height="22" rx="8" fill="#2E7D32"/>
+    <rect x="440" y="110" width="160" height="12" fill="#2E7D32"/>
+    <text x="520" y="117" text-anchor="middle" font-size="11" font-weight="700" fill="white">Available</text>
+    <text x="520" y="137" text-anchor="middle" font-size="10" fill="#1B5E20">Stored in inventory snapshot</text>
+    <text x="520" y="151" text-anchor="middle" font-size="10" fill="#2E7D32">Matches title + geo filters</text>
+    <text x="520" y="163" text-anchor="middle" font-size="10" fill="#388E3C">Shown on dashboard</text>
+  </g>
+
+  <!-- Filter Discard -->
+  <g filter="url(#shadow)">
+    <rect x="200" y="260" width="160" height="75" rx="8" fill="white" stroke="#C62828" stroke-width="1.5"/>
+    <rect x="200" y="260" width="160" height="22" rx="8" fill="#C62828"/>
+    <rect x="200" y="272" width="160" height="12" fill="#C62828"/>
+    <text x="280" y="278" text-anchor="middle" font-size="11" font-weight="700" fill="white">Filter Discard</text>
+    <text x="280" y="298" text-anchor="middle" font-size="10" fill="#B71C1C">Title / geo / source fails</text>
+    <text x="280" y="313" text-anchor="middle" font-size="10" fill="#C62828">Count by reason only</text>
+    <text x="280" y="328" text-anchor="middle" font-size="10" fill="#D32F2F">No record stored · END</text>
+  </g>
+
+  <!-- User Discarded -->
+  <g filter="url(#shadow)">
+    <rect x="440" y="260" width="160" height="75" rx="8" fill="white" stroke="#E65100" stroke-width="1.5"/>
+    <rect x="440" y="260" width="160" height="22" rx="8" fill="#E65100"/>
+    <rect x="440" y="272" width="160" height="12" fill="#E65100"/>
+    <text x="520" y="278" text-anchor="middle" font-size="11" font-weight="700" fill="white">User Discarded</text>
+    <text x="520" y="298" text-anchor="middle" font-size="10" fill="#BF360C">Removed from dashboard</text>
+    <text x="520" y="313" text-anchor="middle" font-size="10" fill="#D84315">Key stored · auto-skip</text>
+    <text x="520" y="328" text-anchor="middle" font-size="10" fill="#E64A19">next scans · END</text>
+  </g>
+
+  <!-- Applied -->
+  <g filter="url(#shadow)">
+    <rect x="440" y="405" width="160" height="65" rx="8" fill="white" stroke="#1565C0" stroke-width="2"/>
+    <rect x="440" y="405" width="160" height="22" rx="8" fill="#1565C0"/>
+    <rect x="440" y="417" width="160" height="12" fill="#1565C0"/>
+    <text x="520" y="423" text-anchor="middle" font-size="11" font-weight="700" fill="white">Applied</text>
+    <text x="520" y="443" text-anchor="middle" font-size="10" fill="#0D47A1">Stored in applied-job state</text>
+    <text x="520" y="458" text-anchor="middle" font-size="10" fill="#1565C0">Hidden from Available Jobs</text>
+    <text x="520" y="471" text-anchor="middle" font-size="10" fill="#1976D2">Preserved across scans</text>
+  </g>
+
+  <!-- Interview / Action Plan -->
+  <g filter="url(#shadow)">
+    <rect x="680" y="405" width="180" height="65" rx="8" fill="white" stroke="#6A1B9A" stroke-width="2"/>
+    <rect x="680" y="405" width="180" height="22" rx="8" fill="#6A1B9A"/>
+    <rect x="680" y="417" width="180" height="12" fill="#6A1B9A"/>
+    <text x="770" y="423" text-anchor="middle" font-size="11" font-weight="700" fill="white">Interview / Action Plan</text>
+    <text x="770" y="443" text-anchor="middle" font-size="10" fill="#4A148C">Status → Interview</text>
+    <text x="770" y="458" text-anchor="middle" font-size="10" fill="#6A1B9A">Interview rounds added</text>
+    <text x="770" y="471" text-anchor="middle" font-size="10" fill="#7B1FA2">Appears in Action Plan</text>
+  </g>
+
+  <!-- Removed -->
+  <g filter="url(#shadow)">
+    <rect x="680" y="260" width="160" height="75" rx="8" fill="white" stroke="#795548" stroke-width="1.5"/>
+    <rect x="680" y="260" width="160" height="22" rx="8" fill="#795548"/>
+    <rect x="680" y="272" width="160" height="12" fill="#795548"/>
+    <text x="760" y="278" text-anchor="middle" font-size="11" font-weight="700" fill="white">Removed</text>
+    <text x="760" y="298" text-anchor="middle" font-size="10" fill="#4E342E">Broken link or missing</text>
+    <text x="760" y="313" text-anchor="middle" font-size="10" fill="#6D4C41">from subsequent scan</text>
+    <text x="760" y="328" text-anchor="middle" font-size="10" fill="#795548">No record stored · END</text>
+  </g>
+
+  <!-- END circles -->
+  <circle cx="280" cy="490" r="18" fill="none" stroke="#C62828" stroke-width="2"/>
+  <circle cx="280" cy="490" r="12" fill="#C62828"/>
+
+  <circle cx="760" cy="490" r="18" fill="none" stroke="#795548" stroke-width="2"/>
+  <circle cx="760" cy="490" r="12" fill="#795548"/>
+
+  <circle cx="520" cy="490" r="18" fill="none" stroke="#E65100" stroke-width="2"/>
+  <circle cx="520" cy="490" r="12" fill="#E65100"/>
+
+  <!-- ── ARROWS ── -->
+  <!-- START → Fetched -->
+  <line x1="112" y1="130" x2="198" y2="130" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Fetched → Available -->
+  <line x1="360" y1="130" x2="438" y2="130" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrow-green)"/>
+  <text x="400" y="120" text-anchor="middle" font-size="9" fill="#2E7D32">passes filters</text>
+
+  <!-- Fetched → Filter Discard -->
+  <line x1="280" y1="160" x2="280" y2="258" stroke="#C62828" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+  <text x="230" y="215" text-anchor="middle" font-size="9" fill="#C62828">title / geo</text>
+  <text x="230" y="228" text-anchor="middle" font-size="9" fill="#C62828">filter fails</text>
+
+  <!-- Available → User Discarded -->
+  <line x1="520" y1="165" x2="520" y2="258" stroke="#E65100" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="545" y="215" font-size="9" fill="#E65100">user discards</text>
+
+  <!-- Available → Applied -->
+  <path d="M 520 165 L 520 403" fill="none" stroke="#1565C0" stroke-width="1.5" marker-end="url(#arrow-blue)" stroke-dasharray="5,3"/>
+  <text x="548" y="320" font-size="9" fill="#1565C0">user applies</text>
+
+  <!-- Available → Removed -->
+  <line x1="600" y1="130" x2="760" y2="258" stroke="#795548" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="710" y="175" text-anchor="middle" font-size="9" fill="#795548">broken link /</text>
+  <text x="710" y="188" text-anchor="middle" font-size="9" fill="#795548">missing next scan</text>
+
+  <!-- Applied → Interview -->
+  <line x1="600" y1="437" x2="678" y2="437" stroke="#6A1B9A" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="639" y="428" text-anchor="middle" font-size="9" fill="#6A1B9A">→ Interview</text>
+
+  <!-- Filter Discard → END -->
+  <line x1="280" y1="335" x2="280" y2="470" stroke="#C62828" stroke-width="1.5" marker-end="url(#arrow-red)"/>
+
+  <!-- User Discarded → END -->
+  <line x1="520" y1="335" x2="520" y2="470" stroke="#E65100" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Removed → END -->
+  <line x1="760" y1="335" x2="760" y2="470" stroke="#795548" stroke-width="1.5" marker-end="url(#arrow)"/>
+
+  <!-- Storage notes -->
+  <rect x="30" y="390" width="360" height="100" rx="6" fill="white" stroke="#B0BEC5" stroke-width="1"/>
+  <text x="45" y="410" font-size="11" font-weight="700" fill="#37474F">Storage Rules</text>
+  <text x="45" y="428" font-size="10" fill="#546E7A">• Available inventory: currently matched, currently returned by ATS</text>
+  <text x="45" y="443" font-size="10" fill="#546E7A">• Applied jobs: preserved across all future scans</text>
+  <text x="45" y="458" font-size="10" fill="#546E7A">• User discard key: stored, auto-skips on future scans</text>
+  <text x="45" y="473" font-size="10" fill="#546E7A">• App logs: DynamoDB TTL 6h · /logs.html compact view</text>
+  <text x="45" y="488" font-size="10" fill="#546E7A">• Filter discards and removals: count only, no job record</text>
+
+</svg>

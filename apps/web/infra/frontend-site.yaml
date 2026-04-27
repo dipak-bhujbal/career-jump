@@ -1,0 +1,213 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Career Jump Web isolated frontend stack.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: cj-web
+  Stage:
+    Type: String
+    Default: poc
+  # Optional: bare domain name of the registry API Gateway (no https://).
+  # When provided, CloudFront will route /api/registry/* to the registry Lambda
+  # instead of returning a 403/404 from S3.
+  # Example: abc123xyz.execute-api.us-east-1.amazonaws.com
+  RegistryApiDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Bare domain of the registry HTTP API Gateway. Leave empty to omit the
+      /api/registry/* CloudFront behavior (useful before the registry stack
+      is deployed).
+
+# ---------------------------------------------------------------------------
+# Conditions
+# ---------------------------------------------------------------------------
+Conditions:
+  HasRegistryApi: !Not [!Equals [!Ref RegistryApiDomainName, ""]]
+
+Resources:
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AppName}-static-${Stage}-${AWS::AccountId}"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: App
+          Value: career-jump-web
+        - Key: Stack
+          Value: react-rebuild
+        - Key: Env
+          Value: !Ref Stage
+
+  FrontendOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub "${AppName}-${Stage}-oac"
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowCloudFrontOAC
+            Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub "${FrontendBucket.Arn}/*"
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub "arn:aws:cloudfront::${AWS::AccountId}:distribution/${FrontendDistribution}"
+
+  FrontendResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-security-headers"
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: DENY
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+          ContentSecurityPolicy:
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://*.lambda-url.us-east-1.on.aws https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; img-src 'self' data:; font-src 'self'; frame-ancestors 'none'; base-uri 'self'; object-src 'none'"
+            Override: true
+
+  # Cache policy for API calls — no caching, forward Authorization + query strings
+  RegistryApiCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Condition: HasRegistryApi
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-registry-api-nocache"
+        DefaultTTL: 0
+        MinTTL: 0
+        MaxTTL: 1
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: false
+          EnableAcceptEncodingBrotli: false
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: none
+          CookiesConfig:
+            CookieBehavior: none
+
+  # Origin request policy — forwards Authorization header and all query strings
+  RegistryApiOriginRequestPolicy:
+    Type: AWS::CloudFront::OriginRequestPolicy
+    Condition: HasRegistryApi
+    Properties:
+      OriginRequestPolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-registry-api-forward"
+        HeadersConfig:
+          HeaderBehavior: whitelist
+          Headers:
+            - Authorization
+            - Content-Type
+        QueryStringsConfig:
+          QueryStringBehavior: all
+        CookiesConfig:
+          CookieBehavior: none
+
+  FrontendDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: !Sub "${AppName}-${Stage} frontend"
+        DefaultRootObject: index.html
+        Origins:
+          - Id: FrontendWebsiteOrigin
+            DomainName: !GetAtt FrontendBucket.RegionalDomainName
+            OriginAccessControlId: !Ref FrontendOAC
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+          - !If
+            - HasRegistryApi
+            - Id: RegistryApiOrigin
+              DomainName: !Ref RegistryApiDomainName
+              CustomOriginConfig:
+                HTTPSPort: 443
+                OriginProtocolPolicy: https-only
+                OriginSSLProtocols:
+                  - TLSv1.2
+            - !Ref AWS::NoValue
+        CacheBehaviors:
+          - !If
+            - HasRegistryApi
+            - PathPattern: /api/registry/*
+              TargetOriginId: RegistryApiOrigin
+              ViewerProtocolPolicy: https-only
+              AllowedMethods:
+                - GET
+                - HEAD
+                - OPTIONS
+              CachedMethods:
+                - GET
+                - HEAD
+              CachePolicyId: !Ref RegistryApiCachePolicy
+              OriginRequestPolicyId: !Ref RegistryApiOriginRequestPolicy
+            - !Ref AWS::NoValue
+        DefaultCacheBehavior:
+          TargetOriginId: FrontendWebsiteOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+            - OPTIONS
+          CachedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          ForwardedValues:
+            QueryString: false
+            Cookies:
+              Forward: none
+          ResponseHeadersPolicyId: !Ref FrontendResponseHeadersPolicy
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+        PriceClass: PriceClass_100
+      Tags:
+        - Key: App
+          Value: career-jump-web
+        - Key: Stack
+          Value: react-rebuild
+        - Key: Env
+          Value: !Ref Stage
+
+Outputs:
+  FrontendBucketName:
+    Description: S3 bucket for isolated React frontend assets.
+    Value: !Ref FrontendBucket
+  FrontendCloudFrontUrl:
+    Description: HTTPS CloudFront URL for the isolated React frontend.
+    Value: !Sub "https://${FrontendDistribution.DomainName}"
+  FrontendDistributionId:
+    Description: CloudFront distribution ID for cache invalidations.
+    Value: !Ref FrontendDistribution

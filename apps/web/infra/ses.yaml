@@ -1,0 +1,540 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Career Jump SES configuration – email identity, configuration set, templates, and bounce/complaint SNS topic.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+    Description: Application name used for resource naming.
+  Stage:
+    Type: String
+    Default: poc
+    Description: Deployment stage (poc, dev, staging, prod).
+  FromEmail:
+    Type: String
+    Description: >
+      The verified sender email address (e.g. noreply@careerjump.io).
+      The domain or address must be verified in SES before deployment.
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # Email identity
+  # ---------------------------------------------------------------------------
+  SESEmailIdentity:
+    Type: AWS::SES::EmailIdentity
+    Properties:
+      EmailIdentity: !Ref FromEmail
+
+  # ---------------------------------------------------------------------------
+  # Configuration set (used for tracking, bounce/complaint routing)
+  # ---------------------------------------------------------------------------
+  SESConfigurationSet:
+    Type: AWS::SES::ConfigurationSet
+    Properties:
+      Name: !Sub "${AppName}-${Stage}-config"
+      SendingOptions:
+        SendingEnabled: true
+      ReputationOptions:
+        ReputationMetricsEnabled: true
+      SuppressionOptions:
+        SuppressedReasons:
+          - BOUNCE
+          - COMPLAINT
+
+  # ---------------------------------------------------------------------------
+  # SNS topic for bounce / complaint notifications
+  # ---------------------------------------------------------------------------
+  BounceComplaintTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-${Stage}-bounce-complaint"
+      Tags:
+        - Key: App
+          Value: career-jump
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # Configuration set event destination → SNS
+  # ---------------------------------------------------------------------------
+  SESEventDestination:
+    Type: AWS::SES::ConfigurationSetEventDestination
+    Properties:
+      ConfigurationSetName: !Ref SESConfigurationSet
+      EventDestination:
+        Name: BounceComplaintSNS
+        Enabled: true
+        MatchingEventTypes:
+          - BOUNCE
+          - COMPLAINT
+          - DELIVERY
+        SnsDestination:
+          TopicARN: !Ref BounceComplaintTopic
+
+  # ---------------------------------------------------------------------------
+  # Email templates
+  # ---------------------------------------------------------------------------
+
+  # 1. Email Verification
+  TemplateEmailVerification:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-email-verification"
+        SubjectPart: "Verify your Career Jump email"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Verify your email</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 16px;color:#111827;font-size:20px;">Verify your email address</h2>
+                        <p style="margin:0 0 24px;color:#374151;font-size:16px;line-height:1.6;">
+                          Thanks for signing up! Use the verification code below to confirm your email address.
+                          This code expires in 24 hours.
+                        </p>
+                        <div style="background:#f3f4f6;border-radius:8px;padding:24px;text-align:center;margin-bottom:24px;">
+                          <span style="font-size:36px;font-weight:700;letter-spacing:8px;color:#1a56db;">{{code}}</span>
+                        </div>
+                        <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
+                          If you did not create a Career Jump account, you can safely ignore this email.
+                        </p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          &copy; 2025 Career Jump. All rights reserved.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Career Jump – Email Verification
+
+          Your verification code is: {{code}}
+
+          This code expires in 24 hours.
+
+          If you did not create a Career Jump account, you can safely ignore this email.
+
+  # 2. Welcome Email
+  TemplateWelcomeEmail:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-welcome"
+        SubjectPart: "Welcome to Career Jump Beta"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Welcome to Career Jump</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 16px;color:#111827;font-size:20px;">You're in! Welcome to Career Jump Beta.</h2>
+                        <p style="margin:0 0 24px;color:#374151;font-size:16px;line-height:1.6;">
+                          We're excited to have you on board. Here's how to hit the ground running:
+                        </p>
+                        <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:32px;">
+                          <tr>
+                            <td style="padding:12px 0;border-bottom:1px solid #f3f4f6;vertical-align:top;width:32px;">
+                              <span style="display:inline-block;width:24px;height:24px;background:#dbeafe;border-radius:50%;text-align:center;line-height:24px;font-size:12px;font-weight:700;color:#1a56db;">1</span>
+                            </td>
+                            <td style="padding:12px 0 12px 12px;border-bottom:1px solid #f3f4f6;">
+                              <strong style="color:#111827;">Complete your profile</strong><br/>
+                              <span style="color:#6b7280;font-size:14px;">Add your skills, experience, and job preferences so we can match you to the right roles.</span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style="padding:12px 0;border-bottom:1px solid #f3f4f6;vertical-align:top;">
+                              <span style="display:inline-block;width:24px;height:24px;background:#dbeafe;border-radius:50%;text-align:center;line-height:24px;font-size:12px;font-weight:700;color:#1a56db;">2</span>
+                            </td>
+                            <td style="padding:12px 0 12px 12px;border-bottom:1px solid #f3f4f6;">
+                              <strong style="color:#111827;">Set up job alerts</strong><br/>
+                              <span style="color:#6b7280;font-size:14px;">Tell us the role types, locations, and salary range you're targeting.</span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <td style="padding:12px 0;vertical-align:top;">
+                              <span style="display:inline-block;width:24px;height:24px;background:#dbeafe;border-radius:50%;text-align:center;line-height:24px;font-size:12px;font-weight:700;color:#1a56db;">3</span>
+                            </td>
+                            <td style="padding:12px 0 12px 12px;">
+                              <strong style="color:#111827;">Track your applications</strong><br/>
+                              <span style="color:#6b7280;font-size:14px;">Use the dashboard to manage and monitor every application in one place.</span>
+                            </td>
+                          </tr>
+                        </table>
+                        <a href="{{dashboardUrl}}" style="display:inline-block;background:#1a56db;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:6px;font-weight:600;font-size:16px;">Go to Dashboard</a>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          &copy; 2025 Career Jump. All rights reserved.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Welcome to Career Jump Beta!
+
+          Here is how to get started:
+
+          1. Complete your profile – add your skills, experience, and job preferences.
+          2. Set up job alerts – specify role types, locations, and salary range.
+          3. Track your applications – use the dashboard to manage everything in one place.
+
+          Go to your dashboard: {{dashboardUrl}}
+
+  # 3. New Jobs Alert
+  TemplateNewJobsAlert:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-new-jobs-alert"
+        SubjectPart: "{{jobCount}} new jobs found — Career Jump"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>New jobs found</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 8px;color:#111827;font-size:20px;">{{jobCount}} new jobs match your preferences</h2>
+                        <p style="margin:0 0 24px;color:#6b7280;font-size:14px;">Here are the top matches from today's scan:</p>
+                        {{topJobs}}
+                        <br/>
+                        <a href="{{dashboardUrl}}" style="display:inline-block;background:#1a56db;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:6px;font-weight:600;font-size:16px;">View all jobs</a>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          You're receiving this because you have job alerts enabled.
+                          <a href="{{dashboardUrl}}/settings" style="color:#6b7280;">Manage alerts</a> &nbsp;|&nbsp;
+                          &copy; 2025 Career Jump.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Career Jump – {{jobCount}} new jobs found
+
+          Here are your top matches:
+
+          {{topJobs}}
+
+          View all jobs: {{dashboardUrl}}
+
+  # 4. Weekly Digest
+  TemplateWeeklyDigest:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-weekly-digest"
+        SubjectPart: "Your Career Jump weekly summary"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Weekly summary</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 8px;color:#111827;font-size:20px;">Your week in review</h2>
+                        <p style="margin:0 0 24px;color:#6b7280;font-size:14px;">Here's a snapshot of your job search activity this week.</p>
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;margin-bottom:32px;">
+                          <thead>
+                            <tr style="background:#f9fafb;">
+                              <th style="padding:12px 16px;text-align:left;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e7eb;">Metric</th>
+                              <th style="padding:12px 16px;text-align:right;font-size:12px;color:#6b7280;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #e5e7eb;">Count</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            <tr>
+                              <td style="padding:14px 16px;color:#374151;font-size:15px;border-bottom:1px solid #f3f4f6;">Available jobs matching your profile</td>
+                              <td style="padding:14px 16px;text-align:right;color:#1a56db;font-weight:700;font-size:15px;border-bottom:1px solid #f3f4f6;">{{availableJobs}}</td>
+                            </tr>
+                            <tr>
+                              <td style="padding:14px 16px;color:#374151;font-size:15px;border-bottom:1px solid #f3f4f6;">Applications submitted</td>
+                              <td style="padding:14px 16px;text-align:right;color:#1a56db;font-weight:700;font-size:15px;border-bottom:1px solid #f3f4f6;">{{appliedJobs}}</td>
+                            </tr>
+                            <tr>
+                              <td style="padding:14px 16px;color:#374151;font-size:15px;">Interviews scheduled</td>
+                              <td style="padding:14px 16px;text-align:right;color:#1a56db;font-weight:700;font-size:15px;">{{interviews}}</td>
+                            </tr>
+                          </tbody>
+                        </table>
+                        <a href="{{dashboardUrl}}" style="display:inline-block;background:#1a56db;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:6px;font-weight:600;font-size:16px;">Open Dashboard</a>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          &copy; 2025 Career Jump. All rights reserved.
+                          <a href="{{dashboardUrl}}/settings" style="color:#6b7280;">Unsubscribe from weekly digest</a>
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Career Jump – Your weekly summary
+
+          Available jobs matching your profile: {{availableJobs}}
+          Applications submitted: {{appliedJobs}}
+          Interviews scheduled: {{interviews}}
+
+          Open your dashboard: {{dashboardUrl}}
+
+  # 5. Application Status Update
+  TemplateApplicationStatusUpdate:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-application-status"
+        SubjectPart: "Application update — {{company}}"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Application update</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 8px;color:#111827;font-size:20px;">Application status update</h2>
+                        <p style="margin:0 0 24px;color:#374151;font-size:16px;line-height:1.6;">
+                          There's a new update for your application at <strong>{{company}}</strong>.
+                        </p>
+                        <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;margin-bottom:32px;">
+                          <tr>
+                            <td style="padding:14px 16px;background:#f9fafb;font-size:13px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;width:40%;border-bottom:1px solid #f3f4f6;">Company</td>
+                            <td style="padding:14px 16px;color:#374151;font-size:15px;border-bottom:1px solid #f3f4f6;">{{company}}</td>
+                          </tr>
+                          <tr>
+                            <td style="padding:14px 16px;background:#f9fafb;font-size:13px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;border-bottom:1px solid #f3f4f6;">Role</td>
+                            <td style="padding:14px 16px;color:#374151;font-size:15px;border-bottom:1px solid #f3f4f6;">{{jobTitle}}</td>
+                          </tr>
+                          <tr>
+                            <td style="padding:14px 16px;background:#f9fafb;font-size:13px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;">New status</td>
+                            <td style="padding:14px 16px;color:#111827;font-size:15px;font-weight:700;">{{status}}</td>
+                          </tr>
+                        </table>
+                        <a href="{{dashboardUrl}}" style="display:inline-block;background:#1a56db;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:6px;font-weight:600;font-size:16px;">View application</a>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          &copy; 2025 Career Jump. All rights reserved.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Career Jump – Application status update
+
+          Company:    {{company}}
+          Role:       {{jobTitle}}
+          New status: {{status}}
+
+          View your application: {{dashboardUrl}}
+
+  # 6. Password Reset
+  TemplatePasswordReset:
+    Type: AWS::SES::Template
+    Properties:
+      Template:
+        TemplateName: !Sub "${AppName}-${Stage}-password-reset"
+        SubjectPart: "Reset your Career Jump password"
+        HtmlPart: |
+          <!DOCTYPE html>
+          <html lang="en">
+          <head>
+            <meta charset="UTF-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Reset your password</title>
+          </head>
+          <body style="margin:0;padding:0;background:#f4f6f9;font-family:Arial,sans-serif;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f4f6f9;padding:40px 0;">
+              <tr>
+                <td align="center">
+                  <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+                    <tr>
+                      <td style="background:#1a56db;padding:32px 40px;">
+                        <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:700;">Career Jump</h1>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="padding:40px;">
+                        <h2 style="margin:0 0 16px;color:#111827;font-size:20px;">Reset your password</h2>
+                        <p style="margin:0 0 24px;color:#374151;font-size:16px;line-height:1.6;">
+                          We received a request to reset the password for your Career Jump account.
+                          Enter the code below in the app to set a new password. This code expires in 1 hour.
+                        </p>
+                        <div style="background:#f3f4f6;border-radius:8px;padding:24px;text-align:center;margin-bottom:24px;">
+                          <span style="font-size:36px;font-weight:700;letter-spacing:8px;color:#1a56db;">{{code}}</span>
+                        </div>
+                        <p style="margin:0;color:#6b7280;font-size:14px;line-height:1.6;">
+                          If you did not request a password reset, please ignore this email.
+                          Your password will remain unchanged.
+                        </p>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td style="background:#f9fafb;padding:24px 40px;border-top:1px solid #e5e7eb;">
+                        <p style="margin:0;color:#9ca3af;font-size:12px;">
+                          &copy; 2025 Career Jump. All rights reserved.
+                        </p>
+                      </td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+          </body>
+          </html>
+        TextPart: |
+          Career Jump – Password reset
+
+          Your password reset code is: {{code}}
+
+          This code expires in 1 hour.
+
+          If you did not request a password reset, you can safely ignore this email.
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  FromEmail:
+    Description: Verified SES sender email address.
+    Value: !Ref FromEmail
+    Export:
+      Name: !Sub "${AppName}-${Stage}-SESFromEmail"
+
+  ConfigurationSetName:
+    Description: SES configuration set name.
+    Value: !Ref SESConfigurationSet
+    Export:
+      Name: !Sub "${AppName}-${Stage}-SESConfigurationSet"
+
+  BounceComplaintTopicArn:
+    Description: SNS topic ARN for SES bounce and complaint notifications.
+    Value: !Ref BounceComplaintTopic
+    Export:
+      Name: !Sub "${AppName}-${Stage}-BounceComplaintTopicArn"
+
+  TemplateEmailVerificationName:
+    Description: SES template name for email verification.
+    Value: !Sub "${AppName}-${Stage}-email-verification"
+
+  TemplateWelcomeName:
+    Description: SES template name for welcome email.
+    Value: !Sub "${AppName}-${Stage}-welcome"
+
+  TemplateNewJobsAlertName:
+    Description: SES template name for new-jobs alert.
+    Value: !Sub "${AppName}-${Stage}-new-jobs-alert"
+
+  TemplateWeeklyDigestName:
+    Description: SES template name for weekly digest.
+    Value: !Sub "${AppName}-${Stage}-weekly-digest"
+
+  TemplateApplicationStatusName:
+    Description: SES template name for application status update.
+    Value: !Sub "${AppName}-${Stage}-application-status"
+
+  TemplatePasswordResetName:
+    Description: SES template name for password reset.
+    Value: !Sub "${AppName}-${Stage}-password-reset"

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Career Jump API Docs</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist@5/swagger-ui.css" />
+    <style>
+      body { margin: 0; background: linear-gradient(180deg, #eef4ff 0%, #f8fbff 100%); color: #132033; }
+      .topbar-brand {
+        padding: 16px 24px;
+        color: #132033;
+        font: 700 22px/1.2 "Avenir Next", "Segoe UI", sans-serif;
+        background: #ffffff;
+        border-bottom: 1px solid #d8e0ef;
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+      .topbar-brand span { opacity: .72; font-weight: 500; margin-left: 8px; }
+      .topbar-links {
+        display: flex;
+        gap: 14px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .topbar-brand a {
+        color: #2563eb;
+        text-decoration: none;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .swagger-intro {
+        max-width: 1320px;
+        margin: 0 auto;
+        padding: 18px 20px 0;
+        color: #41516f;
+        font: 500 14px/1.6 "Avenir Next", "Segoe UI", sans-serif;
+      }
+      .swagger-intro strong { color: #132033; }
+      .swagger-ui .topbar { display: none; }
+      .swagger-ui .scheme-container {
+        background: #fff;
+        box-shadow: none;
+        border-bottom: 1px solid #e4ebf6;
+      }
+      .swagger-ui .opblock-tag,
+      .swagger-ui .opblock .opblock-summary-description,
+      .swagger-ui .opblock .opblock-summary-path,
+      .swagger-ui .opblock .opblock-summary-method,
+      .swagger-ui .info .title,
+      .swagger-ui, .swagger-ui .markdown p, .swagger-ui .markdown li {
+        color: #132033;
+      }
+      .swagger-ui .opblock, .swagger-ui .responses-table, .swagger-ui section.models {
+        box-shadow: none;
+      }
+      .swagger-ui .wrapper { max-width: 1320px; }
+      .swagger-ui .opblock-tag { background: #fff; padding: 12px 10px; }
+    </style>
+  </head>
+  <body>
+    <div class="topbar-brand">
+      <div>Career Jump <span>Swagger / OpenAPI Docs</span></div>
+      <div class="topbar-links">
+        <a href="/">App</a>
+        <a href="/logs.html">Logs</a>
+      </div>
+    </div>
+    <div class="swagger-intro">
+      <strong>What this is:</strong> the live contract for the Worker APIs that power the dashboard, scan orchestration,
+      audit logs, and operational tooling. AWS POC traffic uses Cognito hosted login, so browser users arrive
+      here through an authenticated session rather than by manually supplying headers.
+    </div>
+    <div id="swagger-ui"></div>
+    <script src="https://unpkg.com/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+    <script src="/aws-config.js?v=2.2.0"></script>
+    <script>
+      function getAwsIdToken() {
+        try {
+          const raw = sessionStorage.getItem("career-jump-aws-auth") || localStorage.getItem("career-jump-aws-auth");
+          const state = raw ? JSON.parse(raw) : null;
+          if (!state?.idToken || !state.expiresAt || state.expiresAt <= Date.now()) return "";
+          return state.idToken;
+        } catch {
+          return "";
+        }
+      }
+      const apiBaseUrl = window.CAREER_JUMP_AWS?.apiBaseUrl?.replace(/\/$/, "") || "";
+      window.ui = SwaggerUIBundle({
+        url: apiBaseUrl ? `${apiBaseUrl}/api/openapi.json` : "/api/openapi.json",
+        dom_id: "#swagger-ui",
+        deepLinking: true,
+        docExpansion: "list",
+        tagsSorter: "alpha",
+        operationsSorter: "alpha",
+        requestInterceptor: (request) => {
+          const token = getAwsIdToken();
+          if (token) request.headers.authorization = `Bearer ${token}`;
+          return request;
+        },
+        presets: [SwaggerUIBundle.presets.apis],
+        layout: "BaseLayout"
+      });
+    </script>
+  </body>
+</html>

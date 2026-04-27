@@ -1,0 +1,22 @@
+{
+  "name": "career-jump",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "services/api"
+  ],
+  "scripts": {
+    "dev:web": "npm --prefix apps/web run dev",
+    "build:web": "npm --prefix apps/web run build",
+    "lint:web": "npm --prefix apps/web run lint",
+    "check:api": "npm --prefix services/api run check",
+    "test:api": "npm --prefix services/api run test",
+    "aws:build": "npm --prefix services/api run aws:build",
+    "aws:deploy": "npm --prefix services/api run aws:deploy",
+    "aws:sync-frontend": "npm --prefix services/api run aws:sync-frontend",
+    "registry:restore": "node scripts/restore-registry-backup.mjs",
+    "validate": "npm run build:web && npm run check:api && npm run test:api"
+  }
+}

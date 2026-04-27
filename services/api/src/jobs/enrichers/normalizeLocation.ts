@@ -1,0 +1,65 @@
+import type { Enricher } from "../types";
+
+/**
+ * Parse the free-text `location` string into structured fields.
+ * Adds: locationCity, locationState, locationCountry, isRemote, isHybrid.
+ *
+ * Heuristic-only — no external geocoding. Keeps the original `location`
+ * intact so downstream display still works.
+ */
+
+const REMOTE_RE = /\b(remote|work\s+from\s+home|wfh|anywhere|distributed)\b/i;
+const HYBRID_RE = /\bhybrid\b/i;
+
+const COUNTRY_TOKENS: Record<string, string> = {
+  usa: "US", "u.s.a.": "US", "u.s.": "US", us: "US", "united states": "US", america: "US",
+  uk: "UK", "u.k.": "UK", "united kingdom": "UK", england: "UK",
+  canada: "Canada", germany: "Germany", india: "India", australia: "Australia",
+  singapore: "Singapore", ireland: "Ireland", france: "France", netherlands: "Netherlands",
+  mexico: "Mexico", japan: "Japan", brazil: "Brazil", china: "China",
+};
+
+const US_STATES = new Set([
+  "AL","AK","AZ","AR","CA","CO","CT","DE","FL","GA","HI","ID","IL","IN","IA","KS","KY","LA",
+  "ME","MD","MA","MI","MN","MS","MO","MT","NE","NV","NH","NJ","NM","NY","NC","ND","OH","OK",
+  "OR","PA","RI","SC","SD","TN","TX","UT","VT","VA","WA","WV","WI","WY","DC",
+]);
+
+type LocFields = {
+  locationCity?: string;
+  locationState?: string;
+  locationCountry?: string;
+  isRemote?: boolean;
+  isHybrid?: boolean;
+};
+
+function parse(loc: string): LocFields {
+  if (!loc) return {};
+  const out: LocFields = {};
+  out.isRemote = REMOTE_RE.test(loc);
+  out.isHybrid = HYBRID_RE.test(loc);
+
+  const parts = loc.split(/[,/|]/).map((s) => s.trim()).filter(Boolean);
+  // Try last-token country
+  for (const p of parts) {
+    const k = p.toLowerCase();
+    if (COUNTRY_TOKENS[k]) { out.locationCountry = COUNTRY_TOKENS[k]; break; }
+  }
+  // US state: 2-letter code
+  for (const p of parts) {
+    const upper = p.toUpperCase();
+    if (US_STATES.has(upper)) { out.locationState = upper; out.locationCountry ??= "US"; break; }
+  }
+  // First non-state, non-country token = city
+  for (const p of parts) {
+    const upper = p.toUpperCase();
+    const lower = p.toLowerCase();
+    if (US_STATES.has(upper) || COUNTRY_TOKENS[lower]) continue;
+    out.locationCity = p;
+    break;
+  }
+  return out;
+}
+
+export const normalizeLocation: Enricher<LocFields> = (jobs) =>
+  jobs.map((j) => ({ ...j, ...parse(j.location ?? "") }));

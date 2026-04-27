@@ -1,0 +1,14 @@
+version = 0.1
+
+[prod.deploy.parameters]
+stack_name = "career-jump-prod"
+region = "us-east-1"
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+parameter_overrides = [
+  "BootstrapUserEmail=dipak.bhujbal23@gmail.com",
+  "AdminBootstrapEmail=dipak.bhujbal23@gmail.com",
+  "SesFromEmail=dipak.bhujbal.jobapps@gmail.com",
+  "BudgetEmail=dipak.bhujbal23@gmail.com"
+]

@@ -1,0 +1,368 @@
+import { CONFIG_KEY } from "./constants";
+import { nowISO, slugify } from "./lib/utils";
+import { configStoreKv } from "./lib/bindings";
+import { tenantScopedKey } from "./lib/tenant";
+import { loadCompanyScanOverrides } from "./storage";
+import type { CompanyInput, DetectedConfig, Env, JobTitleConfig, RuntimeConfig, Source } from "./types";
+import { typedSeedCompanies, typedSeedJobtitles } from "./types";
+
+function sanitizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map(String).map((x) => x.trim()).filter(Boolean);
+}
+
+function normalizeSource(value: unknown): Source | undefined {
+  return value === "greenhouse" ||
+    value === "ashby" ||
+    value === "smartrecruiters" ||
+    value === "workday" ||
+    value === "lever"
+    ? value
+    : undefined;
+}
+
+/**
+ * Parse a Workday sample job URL into the identifiers needed for
+ * the real Workday jobs API:
+ *   https://<host>/wday/cxs/<tenant>/<site>/jobs
+ *
+ * Example:
+ * https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site/job/Technical-Program-Manager_JR333198
+ *
+ * becomes:
+ * {
+ *   host: "salesforce.wd12.myworkdayjobs.com",
+ *   tenant: "salesforce",
+ *   site: "External_Career_Site",
+ *   workdayBaseUrl: "https://salesforce.wd12.myworkdayjobs.com/en-US/External_Career_Site"
+ * }
+ */
+export function parseWorkdaySampleUrl(
+  sampleUrl: string
+): Pick<CompanyInput, "host" | "tenant" | "site" | "workdayBaseUrl"> {
+  try {
+    const url = new URL(sampleUrl);
+    const host = url.hostname.toLowerCase();
+
+    const parts = url.pathname.split("/").filter(Boolean);
+    const site = parts.length >= 2 ? parts[1] : "";
+
+    /**
+     * For hosts like:
+     * salesforce.wd12.myworkdayjobs.com
+     * nvidia.wd5.myworkdayjobs.com
+     *
+     * tenant is the first hostname label.
+     */
+    const tenant = host.split(".wd")[0].split(".")[0];
+
+    /**
+     * Keep the old workdayBaseUrl too for backward compatibility / debugging.
+     */
+    const workdayBaseUrl = site ? `${url.origin}/en-US/${site}` : undefined;
+
+    if (!host || !tenant || !site) return {};
+
+    return {
+      host,
+      tenant,
+      site,
+      workdayBaseUrl,
+    };
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Greenhouse sample URLs can come in multiple shapes:
+ *
+ * 1. Standard board/job URLs
+ *    https://boards.greenhouse.io/anthropic/jobs/4989788008
+ *    https://job-boards.greenhouse.io/deepmind/jobs/7686685
+ *
+ * 2. Embedded board URLs
+ *    https://job-boards.greenhouse.io/embed/job_board?for=airbnb
+ *    https://job-boards.greenhouse.io/embed/job_board?for=coinbase
+ *
+ * For embedded boards, the real board token is in the `for` query param.
+ */
+function parseGreenhouseSampleUrl(sampleUrl: string): Pick<CompanyInput, "boardToken"> {
+  try {
+    const url = new URL(sampleUrl);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const host = url.hostname.toLowerCase();
+
+    if (host !== "boards.greenhouse.io" && host !== "job-boards.greenhouse.io") {
+      return {};
+    }
+
+    const queryBoardToken = url.searchParams.get("for")?.trim();
+    if (queryBoardToken) {
+      return { boardToken: queryBoardToken };
+    }
+
+    const isEmbedBoardPath =
+      parts.length >= 2 &&
+      parts[0] === "embed" &&
+      (parts[1] === "job_board" || parts[1] === "job_board_widget");
+
+    if (isEmbedBoardPath) {
+      return {};
+    }
+
+    const boardToken = parts[0] || "";
+    return boardToken ? { boardToken } : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseAshbySampleUrl(sampleUrl: string): Pick<CompanyInput, "companySlug"> {
+  try {
+    const url = new URL(sampleUrl);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const host = url.hostname.toLowerCase();
+
+    if (!host.endsWith("ashbyhq.com")) return {};
+    const companySlug = parts[0] || "";
+    return companySlug ? { companySlug } : {};
+  } catch {
+    return {};
+  }
+}
+
+function parseSmartRecruitersSampleUrl(sampleUrl: string): Pick<CompanyInput, "smartRecruitersCompanyId"> {
+  try {
+    const url = new URL(sampleUrl);
+    const parts = url.pathname.split("/").filter(Boolean);
+    const host = url.hostname.toLowerCase();
+
+    if (host === "jobs.smartrecruiters.com" || host === "careers.smartrecruiters.com") {
+      const smartRecruitersCompanyId = parts[0] || "";
+      return smartRecruitersCompanyId ? { smartRecruitersCompanyId } : {};
+    }
+
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function parseLeverSampleUrl(sampleUrl: string): Pick<CompanyInput, "leverSite"> {
+  try {
+    const url = new URL(sampleUrl);
+    const host = url.hostname.toLowerCase();
+    const parts = url.pathname.split("/").filter(Boolean);
+
+    if (host !== "jobs.lever.co") return {};
+    const leverSite = String(parts[0] ?? "").trim().toLowerCase();
+    return leverSite ? { leverSite } : {};
+  } catch {
+    return {};
+  }
+}
+
+export function parseConfiguredAts(
+  source: Source | undefined,
+  sampleUrl: string | undefined
+): Pick<
+  CompanyInput,
+  "workdayBaseUrl" | "host" | "tenant" | "site" | "boardToken" | "companySlug" | "smartRecruitersCompanyId"
+  | "leverSite"
+> {
+  if (!source || !sampleUrl) return {};
+
+  switch (source) {
+    case "workday":
+      return parseWorkdaySampleUrl(sampleUrl);
+    case "greenhouse":
+      return parseGreenhouseSampleUrl(sampleUrl);
+    case "ashby":
+      return parseAshbySampleUrl(sampleUrl);
+    case "smartrecruiters":
+      return parseSmartRecruitersSampleUrl(sampleUrl);
+    case "lever":
+      return parseLeverSampleUrl(sampleUrl);
+  }
+}
+
+export function companyToDetectedConfig(company: CompanyInput): DetectedConfig | null {
+  switch (company.source) {
+    case "workday":
+      if (company.host && company.tenant && company.site) {
+        return {
+          source: "workday",
+          sampleUrl: company.sampleUrl,
+          workdayBaseUrl: company.workdayBaseUrl,
+          host: company.host,
+          tenant: company.tenant,
+          site: company.site,
+        };
+      }
+      return company.sampleUrl || company.workdayBaseUrl
+        ? {
+            source: "workday",
+            sampleUrl: company.sampleUrl,
+            workdayBaseUrl: company.workdayBaseUrl,
+          }
+        : null;
+
+    case "greenhouse":
+      return company.boardToken
+        ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.sampleUrl }
+        : null;
+
+    case "ashby":
+      return company.companySlug ? { source: "ashby", companySlug: company.companySlug } : null;
+
+    case "smartrecruiters":
+      return company.smartRecruitersCompanyId
+        ? { source: "smartrecruiters", smartRecruitersCompanyId: company.smartRecruitersCompanyId }
+        : null;
+
+    case "lever":
+      return company.leverSite
+        ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.sampleUrl }
+        : null;
+
+    default:
+      return null;
+  }
+}
+
+function normalizeCompany(input: Record<string, unknown>): CompanyInput {
+  const source = normalizeSource(input.source);
+  const sampleUrl = typeof input.sampleUrl === "string" && input.sampleUrl.trim() ? input.sampleUrl.trim() : undefined;
+  const parsed = parseConfiguredAts(source, sampleUrl);
+
+  return {
+    company: String(input.company).trim(),
+    aliases: sanitizeStringArray(input.aliases),
+    enabled: input.enabled !== false,
+    source,
+    sampleUrl,
+
+    boardToken:
+      typeof input.boardToken === "string" && input.boardToken.trim()
+        ? input.boardToken.trim()
+        : parsed.boardToken,
+
+    companySlug:
+      typeof input.companySlug === "string" && input.companySlug.trim()
+        ? input.companySlug.trim()
+        : parsed.companySlug,
+
+    smartRecruitersCompanyId:
+      typeof input.smartRecruitersCompanyId === "string" && input.smartRecruitersCompanyId.trim()
+        ? input.smartRecruitersCompanyId.trim()
+        : parsed.smartRecruitersCompanyId,
+
+    leverSite:
+      typeof input.leverSite === "string" && input.leverSite.trim()
+        ? input.leverSite.trim().toLowerCase()
+        : parsed.leverSite,
+
+    workdayBaseUrl:
+      typeof input.workdayBaseUrl === "string" && input.workdayBaseUrl.trim()
+        ? input.workdayBaseUrl.trim().replace(/\/$/, "")
+        : parsed.workdayBaseUrl,
+
+    host:
+      typeof input.host === "string" && input.host.trim()
+        ? input.host.trim().toLowerCase()
+        : parsed.host,
+
+    tenant:
+      typeof input.tenant === "string" && input.tenant.trim()
+        ? input.tenant.trim()
+        : parsed.tenant,
+
+    site:
+      typeof input.site === "string" && input.site.trim()
+        ? input.site.trim()
+        : parsed.site,
+  };
+}
+
+export function seedRuntimeConfig(): RuntimeConfig {
+  return {
+    companies: typedSeedCompanies.map((company) => normalizeCompany(company as unknown as Record<string, unknown>)),
+    jobtitles: typedSeedJobtitles,
+    updatedAt: nowISO(),
+  };
+}
+
+export function sanitizeCompanies(input: unknown): CompanyInput[] {
+  if (!Array.isArray(input)) throw new Error("Companies must be an array");
+
+  return input
+    .filter((c) => c && typeof c === "object")
+    .map((c) => c as Record<string, unknown>)
+    .filter((c) => typeof c.company === "string" && c.company.trim().length > 0)
+    .map(normalizeCompany);
+}
+
+export async function applyCompanyScanOverrides(env: Env, config: RuntimeConfig, tenantId?: string): Promise<RuntimeConfig> {
+  const overrides = await loadCompanyScanOverrides(env, tenantId);
+  if (!Object.keys(overrides).length) return config;
+
+  return {
+    ...config,
+    companies: config.companies.map((company) => {
+      const override = overrides[slugify(company.company)];
+      if (!override?.paused) return company;
+      return { ...company, enabled: false };
+    }),
+  };
+}
+
+export function sanitizeJobtitles(input: unknown): JobTitleConfig {
+  const raw = (input ?? {}) as Record<string, unknown>;
+  return {
+    includeKeywords: sanitizeStringArray(raw.includeKeywords),
+    excludeKeywords: sanitizeStringArray(raw.excludeKeywords),
+  };
+}
+
+export async function loadRuntimeConfig(env: Env, _tenantId?: string): Promise<RuntimeConfig> {
+  const kv = configStoreKv(env);
+  const scopedKey = tenantScopedKey(undefined, CONFIG_KEY);
+  const raw = await kv.get(scopedKey, "json");
+
+  if (!raw || typeof raw !== "object") {
+    const seeded = seedRuntimeConfig();
+    await saveRuntimeConfig(env, seeded);
+    return seeded;
+  }
+
+  const obj = raw as Record<string, unknown>;
+  const normalized = {
+    companies: sanitizeCompanies(obj.companies),
+    jobtitles: sanitizeJobtitles(obj.jobtitles),
+    updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
+  };
+  const serializedRaw = JSON.stringify(raw);
+  const serializedNormalized = JSON.stringify(normalized);
+  if (serializedNormalized !== serializedRaw) {
+    // Persist only when normalization actually repaired or enriched stored config.
+    await kv.put(scopedKey, serializedNormalized);
+  }
+
+  return normalized;
+}
+
+export async function saveRuntimeConfig(
+  env: Env,
+  config: RuntimeConfig,
+  _tenantId?: string,
+  _createdByUserId?: string
+): Promise<void> {
+  const normalized: RuntimeConfig = {
+    companies: sanitizeCompanies(config.companies),
+    jobtitles: sanitizeJobtitles(config.jobtitles),
+    updatedAt: nowISO(),
+  };
+
+  await configStoreKv(env).put(tenantScopedKey(undefined, CONFIG_KEY), JSON.stringify(normalized));
+}

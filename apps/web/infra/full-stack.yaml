@@ -1,0 +1,277 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Career Jump full-stack orchestrator.
+  Composes isolated backend foundation resources, the frontend (S3+CloudFront),
+  Cognito auth, SES email, and notification Lambda nested stacks into a single
+  deployable unit.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+    Description: Application name prefix for all resource names and exports.
+
+  Stage:
+    Type: String
+    Default: poc
+    AllowedValues:
+      - poc
+      - dev
+      - staging
+      - prod
+    Description: Deployment stage.
+
+  SESFromEmail:
+    Type: String
+    Description: >
+      Verified SES sender email address (e.g. noreply@careerjump.io).
+      The address (or its domain) must be verified in SES before deploying.
+
+  TemplatesBucketName:
+    Type: String
+    Description: >
+      S3 bucket that hosts the packaged nested-stack templates
+      (backend-foundation.yaml, cognito.yaml, ses.yaml, notification-lambda.yaml, frontend-site.yaml).
+      Run `aws cloudformation package` to upload and reference this bucket.
+
+  # ---- Frontend-site.yaml parameter pass-through ----
+  FrontendAppName:
+    Type: String
+    Default: cj-web
+    Description: AppName value forwarded to the frontend-site nested stack.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ---- 0. Backend foundation (DynamoDB + SNS) -------------------------------
+  BackendFoundationStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/backend-foundation.yaml"
+      Parameters:
+        AppName: !Ref AppName
+        Stage: !Ref Stage
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: backend-foundation
+
+  # ---- 1. Frontend (S3 + CloudFront) ----------------------------------------
+  FrontendStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn: RegistryApiStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/frontend-site.yaml"
+      Parameters:
+        AppName: !Ref FrontendAppName
+        Stage: !Ref Stage
+        RegistryApiDomainName: !GetAtt RegistryApiStack.Outputs.FunctionUrlDomainName
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: frontend
+
+  # ---- 2. Cognito (auth) -----------------------------------------------------
+  CognitoStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/cognito.yaml"
+      Parameters:
+        AppName: !Ref AppName
+        Stage: !Ref Stage
+        SESFromEmail: !Ref SESFromEmail
+        DynamoDBTableName: !GetAtt BackendFoundationStack.Outputs.StateTableName
+        NotificationTopicArn: !GetAtt BackendFoundationStack.Outputs.NotificationTopicArn
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: auth
+
+  # ---- 3. Registry API (Lambda Function URL) ---------------------------------
+  # Needs Cognito (JWT validation) and BackendFoundation (registry table).
+  # FrontendStack depends on this for the CloudFront /api/registry/* behavior.
+  RegistryApiStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/registry-api.yaml"
+      Parameters:
+        AppName: !Ref AppName
+        Stage: !Ref Stage
+        DynamoDBTableName: !GetAtt BackendFoundationStack.Outputs.RegistryTableName
+        UserPoolId: !GetAtt CognitoStack.Outputs.UserPoolId
+        UserPoolClientId: !GetAtt CognitoStack.Outputs.UserPoolClientId
+        AllowedOrigin: "*"
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: registry-api
+
+  # ---- 4. SES (email templates + config set) ---------------------------------
+  # Deployed before the notification Lambda so template names are available.
+  SESStack:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/ses.yaml"
+      Parameters:
+        AppName: !Ref AppName
+        Stage: !Ref Stage
+        FromEmail: !Ref SESFromEmail
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: email
+
+  # ---- 4. Notification Lambda ------------------------------------------------
+  # Depends on SES (needs config set name) and Cognito (User Pool ID).
+  NotificationLambdaStack:
+    Type: AWS::CloudFormation::Stack
+    DependsOn:
+      - CognitoStack
+      - SESStack
+    Properties:
+      TemplateURL: !Sub "https://${TemplatesBucketName}.s3.${AWS::URLSuffix}/infra/notification-lambda.yaml"
+      Parameters:
+        AppName: !Ref AppName
+        Stage: !Ref Stage
+        UserPoolId: !GetAtt CognitoStack.Outputs.UserPoolId
+        SESFromEmail: !Ref SESFromEmail
+        DynamoDBTableName: !GetAtt BackendFoundationStack.Outputs.StateTableName
+        NotificationTopicArn: !GetAtt BackendFoundationStack.Outputs.NotificationTopicArn
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: notification
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+
+  # ---- Backend foundation ----
+  StateTableName:
+    Description: Dedicated DynamoDB state table for the React application.
+    Value: !GetAtt BackendFoundationStack.Outputs.StateTableName
+
+  NotificationTopicArn:
+    Description: Dedicated SNS notification topic for the React application.
+    Value: !GetAtt BackendFoundationStack.Outputs.NotificationTopicArn
+
+  # ---- Frontend ----
+  FrontendBucketName:
+    Description: S3 bucket holding the React/Vite static assets.
+    Value: !GetAtt FrontendStack.Outputs.FrontendBucketName
+
+  FrontendCloudFrontUrl:
+    Description: HTTPS CloudFront URL for the frontend.
+    Value: !GetAtt FrontendStack.Outputs.FrontendCloudFrontUrl
+
+  FrontendDistributionId:
+    Description: CloudFront distribution ID (use for cache invalidations).
+    Value: !GetAtt FrontendStack.Outputs.FrontendDistributionId
+
+  # ---- Cognito ----
+  UserPoolId:
+    Description: Cognito User Pool ID.
+    Value: !GetAtt CognitoStack.Outputs.UserPoolId
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN.
+    Value: !GetAtt CognitoStack.Outputs.UserPoolArn
+
+  UserPoolClientId:
+    Description: Cognito App Client ID (used by the SPA).
+    Value: !GetAtt CognitoStack.Outputs.UserPoolClientId
+
+  UserPoolDomain:
+    Description: Cognito hosted-UI domain.
+    Value: !GetAtt CognitoStack.Outputs.UserPoolDomain
+
+  # ---- SES ----
+  SESFromEmail:
+    Description: Verified SES sender email address.
+    Value: !GetAtt SESStack.Outputs.FromEmail
+
+  SESConfigurationSetName:
+    Description: SES configuration set name.
+    Value: !GetAtt SESStack.Outputs.ConfigurationSetName
+
+  SESBounceComplaintTopicArn:
+    Description: SNS topic ARN for SES bounce/complaint events.
+    Value: !GetAtt SESStack.Outputs.BounceComplaintTopicArn
+
+  SESTemplateEmailVerification:
+    Description: SES template name – email verification.
+    Value: !GetAtt SESStack.Outputs.TemplateEmailVerificationName
+
+  SESTemplateWelcome:
+    Description: SES template name – welcome email.
+    Value: !GetAtt SESStack.Outputs.TemplateWelcomeName
+
+  SESTemplateNewJobsAlert:
+    Description: SES template name – new jobs alert.
+    Value: !GetAtt SESStack.Outputs.TemplateNewJobsAlertName
+
+  SESTemplateWeeklyDigest:
+    Description: SES template name – weekly digest.
+    Value: !GetAtt SESStack.Outputs.TemplateWeeklyDigestName
+
+  SESTemplateApplicationStatus:
+    Description: SES template name – application status update.
+    Value: !GetAtt SESStack.Outputs.TemplateApplicationStatusName
+
+  SESTemplatePasswordReset:
+    Description: SES template name – password reset.
+    Value: !GetAtt SESStack.Outputs.TemplatePasswordResetName
+
+  # ---- Notification Lambda ----
+  NotificationLambdaArn:
+    Description: ARN of the notification Lambda function.
+    Value: !GetAtt NotificationLambdaStack.Outputs.LambdaArn
+
+  NotificationLambdaRoleArn:
+    Description: IAM role ARN for the notification Lambda.
+    Value: !GetAtt NotificationLambdaStack.Outputs.LambdaRoleArn
+
+  NotificationLogGroupName:
+    Description: CloudWatch log group name for notification Lambda logs.
+    Value: !GetAtt NotificationLambdaStack.Outputs.LogGroupName
+
+  NotificationSSMConfigPath:
+    Description: SSM Parameter path for notification Lambda runtime config.
+    Value: !GetAtt NotificationLambdaStack.Outputs.SSMConfigPath
+
+  # ---- Registry API ----
+  RegistryApiUrl:
+    Description: Lambda Function URL for the registry API.
+    Value: !GetAtt RegistryApiStack.Outputs.FunctionUrl
+
+  RegistryApiDomainName:
+    Description: Bare domain of the registry Lambda Function URL (used as CloudFront origin).
+    Value: !GetAtt RegistryApiStack.Outputs.FunctionUrlDomainName
+
+  RegistryLambdaArn:
+    Description: ARN of the registry Lambda function.
+    Value: !GetAtt RegistryApiStack.Outputs.LambdaArn

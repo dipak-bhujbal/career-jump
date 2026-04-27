@@ -1,0 +1,583 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Career Jump registry API — Lambda Function URL that serves
+  GET /api/registry/meta and GET /api/registry/companies from DynamoDB.
+  Auth: Cognito JWT validated inside the Lambda handler (pure-Python RS256).
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+  Stage:
+    Type: String
+    Default: poc
+    AllowedValues: [poc, dev, staging, prod]
+  DynamoDBTableName:
+    Type: String
+    Description: DynamoDB registry table (career-jump-web-poc-registry).
+  UserPoolId:
+    Type: String
+    Description: Cognito User Pool ID for JWT issuer validation.
+  UserPoolClientId:
+    Type: String
+    Description: Cognito App Client ID (audience / client_id claim).
+  CognitoRegion:
+    Type: String
+    Default: us-east-1
+    Description: AWS region where the Cognito User Pool lives.
+  AllowedOrigin:
+    Type: String
+    Default: "*"
+    Description: >
+      CORS allowed origin for the Lambda Function URL.
+      Set to your CloudFront URL in production.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ------------------------------------------------------------------
+  # CloudWatch Log Group
+  # ------------------------------------------------------------------
+  RegistryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AppName}-${Stage}-registry"
+      RetentionInDays: 30
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ------------------------------------------------------------------
+  # IAM Role
+  # ------------------------------------------------------------------
+  RegistryLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-${Stage}-registry-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: RegistryDynamoDBRead
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DynamoDBReadRegistry
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}/index/*"
+              - Sid: CloudWatchLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt RegistryLogGroup.Arn
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ------------------------------------------------------------------
+  # Lambda Function
+  # ------------------------------------------------------------------
+  RegistryLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: RegistryLogGroup
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-registry"
+      Description: >
+        Serves GET /api/registry/meta and GET /api/registry/companies
+        from the DynamoDB registry table. Validates Cognito JWT internally.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt RegistryLambdaRole.Arn
+      Timeout: 15
+      MemorySize: 256
+      Environment:
+        Variables:
+          DYNAMODB_TABLE: !Ref DynamoDBTableName
+          ALLOWED_ORIGIN: !Ref AllowedOrigin
+          USER_POOL_ID: !Ref UserPoolId
+          USER_POOL_CLIENT_ID: !Ref UserPoolClientId
+          COGNITO_REGION: !Ref CognitoRegion
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          """
+          Career Jump – Registry Lambda (Lambda Function URL edition)
+
+          Routes (via Lambda Function URL, called through CloudFront):
+            GET /api/registry/meta
+              Returns: { ok, meta, counts, adapters, loadedAt }
+
+            GET /api/registry/companies
+              Query params: search, ats, tier, limit (default 50, max 200)
+              Returns: { ok, total, entries: [...] }
+
+          Auth: Cognito RS256 JWT validated in-process (pure Python, no deps).
+
+          DynamoDB schema:
+            pk = "REGISTRY"
+            sk = "META"               — registry metadata
+            sk = "COMPANY#<name>"    — one item per company
+          """
+          from __future__ import annotations
+
+          import base64
+          import functools
+          import hashlib
+          import json
+          import logging
+          import os
+          import time
+          import urllib.parse
+          import urllib.request
+          from decimal import Decimal
+          from typing import Any
+
+          import boto3
+          from boto3.dynamodb.conditions import Key
+          from botocore.exceptions import ClientError
+
+          # ---------------------------------------------------------------------------
+          # Bootstrap
+          # ---------------------------------------------------------------------------
+          LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+          logging.basicConfig(
+              format="%(asctime)s %(levelname)s %(name)s %(message)s",
+              level=getattr(logging, LOG_LEVEL, logging.INFO),
+          )
+          logger = logging.getLogger("registry_lambda")
+
+          TABLE_NAME        = os.environ["DYNAMODB_TABLE"]
+          ALLOWED_ORIGIN    = os.environ.get("ALLOWED_ORIGIN", "*")
+          USER_POOL_ID      = os.environ["USER_POOL_ID"]
+          USER_POOL_CLIENT_ID = os.environ["USER_POOL_CLIENT_ID"]
+          COGNITO_REGION    = os.environ.get("COGNITO_REGION", "us-east-1")
+
+          dynamodb = boto3.resource("dynamodb")
+          table    = dynamodb.Table(TABLE_NAME)
+
+          TIER_ORDER = {
+              "TIER1_VERIFIED": 0,
+              "TIER2_MEDIUM":   1,
+              "TIER3_LOW":      2,
+              "NEEDS_REVIEW":   3,
+          }
+
+          # ---------------------------------------------------------------------------
+          # Pure-Python RS256 JWT validation (no external packages)
+          # ---------------------------------------------------------------------------
+
+          # PKCS#1 v1.5 SHA-256 DigestInfo prefix (ASN.1 DER)
+          _SHA256_PREFIX = bytes([
+              0x30, 0x31, 0x30, 0x0d, 0x06, 0x09, 0x60, 0x86,
+              0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01, 0x05,
+              0x00, 0x04, 0x20,
+          ])
+
+
+          def _b64url_decode(s: str) -> bytes:
+              s = s.replace("-", "+").replace("_", "/")
+              pad = 4 - len(s) % 4
+              if pad != 4:
+                  s += "=" * pad
+              return base64.b64decode(s)
+
+
+          def _b64url_to_int(s: str) -> int:
+              return int.from_bytes(_b64url_decode(s), "big")
+
+
+          @functools.lru_cache(maxsize=2)
+          def _fetch_jwks(issuer: str) -> dict:
+              """Fetch and cache JWKS from Cognito. Cached per Lambda warm instance."""
+              url = f"{issuer}/.well-known/jwks.json"
+              with urllib.request.urlopen(url, timeout=5) as r:
+                  return json.loads(r.read())
+
+
+          def _verify_rs256(
+              header_payload: str, sig_b64: str, n: int, e: int, key_size: int
+          ) -> bool:
+              """RSA-PKCS#1-v1.5 signature verification using Python's built-in pow()."""
+              try:
+                  sig_int = int.from_bytes(_b64url_decode(sig_b64), "big")
+                  # RSA public key operation: m = sig^e mod n
+                  decrypted = pow(sig_int, e, n)
+                  em = decrypted.to_bytes(key_size, "big")
+
+                  # Verify PKCS#1 v1.5 structure: 0x00 || 0x01 || PS || 0x00 || T
+                  if len(em) < 2 or em[0] != 0x00 or em[1] != 0x01:
+                      return False
+                  sep = em.find(0x00, 2)
+                  if sep < 0 or sep - 2 < 8:
+                      return False
+                  if any(b != 0xFF for b in em[2:sep]):
+                      return False
+
+                  T = em[sep + 1:]
+                  if T[:19] != _SHA256_PREFIX:
+                      return False
+
+                  actual = hashlib.sha256(header_payload.encode()).digest()
+                  return T[19:] == actual
+              except Exception:
+                  return False
+
+
+          def validate_jwt(token: str) -> dict:
+              """
+              Validate a Cognito JWT. Returns the decoded payload or raises ValueError.
+              Validates: format, algorithm, issuer, audience, expiry, and RS256 signature.
+              """
+              parts = token.split(".")
+              if len(parts) != 3:
+                  raise ValueError("Malformed token")
+
+              header_b64, payload_b64, sig_b64 = parts
+              header  = json.loads(_b64url_decode(header_b64))
+              payload = json.loads(_b64url_decode(payload_b64))
+
+              if header.get("alg") != "RS256":
+                  raise ValueError("Unsupported algorithm")
+
+              kid = header.get("kid")
+              if not kid:
+                  raise ValueError("Missing kid")
+
+              issuer = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{USER_POOL_ID}"
+
+              if payload.get("iss") != issuer:
+                  raise ValueError("Invalid issuer")
+
+              if int(payload.get("exp", 0)) < int(time.time()):
+                  raise ValueError("Token expired")
+
+              # Cognito ID tokens use 'aud'; access tokens use 'client_id'
+              aud = payload.get("aud")
+              client_id = payload.get("client_id")
+              if USER_POOL_CLIENT_ID not in (
+                  (aud if isinstance(aud, list) else [aud])
+                  + ([client_id] if client_id else [])
+              ):
+                  raise ValueError("Invalid audience")
+
+              jwks = _fetch_jwks(issuer)
+              key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+              if not key:
+                  # Try refreshing JWKS (key rotation)
+                  _fetch_jwks.cache_clear()
+                  jwks = _fetch_jwks(issuer)
+                  key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
+              if not key:
+                  raise ValueError("Unknown key id")
+
+              n = _b64url_to_int(key["n"])
+              e = _b64url_to_int(key["e"])
+              key_size = (n.bit_length() + 7) // 8
+
+              if not _verify_rs256(f"{header_b64}.{payload_b64}", sig_b64, n, e, key_size):
+                  raise ValueError("Invalid signature")
+
+              return payload
+
+          # ---------------------------------------------------------------------------
+          # Helpers
+          # ---------------------------------------------------------------------------
+
+          def decimal_default(obj: Any) -> Any:
+              if isinstance(obj, Decimal):
+                  return int(obj) if obj % 1 == 0 else float(obj)
+              raise TypeError(f"Object of type {type(obj)} is not JSON serialisable")
+
+
+          def response_headers() -> dict[str, str]:
+              """Return only app-owned headers; Function URL owns CORS headers."""
+              return {
+                  "Content-Type": "application/json",
+              }
+
+
+          def ok(body: Any, status: int = 200) -> dict:
+              return {
+                  "statusCode": status,
+                  "headers": response_headers(),
+                  "body": json.dumps(body, default=decimal_default),
+              }
+
+
+          def err(message: str, status: int = 500) -> dict:
+              return {
+                  "statusCode": status,
+                  "headers": response_headers(),
+                  "body": json.dumps({"ok": False, "error": message}),
+              }
+
+          # ---------------------------------------------------------------------------
+          # Registry meta
+          # ---------------------------------------------------------------------------
+
+          def get_meta() -> dict:
+              try:
+                  resp = table.get_item(Key={"pk": "REGISTRY", "sk": "META"})
+                  item = resp.get("Item")
+                  if not item:
+                      return {"ok": False, "error": "Registry meta not found"}
+                  return {
+                      "ok": True,
+                      "meta": {
+                          "version": item.get("version", "unknown"),
+                          "total":   int(item.get("total", 0)),
+                      },
+                      "loadedAt": None,
+                      "adapters": [],
+                      "counts": {
+                          "total":       int(item.get("total",       0)),
+                          "tier1":       int(item.get("tier1",       0)),
+                          "tier2":       int(item.get("tier2",       0)),
+                          "tier3":       int(item.get("tier3",       0)),
+                          "needsReview": int(item.get("needsReview", 0)),
+                      },
+                  }
+              except ClientError as exc:
+                  logger.error("DynamoDB error fetching meta: %s", exc)
+                  return {"ok": False, "error": str(exc)}
+
+          # ---------------------------------------------------------------------------
+          # Single company lookup (GET /api/registry/companies/<name>)
+          # ---------------------------------------------------------------------------
+
+          def get_company(name: str) -> dict:
+              try:
+                  resp = table.get_item(Key={"pk": "REGISTRY", "sk": f"COMPANY#{name}"})
+                  item = resp.get("Item")
+                  if not item:
+                      return {"ok": False, "error": "Company not found"}
+                  return {
+                      "ok": True,
+                      "entry": {
+                          "rank":      int(item.get("rank") or 0),
+                          "sheet":     item.get("sheet"),
+                          "company":   item.get("company"),
+                          "board_url": item.get("board_url"),
+                          "ats":       item.get("ats"),
+                          "total_jobs": int(item.get("total_jobs") or 0) if item.get("total_jobs") else None,
+                          "source":    "registry",
+                          "tier":      item.get("tier"),
+                          "sample_url": item.get("sample_url"),
+                      },
+                  }
+              except ClientError as exc:
+                  logger.error("DynamoDB error fetching company %s: %s", name, exc)
+                  return {"ok": False, "error": str(exc)}
+
+          # ---------------------------------------------------------------------------
+          # Registry companies (list)
+          # ---------------------------------------------------------------------------
+
+          def get_companies(search: str, ats: str, tier: str, limit: int) -> dict:
+              try:
+                  items: list[dict] = []
+                  kwargs: dict[str, Any] = {
+                      "KeyConditionExpression": (
+                          Key("pk").eq("REGISTRY") & Key("sk").begins_with("COMPANY#")
+                      ),
+                  }
+                  while True:
+                      resp = table.query(**kwargs)
+                      items.extend(resp.get("Items", []))
+                      last = resp.get("LastEvaluatedKey")
+                      if not last:
+                          break
+                      kwargs["ExclusiveStartKey"] = last
+
+              except ClientError as exc:
+                  logger.error("DynamoDB error fetching companies: %s", exc)
+                  return {"ok": False, "total": 0, "entries": []}
+
+              if ats:
+                  ats_lower = ats.lower()
+                  items = [c for c in items if (c.get("ats") or "").lower() == ats_lower]
+
+              if tier:
+                  items = [c for c in items if c.get("tier") == tier]
+
+              if search:
+                  search_lower = search.lower()
+                  items = [c for c in items if search_lower in (c.get("company") or "").lower()]
+
+              items.sort(key=lambda c: (
+                  TIER_ORDER.get(c.get("tier", "NEEDS_REVIEW"), 99),
+                  int(c.get("rank") or 9999),
+                  (c.get("company") or "").lower(),
+              ))
+
+              total = len(items)
+              entries = [
+                  {
+                      "rank":      int(c.get("rank") or 0),
+                      "sheet":     c.get("sheet"),
+                      "company":   c.get("company"),
+                      "board_url": c.get("board_url"),
+                      "ats":       c.get("ats"),
+                      "total_jobs": int(c.get("total_jobs") or 0) if c.get("total_jobs") else None,
+                      "source":    "registry",
+                      "tier":      c.get("tier"),
+                  }
+                  for c in items[:limit]
+              ]
+              return {"ok": True, "total": total, "entries": entries}
+
+          # ---------------------------------------------------------------------------
+          # Lambda entry point
+          # ---------------------------------------------------------------------------
+
+          def handler(event: dict[str, Any], context: Any) -> dict:
+              method = event.get("requestContext", {}).get("http", {}).get("method", "GET").upper()
+              path   = event.get("rawPath", "")
+              qs     = event.get("queryStringParameters") or {}
+
+              logger.info("method=%s path=%s", method, path)
+
+              # Pre-flight — no auth required
+              if method == "OPTIONS":
+                  return {"statusCode": 204, "headers": response_headers(), "body": ""}
+
+              if method != "GET":
+                  return err("Method not allowed", 405)
+
+              # JWT validation
+              auth_header = (event.get("headers") or {}).get("authorization", "")
+              if not auth_header.lower().startswith("bearer "):
+                  return err("Missing or invalid Authorization header", 401)
+
+              token = auth_header[7:].strip()
+              try:
+                  validate_jwt(token)
+              except ValueError as exc:
+                  logger.warning("JWT validation failed: %s", exc)
+                  return err(str(exc), 401)
+
+              # Route — single-company check must come before the list check
+              # because /companies/<name> also contains "/companies"
+              if path.endswith("/meta"):
+                  return ok(get_meta())
+
+              companies_prefix = "/api/registry/companies/"
+              if companies_prefix in path:
+                  raw_name = path.split(companies_prefix, 1)[-1]
+                  company_name = urllib.parse.unquote(raw_name)
+                  return ok(get_company(company_name))
+
+              if path.endswith("/companies"):
+                  search = (qs.get("search") or "").strip()
+                  ats    = (qs.get("ats")    or "").strip()
+                  tier   = (qs.get("tier")   or "").strip()
+                  try:
+                      limit = min(int(qs.get("limit", "50")), 200)
+                  except (ValueError, TypeError):
+                      limit = 50
+                  return ok(get_companies(search, ats, tier, limit))
+
+              return err("Not found", 404)
+
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ------------------------------------------------------------------
+  # Lambda Function URL (replaces API Gateway HTTP API)
+  # ------------------------------------------------------------------
+  RegistryLambdaUrl:
+    Type: AWS::Lambda::Url
+    Properties:
+      AuthType: NONE
+      TargetFunctionArn: !Ref RegistryLambda
+      Cors:
+        AllowCredentials: false
+        AllowHeaders:
+          - Authorization
+          - Content-Type
+        AllowMethods:
+          - GET
+        AllowOrigins:
+          - !Ref AllowedOrigin
+        MaxAge: 300
+
+  # Allow public invocation via the Function URL
+  RegistryLambdaUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RegistryLambda
+      Action: lambda:InvokeFunctionUrl
+      Principal: "*"
+      FunctionUrlAuthType: NONE
+
+  # New Lambda Function URLs also require InvokeFunction permission. Restrict
+  # it to Function URL traffic so this does not grant general Lambda invokes.
+  RegistryLambdaInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref RegistryLambda
+      Action: lambda:InvokeFunction
+      Principal: "*"
+      InvokedViaFunctionUrl: true
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  FunctionUrl:
+    Description: Lambda Function URL for the registry API.
+    Value: !GetAtt RegistryLambdaUrl.FunctionUrl
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryFunctionUrl"
+
+  FunctionUrlDomainName:
+    Description: >
+      Bare domain of the registry Lambda Function URL (no https://).
+      Pass this to the frontend-site stack as RegistryApiDomainName so
+      CloudFront routes /api/registry/* to the registry Lambda.
+    Value: !Select [2, !Split ["/", !GetAtt RegistryLambdaUrl.FunctionUrl]]
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryFunctionUrlDomain"
+
+  LambdaArn:
+    Description: Registry Lambda ARN.
+    Value: !GetAtt RegistryLambda.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryLambdaArn"
+
+  LambdaRoleArn:
+    Description: Registry Lambda IAM role ARN.
+    Value: !GetAtt RegistryLambdaRole.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryLambdaRoleArn"
+
+  LogGroupName:
+    Description: CloudWatch log group for registry Lambda.
+    Value: !Ref RegistryLogGroup
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryLogGroupName"

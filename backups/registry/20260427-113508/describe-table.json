@@ -1,0 +1,51 @@
+{
+    "Table": {
+        "AttributeDefinitions": [
+            {
+                "AttributeName": "pk",
+                "AttributeType": "S"
+            },
+            {
+                "AttributeName": "sk",
+                "AttributeType": "S"
+            }
+        ],
+        "TableName": "career-jump-web-poc-registry",
+        "KeySchema": [
+            {
+                "AttributeName": "pk",
+                "KeyType": "HASH"
+            },
+            {
+                "AttributeName": "sk",
+                "KeyType": "RANGE"
+            }
+        ],
+        "TableStatus": "ACTIVE",
+        "CreationDateTime": "2026-04-26T22:59:56.836000-04:00",
+        "ProvisionedThroughput": {
+            "NumberOfDecreasesToday": 0,
+            "ReadCapacityUnits": 0,
+            "WriteCapacityUnits": 0
+        },
+        "TableSizeBytes": 310118,
+        "ItemCount": 1231,
+        "TableArn": "arn:aws:dynamodb:us-east-1:561303652551:table/career-jump-web-poc-registry",
+        "TableId": "3c71efb4-edb8-44ce-bd2c-e3794ea9dbac",
+        "BillingModeSummary": {
+            "BillingMode": "PAY_PER_REQUEST",
+            "LastUpdateToPayPerRequestDateTime": "2026-04-26T22:59:56.836000-04:00"
+        },
+        "SSEDescription": {
+            "Status": "ENABLED",
+            "SSEType": "KMS",
+            "KMSMasterKeyArn": "arn:aws:kms:us-east-1:561303652551:key/6dfaf9b7-1600-435c-8849-5bf12479a3e0"
+        },
+        "DeletionProtectionEnabled": false,
+        "WarmThroughput": {
+            "ReadUnitsPerSecond": 12000,
+            "WriteUnitsPerSecond": 4000,
+            "Status": "ACTIVE"
+        }
+    }
+}

@@ -1,0 +1,31 @@
+.DS_Store
+
+# Node / local tooling
+node_modules/
+npm-debug.log*
+
+# Cloudflare Workers local state
+.wrangler/
+
+# Local secrets
+.dev.vars
+.env
+.env.*
+!.env.example
+
+# Local databases and scratch files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# Coverage / build artifacts
+coverage/
+dist/
+.cache/
+.aws-sam/
+
+# Session/tool artifacts
+uploads/
+.agentchattr/
+.claude/
+.mcp.json

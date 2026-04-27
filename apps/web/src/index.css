@@ -1,0 +1,167 @@
+/**
+ * Global styles.
+ *
+ * Typography choices (April 2026):
+ *  - Inter Variable for body — sharp at all sizes, optical sized.
+ *  - Base 15px / 1.55 line-height / weight 400.
+ *  - Tabular nums on numeric containers (KPIs, counters).
+ *
+ * Color tokens use HSL triplets so Tailwind utilities like
+ * `bg-[hsl(var(--primary))]` resolve correctly in both themes.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/inter/wght.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-sm: calc(var(--radius) - 4px);
+}
+
+/* Default = dark mode.
+ * Background lifted off pure black (~12% lightness) so the surface
+ * has warmth without harshness. Cards step up another 3-4% so they
+ * stand out clearly. Foreground 96% (not pure white) reduces glare. */
+:root {
+  --background: 224 14% 12%;
+  --foreground: 210 30% 96%;
+  --card: 224 14% 16%;
+  --card-foreground: 210 30% 96%;
+  --popover: 224 14% 14%;
+  --popover-foreground: 210 30% 96%;
+  --primary: 217 91% 64%;
+  --primary-foreground: 222 47% 8%;
+  --secondary: 222 12% 22%;
+  --secondary-foreground: 210 30% 96%;
+  --muted: 222 12% 19%;
+  --muted-foreground: 217 13% 75%;
+  --accent: 222 12% 24%;
+  --accent-foreground: 210 30% 96%;
+  --destructive: 0 72% 60%;
+  --destructive-foreground: 210 40% 99%;
+  --border: 222 10% 26%;
+  --input: 222 10% 30%;
+  --ring: 217 91% 64%;
+  --radius: 0.75rem;
+}
+
+/* Light theme — soft warm-grey background instead of pure white.
+ * Cards stay white so they lift visually. Foreground 14% (rich black,
+ * not jet black) softens the glare while keeping AA+ contrast. */
+.light {
+  --background: 30 10% 95%;
+  --foreground: 222 32% 14%;
+  --card: 0 0% 100%;
+  --card-foreground: 222 32% 14%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 32% 14%;
+  --primary: 217 91% 48%;
+  --primary-foreground: 210 40% 99%;
+  --secondary: 30 8% 90%;
+  --secondary-foreground: 222 32% 14%;
+  --muted: 30 8% 89%;
+  --muted-foreground: 215 18% 33%;
+  --accent: 30 8% 88%;
+  --accent-foreground: 222 32% 14%;
+  --destructive: 0 80% 52%;
+  --destructive-foreground: 210 40% 99%;
+  --border: 30 12% 82%;
+  --input: 30 12% 80%;
+  --ring: 217 91% 50%;
+}
+
+@layer base {
+  * { border-color: hsl(var(--border)); }
+  html, body, #root { height: 100%; }
+  /* Base 18.5px — text-sm now ~16.2px, text-base ~18.5px, text-lg ~20.8px. */
+  html {
+    font-size: 18.5px;
+  }
+  /* Background lives on <html> so the meteor canvas (fixed inset-0)
+   * can layer behind <body> content. */
+  html { background: hsl(var(--background)); }
+  body {
+    background: transparent;
+    color: hsl(var(--foreground));
+    font-family: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    /* 425 is between Inter's regular (400) and medium (500) — sharper
+     * on dark backgrounds, still natural in light mode. */
+    font-weight: 425;
+    line-height: 1.55;
+    letter-spacing: 0.005em;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    font-feature-settings: "cv11", "ss01", "ss03";  /* Inter "humanist" tweaks */
+    margin: 0;
+    text-rendering: optimizeLegibility;
+  }
+  h1, h2, h3, h4 { letter-spacing: -0.018em; font-weight: 600; }
+  /* Inputs / selects / textareas — read at a glance like the vanilla app. */
+  input, select, textarea, button { font-size: 0.95rem; font-weight: 425; }
+  /* Strong link / interactive accent in body copy. */
+  a { font-weight: 500; }
+  /* Bump KPI / counter readability. */
+  .tabular-nums { font-variant-numeric: tabular-nums; }
+  ::selection { background: hsl(var(--primary) / 0.3); }
+
+  /* Freshness pulse — runs once on first render of new job rows for
+   * a 5-second emerald accent ring fading to nothing. */
+  @keyframes fresh-pulse {
+    0% { box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0); background-color: rgba(16, 185, 129, 0.18); }
+    20% { box-shadow: inset 0 0 0 2px rgba(16, 185, 129, 0.55); background-color: rgba(16, 185, 129, 0.12); }
+    100% { box-shadow: inset 0 0 0 0 rgba(16, 185, 129, 0); background-color: rgba(16, 185, 129, 0); }
+  }
+  .animate-fresh-pulse {
+    animation: fresh-pulse 5s ease-out 1 forwards;
+  }
+
+  /* Density — applied via [data-density] on <html>.
+   * Compact: tighter rows, smaller card/nav padding, reduced font size.
+   * Spacious: roomier for casual/accessibility users.
+   */
+
+  /* --- Table rows --- */
+  html[data-density="compact"] table tr td { padding-top: 5px; padding-bottom: 5px; }
+  html[data-density="compact"] table tr th { padding-top: 7px; padding-bottom: 7px; }
+  html[data-density="spacious"] table tr td { padding-top: 16px; padding-bottom: 16px; }
+  html[data-density="spacious"] table tr th { padding-top: 14px; padding-bottom: 14px; }
+
+  /* --- Card / section inner padding --- */
+  html[data-density="compact"] .card-content-padding { padding: 10px; }
+  html[data-density="spacious"] .card-content-padding { padding: 28px; }
+
+  /* --- Sidebar nav item height --- */
+  html[data-density="compact"] aside nav a { padding-top: 5px; padding-bottom: 5px; font-size: 0.8125rem; }
+  html[data-density="spacious"] aside nav a { padding-top: 10px; padding-bottom: 10px; }
+
+  /* --- List / kanban row items (jobs, applied) --- */
+  html[data-density="compact"] [data-density-row] { padding-top: 8px !important; padding-bottom: 8px !important; }
+  html[data-density="spacious"] [data-density-row] { padding-top: 16px !important; padding-bottom: 16px !important; }
+
+  /* --- Global font scale --- */
+  html[data-density="compact"] { font-size: 14px; }
+  html[data-density="spacious"] { font-size: 16px; }
+}

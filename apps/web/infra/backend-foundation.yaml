@@ -1,0 +1,126 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Career Jump Web isolated backend foundation resources.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+    Description: Application name used for isolated backend resource naming.
+  Stage:
+    Type: String
+    Default: poc
+    AllowedValues:
+      - poc
+      - dev
+      - staging
+      - prod
+    Description: Deployment stage.
+
+Resources:
+  # Dedicated state table for the React app. The lowercase key schema matches
+  # the existing Lambda storage adapters, but the table name is React-specific.
+  StateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-state"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: state
+
+  # Dedicated global registry table. Keeping the company catalog out of the
+  # per-user state table lets us refresh registry data independently from user
+  # jobs, applications, filters, and profile records.
+  RegistryTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-registry"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: registry
+
+  # React-owned notification bus so signup/welcome and alert events do not
+  # publish into the older career-jump-aws application.
+  NotificationTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "${AppName}-${Stage}-notifications"
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+        - Key: Component
+          Value: notifications
+
+Outputs:
+  StateTableName:
+    Description: DynamoDB state table dedicated to the React application.
+    Value: !Ref StateTable
+    Export:
+      Name: !Sub "${AppName}-${Stage}-StateTableName"
+
+  StateTableArn:
+    Description: DynamoDB state table ARN.
+    Value: !GetAtt StateTable.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-StateTableArn"
+
+  RegistryTableName:
+    Description: DynamoDB registry table dedicated to the global company catalog.
+    Value: !Ref RegistryTable
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryTableName"
+
+  RegistryTableArn:
+    Description: DynamoDB registry table ARN.
+    Value: !GetAtt RegistryTable.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-RegistryTableArn"
+
+  NotificationTopicArn:
+    Description: SNS topic dedicated to the React notification pipeline.
+    Value: !Ref NotificationTopic
+    Export:
+      Name: !Sub "${AppName}-${Stage}-NotificationTopicArn"

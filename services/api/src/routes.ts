@@ -1,0 +1,1863 @@
+import {
+  APPLIED_KEY,
+  FIRST_SEEN_PREFIX,
+  INVENTORY_KEY,
+  LAST_NEW_JOB_KEYS_KEY,
+  LAST_NEW_JOBS_COUNT_KEY,
+  LAST_UPDATED_JOB_KEYS_KEY,
+  LAST_UPDATED_JOBS_COUNT_KEY,
+  MAX_APP_LOG_LIMIT,
+  TREND_KEY,
+} from "./constants";
+import { applyCompanyScanOverrides, companyToDetectedConfig, loadRuntimeConfig, sanitizeCompanies, sanitizeJobtitles, saveRuntimeConfig } from "./config";
+import { registeredAdapterIds } from "./ats/registry";
+import { getByCompany, listAll, listByAts, loadRegistryCache } from "./storage/registry-cache";
+import { scrapeOne } from "./services/registry-scraper";
+import { writeAnalytics } from "./lib/analytics";
+import { jsonResponse, withSecurity } from "./lib/http";
+import { jobStateKv, atsCacheKv } from "./lib/bindings";
+import { resolveRequestTenantContext, tenantScopedKey, tenantScopedPrefix } from "./lib/tenant";
+import {
+  enrichJob,
+  formatDateOnly,
+  formatET,
+  isInterestingTitle,
+  jobKey,
+  normalizeAppliedStatus,
+  nowISO,
+  slugify,
+} from "./lib/utils";
+import {
+  ActiveRunOwnershipError,
+  acquireActiveRunLock,
+  appendSupportMessage,
+  clearATSCache,
+  clearActiveRunLock,
+  createAnnouncement,
+  createSupportTicket,
+  deleteSavedFilter,
+  deleteKvPrefix,
+  ensureActiveRunOwnership,
+  findUserProfiles,
+  getSupportTicket,
+  loadAnnouncements,
+  listSavedFilters,
+  listAdminTickets,
+  listAppLogs,
+  listSupportTicketMessages,
+  listUserTickets,
+  loadBillingSubscription,
+  loadFeatureFlags,
+  loadActiveRunLock,
+  loadAppliedJobs,
+  loadCompanyScanOverrides,
+  loadEmailWebhookConfig,
+  loadJobNotes,
+  loadUserProfile,
+  loadUserSettings,
+  recordAppLog,
+  recordEvent,
+  recordErrorLog,
+  releaseActiveRunLock,
+  reserveEmailSendAttempt,
+  saveFeatureFlag,
+  saveEmailWebhookConfig,
+  saveSavedFilter,
+  saveAppliedJobsForTenant,
+  saveJobNotes,
+  setUserAccountStatus,
+  setCompanyScanOverride,
+  setCompanyScanOverrides,
+  updateEmailSendAttempt,
+} from "./storage";
+import { buildDashboardPayload } from "./services/dashboard";
+import {
+  fetchJobsForDetectedConfig,
+  getDetectedConfig,
+  getProtectedDiscoveryRecord,
+  resetDiscoveryForCompany,
+  resolveWorkdayForCompany,
+} from "./services/discovery";
+import { removeBrokenAvailableJobs } from "./services/broken-links";
+import { maybeSendEmail } from "./services/email";
+import { addDiscardedJobKey, buildInventory, getLatestRunNotificationJobs, loadInventory, loadInventoryWithState, markJobsAsSeen, removeInventoryJobsByKeys, runScan, saveInventory } from "./services/inventory";
+import { openApiJsonResponse } from "./openapi";
+import type {
+  ActionPlanRow,
+  AppliedJobRecord,
+  AppliedJobStatus,
+  Env,
+  InterviewOutcome,
+  InterviewRoundDesignation,
+  InventorySnapshot,
+  JobPosting,
+  RuntimeConfig,
+  SavedFilterScope,
+  TimelineEvent,
+  UpdatedEmailJob,
+} from "./types";
+
+async function readJsonBody<T extends Record<string, unknown>>(request: Request): Promise<T> {
+  try {
+    return (await request.json()) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
+function parseDurationHours(raw: string | null): number | null {
+  if (!raw) return null;
+  const value = raw.trim().toLowerCase();
+  if (!value) return null;
+
+  const shorthandMap: Record<string, number> = {
+    "1h": 1,
+    "3h": 3,
+    "1d": 24,
+    "3d": 24 * 3,
+    "1w": 24 * 7,
+    "2w": 24 * 14,
+    "3w": 24 * 21,
+    "1m": 24 * 30,
+    "2m": 24 * 60,
+    "3m": 24 * 90,
+  };
+
+  if (value in shorthandMap) return shorthandMap[value];
+  return null;
+}
+
+function formatETDayKey(value?: string): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(date);
+}
+
+function filterJobs(jobs: JobPosting[], params: URLSearchParams): JobPosting[] {
+  const source = params.get("source")?.trim().toLowerCase();
+  const companies = parseMultiValues(params, "company");
+  const company = companies.length ? "" : params.get("company")?.trim().toLowerCase();
+  const location = params.get("location")?.trim().toLowerCase();
+  const keyword = params.get("keyword")?.trim().toLowerCase();
+  const usOnly = params.get("usOnly") === "true";
+  const durationHours = parseDurationHours(params.get("duration"));
+  const now = Date.now();
+
+  return jobs.filter((job) => {
+    if (source && job.source !== source) return false;
+    if (companies.length && !companies.includes(job.company.toLowerCase())) return false;
+    if (company && !job.company.toLowerCase().includes(company)) return false;
+    if (location && !job.location.toLowerCase().includes(location)) return false;
+    if (keyword && !job.title.toLowerCase().includes(keyword)) return false;
+    if (usOnly && job.isUSLikely === false) return false;
+
+    if (durationHours !== null) {
+      if (!job.postedAt) return false;
+      const postedAtMs = new Date(job.postedAt).getTime();
+      if (!Number.isFinite(postedAtMs)) return false;
+      const ageMs = now - postedAtMs;
+      if (ageMs < 0) return false;
+      const maxAgeMs = durationHours * 60 * 60 * 1000;
+      if (ageMs > maxAgeMs) return false;
+    }
+
+    return true;
+  });
+}
+
+function filterAppliedJobs(rows: AppliedJobRecord[], params: URLSearchParams): AppliedJobRecord[] {
+  const companies = parseMultiValues(params, "company");
+  const company = companies.length ? "" : params.get("company")?.trim().toLowerCase();
+  const keyword = params.get("keyword")?.trim().toLowerCase();
+  const status = params.get("status")?.trim().toLowerCase();
+
+  return rows.filter((row) => {
+    if (companies.length && !companies.includes(row.job.company.toLowerCase())) return false;
+    if (company && !row.job.company.toLowerCase().includes(company)) return false;
+    if (keyword && !row.job.title.toLowerCase().includes(keyword)) return false;
+    if (status && row.status.toLowerCase() !== status) return false;
+    return true;
+  });
+}
+
+function parseMultiValues(params: URLSearchParams, key: string): string[] {
+  const values = params.getAll(key)
+    .flatMap((value) => String(value).split(","))
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  return [...new Set(values)];
+}
+
+function uniqueSortedCompanies(values: string[]): string[] {
+  return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
+function mergeAppliedJobsWithInventory(
+  appliedJobs: Record<string, AppliedJobRecord>,
+  inventory: InventorySnapshot
+): AppliedJobRecord[] {
+  const inventoryMap = new Map(inventory.jobs.map((job) => [jobKey(job), job]));
+
+  return Object.values(appliedJobs).map((row) => {
+    const latestJob = inventoryMap.get(row.jobKey);
+    if (!latestJob) return row;
+    return { ...row, job: latestJob };
+  });
+}
+
+function summarizeInventoryJobs(jobs: JobPosting[], inventory: InventorySnapshot): InventorySnapshot["stats"] {
+  const bySource: Record<string, number> = {};
+  const byCompany: Record<string, number> = {};
+  const keywordCounts: Record<string, number> = {};
+
+  for (const job of jobs) {
+    bySource[job.source] = (bySource[job.source] ?? 0) + 1;
+    byCompany[job.company] = (byCompany[job.company] ?? 0) + 1;
+    for (const keyword of job.matchedKeywords ?? []) {
+      keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
+    }
+  }
+
+  return {
+    totalJobsMatched: jobs.length,
+    totalCompaniesConfigured: inventory.stats.totalCompaniesConfigured,
+    totalCompaniesDetected: inventory.stats.totalCompaniesDetected,
+    totalFetched: inventory.stats.totalFetched,
+    bySource,
+    byCompany,
+    keywordCounts,
+  };
+}
+
+function buildEmptyInventory(config: RuntimeConfig): InventorySnapshot {
+  return {
+    runAt: nowISO(),
+    jobs: [],
+    stats: {
+      totalJobsMatched: 0,
+      totalCompaniesConfigured: config.companies.filter((company) => company.enabled !== false).length,
+      totalCompaniesDetected: 0,
+      totalFetched: 0,
+      bySource: {},
+      byCompany: {},
+      byCompanyFetched: {},
+      keywordCounts: {},
+    },
+  };
+}
+
+function isSavedFilterScope(value: string): value is SavedFilterScope {
+  return value === "available_jobs" || value === "applied_jobs" || value === "dashboard" || value === "logs";
+}
+
+async function loadLatestRunMarkers(
+  env: Env,
+  tenantId?: string
+): Promise<{ newJobKeys: Set<string>; updatedJobKeys: Set<string> }> {
+  const lastNewJobKeysRaw = await jobStateKv(env).get(tenantScopedKey(tenantId, LAST_NEW_JOB_KEYS_KEY), "json");
+  const lastUpdatedJobKeysRaw = await jobStateKv(env).get(tenantScopedKey(tenantId, LAST_UPDATED_JOB_KEYS_KEY), "json");
+
+  return {
+    newJobKeys: new Set(Array.isArray(lastNewJobKeysRaw) ? lastNewJobKeysRaw.map(String) : []),
+    updatedJobKeys: new Set(Array.isArray(lastUpdatedJobKeysRaw) ? lastUpdatedJobKeysRaw.map(String) : []),
+  };
+}
+
+function isBrokenJobResponseStatus(status: number): boolean {
+  return status === 404 || status === 410;
+}
+
+async function checkJobUrlHealth(url: string): Promise<{
+  broken: boolean;
+  status: number | null;
+  finalUrl: string | null;
+  method: "HEAD" | "GET";
+  reason?: string;
+}> {
+  const headers = {
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": "career-jump/1.0",
+  };
+
+  try {
+    let response = await fetch(url, {
+      method: "HEAD",
+      redirect: "follow",
+      headers,
+      signal: AbortSignal.timeout(8_000),
+    });
+
+    if (response.status === 405 || response.status === 501) {
+      response = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        headers,
+        signal: AbortSignal.timeout(8_000),
+      });
+
+      return {
+        broken: isBrokenJobResponseStatus(response.status),
+        status: response.status,
+        finalUrl: response.url || null,
+        method: "GET",
+      };
+    }
+
+    return {
+      broken: isBrokenJobResponseStatus(response.status),
+      status: response.status,
+      finalUrl: response.url || null,
+      method: "HEAD",
+    };
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      return { broken: true, status: null, finalUrl: null, method: "HEAD", reason: "timeout" };
+    }
+    throw error;
+  }
+}
+
+function makeTimelineEvent(event: Omit<TimelineEvent, "id">): TimelineEvent {
+  return {
+    id: `${event.type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    ...event,
+  };
+}
+
+function ensureBaseTimeline(record: AppliedJobRecord): AppliedJobRecord {
+  if (Array.isArray(record.timeline) && record.timeline.length > 0) return record;
+  const timeline: TimelineEvent[] = [];
+  if (record.job.postedAt) {
+    timeline.push(makeTimelineEvent({ type: "posted", label: "Posted at", at: record.job.postedAt }));
+  }
+  timeline.push(makeTimelineEvent({ type: "applied", label: "Applied at", at: record.appliedAt }));
+  return { ...record, timeline };
+}
+
+function createAppliedRecord(job: JobPosting, key: string, existing?: AppliedJobRecord, notes?: string): AppliedJobRecord {
+  if (existing) {
+    return notes ? { ...ensureBaseTimeline(existing), notes } : ensureBaseTimeline(existing);
+  }
+  const appliedAt = nowISO();
+  return ensureBaseTimeline({
+    jobKey: key,
+    job,
+    notes: notes || undefined,
+    appliedAt,
+    status: "Applied",
+    interviewRounds: [],
+    timeline: [],
+    lastStatusChangedAt: appliedAt,
+  });
+}
+
+function appendInterviewRound(record: AppliedJobRecord): AppliedJobRecord {
+  const safe = ensureBaseTimeline(record);
+  const roundNumber = safe.interviewRounds.length + 1;
+  const roundId = `interview-${roundNumber}-${Date.now()}`;
+  const now = nowISO();
+  const interviewRounds = [
+    ...safe.interviewRounds,
+    {
+      id: roundId,
+      roundNumber,
+      designation: defaultRoundDesignation(roundNumber),
+      outcome: "Pending" as InterviewOutcome,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+  const timeline = [
+    ...safe.timeline,
+    makeTimelineEvent({
+      type: "interview",
+      label: `Interview round ${roundNumber}`,
+      roundId,
+    }),
+  ];
+  return { ...safe, interviewRounds, timeline };
+}
+
+function defaultRoundDesignation(roundNumber: number): InterviewRoundDesignation {
+  const sequence: InterviewRoundDesignation[] = ["Recruiter", "Aptitude Tests", "Hiring Manager", "Loop Interview", "Skip Manager"];
+  return sequence[Math.min(Math.max(roundNumber - 1, 0), sequence.length - 1)];
+}
+
+function normalizeRoundDesignation(value: unknown, fallback?: InterviewRoundDesignation): InterviewRoundDesignation | undefined {
+  return value === "Recruiter" ||
+    value === "Aptitude Tests" ||
+    value === "Hiring Manager" ||
+    value === "Loop Interview" ||
+    value === "Skip Manager"
+    ? value
+    : fallback;
+}
+
+function appendStatusEvent(record: AppliedJobRecord, status: AppliedJobStatus): AppliedJobRecord {
+  const safe = ensureBaseTimeline(record);
+  return {
+    ...safe,
+    lastStatusChangedAt: nowISO(),
+    timeline: [...safe.timeline, makeTimelineEvent({ type: "status", label: "Status", value: status, at: nowISO() })],
+  };
+}
+
+function buildActionPlanRows(rows: AppliedJobRecord[]): ActionPlanRow[] {
+  return rows
+    .filter((row) => Array.isArray(row.interviewRounds) && row.interviewRounds.length > 0)
+    .map((row) => {
+      const currentRound = [...row.interviewRounds].sort((a, b) => b.roundNumber - a.roundNumber)[0];
+      return {
+        jobKey: row.jobKey,
+        company: row.job.company,
+        jobTitle: row.job.title,
+        notes: row.notes,
+        appliedAt: formatET(row.appliedAt) ?? null,
+        appliedAtDate: formatDateOnly(row.appliedAt) ?? null,
+        interviewAt: currentRound?.interviewAt ? formatET(currentRound.interviewAt) : null,
+        interviewAtDate: currentRound?.interviewAt ? formatDateOnly(currentRound.interviewAt) : null,
+        outcome: currentRound?.outcome ?? "Pending",
+        currentRoundId: currentRound?.id ?? "",
+        currentRoundNumber: currentRound?.roundNumber ?? 0,
+        interviewRounds: row.interviewRounds,
+        timeline: row.timeline,
+        url: row.job.url,
+        location: row.job.location,
+        source: row.job.source,
+        postedAt: row.job.postedAt,
+      };
+    })
+    .sort((a, b) => {
+      const aTime = a.interviewAt ? new Date(a.interviewAt).getTime() : 0;
+      const bTime = b.interviewAt ? new Date(b.interviewAt).getTime() : 0;
+      return bTime - aTime;
+    });
+}
+
+function requireAdminContext(
+  tenantContext: Awaited<ReturnType<typeof resolveRequestTenantContext>>
+): Response | null {
+  if (tenantContext.isAdmin) return null;
+  return jsonResponse({ ok: false, error: "Admin access required" }, 403);
+}
+
+export async function handleRequest(request: Request, env: Env): Promise<Response> {
+  try {
+    const url = new URL(request.url);
+    let tenantContextPromise: Promise<Awaited<ReturnType<typeof resolveRequestTenantContext>>> | null = null;
+    const getTenantContext = () => {
+      tenantContextPromise ??= resolveRequestTenantContext(request, env);
+      return tenantContextPromise;
+    };
+
+    if (url.pathname === "/api/openapi.json" && request.method === "GET") {
+      return openApiJsonResponse(request);
+    }
+
+    if (url.pathname === "/docs" && request.method === "GET") {
+      return withSecurity(await env.ASSETS.fetch(new Request(new URL("/swagger.html", request.url).toString(), request)));
+    }
+
+    if (url.pathname === "/api/me" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const [profile, settings, billing, featureFlags, announcements] = await Promise.all([
+        loadUserProfile(tenantContext.userId),
+        loadUserSettings(tenantContext.userId),
+        loadBillingSubscription(tenantContext.userId),
+        loadFeatureFlags({
+          userId: tenantContext.userId,
+          tenantId: tenantContext.tenantId,
+          email: tenantContext.email,
+          displayName: tenantContext.displayName,
+          scope: tenantContext.scope,
+          isAdmin: tenantContext.isAdmin,
+        }),
+        loadAnnouncements(),
+      ]);
+      return jsonResponse({
+        ok: true,
+        actor: tenantContext,
+        profile,
+        settings,
+        billing,
+        featureFlags,
+        announcements,
+      });
+    }
+
+    if (url.pathname === "/api/support/tickets" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const tickets = await listUserTickets({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      });
+      return jsonResponse({ ok: true, total: tickets.length, tickets });
+    }
+
+    if (url.pathname === "/api/support/tickets" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (!String(body.subject ?? "").trim() || !String(body.body ?? "").trim()) {
+        return jsonResponse({ ok: false, error: "subject and body are required" }, 400);
+      }
+      const ticket = await createSupportTicket({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, {
+        subject: String(body.subject),
+        body: String(body.body),
+        priority: body.priority as "low" | "normal" | "high" | "urgent" | undefined,
+        tags: Array.isArray(body.tags) ? body.tags as Array<"billing" | "scan" | "account" | "bug"> : undefined,
+      });
+      return jsonResponse({ ok: true, ticket }, 201);
+    }
+
+    const supportTicketMatch = url.pathname.match(/^\/api\/support\/tickets\/([^/]+)$/);
+    if (supportTicketMatch && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const ticketId = decodeURIComponent(supportTicketMatch[1] ?? "");
+      const ticket = await getSupportTicket(ticketId);
+      if (!ticket) return jsonResponse({ ok: false, error: "Ticket not found" }, 404);
+      if (!tenantContext.isAdmin && ticket.userId !== tenantContext.userId) {
+        return jsonResponse({ ok: false, error: "Forbidden" }, 403);
+      }
+      const messages = await listSupportTicketMessages(ticketId);
+      return jsonResponse({ ok: true, ticket, messages });
+    }
+
+    const supportTicketMessageMatch = url.pathname.match(/^\/api\/support\/tickets\/([^/]+)\/messages$/);
+    if (supportTicketMessageMatch && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const ticketId = decodeURIComponent(supportTicketMessageMatch[1] ?? "");
+      const ticket = await getSupportTicket(ticketId);
+      if (!ticket) return jsonResponse({ ok: false, error: "Ticket not found" }, 404);
+      if (!tenantContext.isAdmin && ticket.userId !== tenantContext.userId) {
+        return jsonResponse({ ok: false, error: "Forbidden" }, 403);
+      }
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (!String(body.body ?? "").trim()) return jsonResponse({ ok: false, error: "body is required" }, 400);
+      const message = await appendSupportMessage({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, ticketId, String(body.body), { internal: body.internal === true });
+      return jsonResponse({ ok: true, message }, 201);
+    }
+
+    if (url.pathname === "/api/admin/summary" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const [users, tickets, flags] = await Promise.all([
+        findUserProfiles(),
+        listAdminTickets(),
+        loadFeatureFlags({
+          userId: tenantContext.userId,
+          tenantId: tenantContext.tenantId,
+          email: tenantContext.email,
+          displayName: tenantContext.displayName,
+          scope: tenantContext.scope,
+          isAdmin: tenantContext.isAdmin,
+        }),
+      ]);
+      return jsonResponse({
+        ok: true,
+        users: {
+          total: users.length,
+          active: users.filter((user) => user.accountStatus === "active").length,
+          suspended: users.filter((user) => user.accountStatus === "suspended").length,
+        },
+        support: {
+          totalTickets: tickets.length,
+          openTickets: tickets.filter((ticket) => ticket.status === "open").length,
+          inProgressTickets: tickets.filter((ticket) => ticket.status === "in_progress").length,
+        },
+        featureFlags: flags,
+      });
+    }
+
+    if (url.pathname === "/api/admin/users" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const users = await findUserProfiles(url.searchParams.get("q") ?? undefined);
+      return jsonResponse({ ok: true, total: users.length, users });
+    }
+
+    const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
+    if (adminUserMatch && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const userId = decodeURIComponent(adminUserMatch[1] ?? "").replace(/^USER#/, "");
+      const [profile, settings, billing, tickets] = await Promise.all([
+        loadUserProfile(userId),
+        loadUserSettings(userId),
+        loadBillingSubscription(userId),
+        listAdminTickets(),
+      ]);
+      if (!profile) return jsonResponse({ ok: false, error: "User not found" }, 404);
+      return jsonResponse({
+        ok: true,
+        profile,
+        settings,
+        billing,
+        tickets: tickets.filter((ticket) => ticket.userId === userId),
+      });
+    }
+
+    const adminUserStatusMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/status$/);
+    if (adminUserStatusMatch && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const userId = decodeURIComponent(adminUserStatusMatch[1] ?? "").replace(/^USER#/, "");
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (body.accountStatus !== "active" && body.accountStatus !== "suspended") {
+        return jsonResponse({ ok: false, error: "accountStatus must be active or suspended" }, 400);
+      }
+      const profile = await setUserAccountStatus({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, userId, body.accountStatus);
+      if (!profile) return jsonResponse({ ok: false, error: "User not found" }, 404);
+      return jsonResponse({ ok: true, profile });
+    }
+
+    if (url.pathname === "/api/admin/feature-flags" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const featureFlags = await loadFeatureFlags({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      });
+      return jsonResponse({ ok: true, total: featureFlags.length, featureFlags });
+    }
+
+    if (url.pathname === "/api/admin/feature-flags" && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (!String(body.flagName ?? "").trim()) return jsonResponse({ ok: false, error: "flagName is required" }, 400);
+      const flag = await saveFeatureFlag({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, {
+        flagName: String(body.flagName),
+        enabled: body.enabled === true,
+        enabledForPlans: Array.isArray(body.enabledForPlans) ? body.enabledForPlans as Array<"free" | "pro" | "power"> : [],
+        enabledForUsers: Array.isArray(body.enabledForUsers) ? body.enabledForUsers.map(String) : [],
+        rolloutPercent: Number(body.rolloutPercent) || 0,
+        description: String(body.description ?? ""),
+        updatedAt: nowISO(),
+        updatedBy: tenantContext.userId,
+      });
+      return jsonResponse({ ok: true, flag });
+    }
+
+    if (url.pathname === "/api/admin/announcements" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (!String(body.title ?? "").trim() || !String(body.body ?? "").trim()) {
+        return jsonResponse({ ok: false, error: "title and body are required" }, 400);
+      }
+      const announcement = await createAnnouncement({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, {
+        id: String(body.id ?? ""),
+        title: String(body.title),
+        body: String(body.body),
+        severity: body.severity === "warning" || body.severity === "critical" ? body.severity : "info",
+        activeFrom: String(body.activeFrom ?? nowISO()),
+        activeTo: String(body.activeTo ?? nowISO()),
+        targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | "free" | "pro" | "power"> : ["all"],
+        updatedAt: nowISO(),
+        updatedBy: tenantContext.userId,
+      });
+      return jsonResponse({ ok: true, announcement }, 201);
+    }
+
+    if (url.pathname === "/api/admin/support/tickets" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const status = url.searchParams.get("status");
+      const tickets = await listAdminTickets(
+        status === "open" || status === "in_progress" || status === "resolved" || status === "closed"
+          ? status
+          : undefined
+      );
+      return jsonResponse({ ok: true, total: tickets.length, tickets });
+    }
+
+    if (url.pathname === "/api/config" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
+      return jsonResponse({ ok: true, config, companyScanOverrides });
+    }
+
+    if (url.pathname === "/api/config/save" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
+      const companies = sanitizeCompanies(body.companies ?? []);
+      const invalidCompany = companies.find((company) => company.source && !companyToDetectedConfig(company));
+      if (invalidCompany) {
+        // Reject invalid ATS source/URL combinations before they become repeated zero-job scans.
+        return jsonResponse({
+          ok: false,
+          error: `Company '${invalidCompany.company}' has source '${invalidCompany.source}' but the sampleUrl or ATS identifiers could not be parsed. Check the URL and try again.`,
+        }, 422);
+      }
+      const next: RuntimeConfig = {
+        companies,
+        jobtitles: sanitizeJobtitles(body.jobtitles ?? {}),
+        updatedAt: nowISO(),
+      };
+      await saveRuntimeConfig(env, next, tenantContext.tenantId, tenantContext.userId);
+      return jsonResponse({ ok: true, config: next });
+    }
+
+    const companyToggleMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/toggle$/);
+    if (companyToggleMatch && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const companyName = decodeURIComponent(companyToggleMatch[1] ?? "").trim();
+      if (!companyName) return jsonResponse({ ok: false, error: "company name is required" }, 400);
+
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
+      const currentPaused = currentOverrides[slugify(companyName)]?.paused === true;
+      const paused = typeof body.paused === "boolean"
+        ? body.paused
+        : typeof body.enabled === "boolean"
+          ? !body.enabled
+          : !currentPaused;
+
+      const override = await setCompanyScanOverride(env, {
+        tenantId: tenantContext.tenantId,
+        company: companyName,
+        paused,
+        updatedByUserId: tenantContext.userId,
+      });
+      const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, company: companyName, paused, enabled: !paused, override, companyScanOverrides });
+    }
+
+    if (url.pathname === "/api/companies/toggle-all" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      if (typeof body.paused !== "boolean") return jsonResponse({ ok: false, error: "paused boolean is required" }, 400);
+
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const companies = config.companies.map((company) => company.company).filter(Boolean);
+      const companyScanOverrides = await setCompanyScanOverrides(env, {
+        tenantId: tenantContext.tenantId,
+        companies,
+        paused: body.paused,
+        updatedByUserId: tenantContext.userId,
+      });
+
+      return jsonResponse({
+        ok: true,
+        paused: body.paused,
+        companyCount: companies.length,
+        companyScanOverrides,
+      });
+    }
+
+    if (url.pathname === "/api/config/apply" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+      await clearATSCache(env, config.companies);
+      const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId);
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify([]));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
+      await saveInventory(env, inventory, tenantContext.tenantId);
+      return jsonResponse({ ok: true, appliedAt: inventory.runAt, totalJobsMatched: inventory.stats.totalJobsMatched });
+    }
+
+    if (url.pathname === "/api/cache/clear" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      await clearATSCache(env, config.companies);
+      const emptyInventory = buildEmptyInventory(config);
+
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, INVENTORY_KEY), JSON.stringify(emptyInventory));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, TREND_KEY), JSON.stringify([]));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify([]));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
+      await saveJobNotes(env, {}, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, cleared: "available jobs cache", retained: ["applied jobs", "saved company ATS configuration"] });
+    }
+
+    if (url.pathname === "/api/data/clear" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, "seen:"));
+      await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, FIRST_SEEN_PREFIX));
+      // Store an explicit empty tenant value instead of deleting the key.
+      // Deleting lets loadAppliedJobs fall back to the legacy global applied
+      // store, which can resurrect old applications after a user clears data.
+      await saveAppliedJobsForTenant(env, {}, tenantContext.tenantId);
+      await deleteKvPrefix(atsCacheKv(env), "ats:");
+      const emptyInventory = buildEmptyInventory(config);
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, INVENTORY_KEY), JSON.stringify(emptyInventory));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, TREND_KEY), JSON.stringify([]));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify([]));
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
+      await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
+      await saveJobNotes(env, {}, tenantContext.tenantId);
+      return jsonResponse({ ok: true, cleared: "inventory and pipeline state", retained: ["saved company ATS configuration", "saved filters", "logs"] });
+    }
+
+    if (url.pathname === "/api/run" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const runId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const lockResult = await acquireActiveRunLock(env, { runId, triggerType: "manual" });
+      if (!lockResult.ok) {
+        await recordAppLog(env, {
+          level: "warn",
+          event: "manual_run_rejected",
+          message: "Manual run rejected because another run is already in progress",
+          tenantId: tenantContext.tenantId,
+          runId,
+          route: "/api/run",
+          details: {
+            activeRunId: lockResult.lock.runId,
+            activeTriggerType: lockResult.lock.triggerType,
+            activeStartedAt: lockResult.lock.startedAt,
+          },
+        });
+        return jsonResponse({
+          ok: false,
+          error: "A run is already in progress. Please wait for the current scan to finish.",
+          activeRun: lockResult.lock,
+          runId,
+        }, 409);
+      }
+      if (lockResult.recoveredLock) {
+        await recordAppLog(env, {
+          level: "warn",
+          event: "manual_run_recovered_stale_lock",
+          message: "Manual run recovered a stale active run lock before starting",
+          tenantId: tenantContext.tenantId,
+          runId,
+          route: "/api/run",
+          details: {
+            recoveredRunId: lockResult.recoveredLock.runId,
+            recoveredTriggerType: lockResult.recoveredLock.triggerType,
+            recoveredStartedAt: lockResult.recoveredLock.startedAt,
+            recoveredLastHeartbeatAt: lockResult.recoveredLock.lastHeartbeatAt ?? null,
+            recoveredCurrentCompany: lockResult.recoveredLock.currentCompany ?? null,
+            recoveredCurrentStage: lockResult.recoveredLock.currentStage ?? null,
+          },
+        });
+      }
+      await recordAppLog(env, {
+        level: "info",
+        event: "manual_run_started",
+        message: "Manual run started",
+        tenantId: tenantContext.tenantId,
+        runId,
+        route: "/api/run",
+      });
+      writeAnalytics(env, {
+        event: "manual_run_started",
+        indexes: ["manual", "/api/run"],
+        blobs: [runId],
+        doubles: [],
+      });
+      try {
+        const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+        const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
+        const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
+
+        let emailStatus: "sent" | "skipped" | "failed" = "skipped";
+        let emailError: string | null = null;
+        let emailSkipReason: string | null = null;
+
+        try {
+          await ensureActiveRunOwnership(env, runId);
+          const hasNotificationJobs = notificationJobs.newJobs.length > 0 || notificationJobs.updatedJobs.length > 0;
+          if (hasNotificationJobs) {
+            const emailAttempt = await reserveEmailSendAttempt(env, runId, tenantContext.tenantId);
+            if (!emailAttempt.reserved) {
+              emailStatus = "skipped";
+              emailSkipReason = `Email already attempted for this run (${emailAttempt.attempt?.status ?? "unknown"})`;
+            } else {
+              try {
+                const emailResult = await maybeSendEmail(
+                  env,
+                  notificationJobs.newJobs,
+                  notificationJobs.updatedJobs,
+                  inventory.runAt,
+                  runId,
+                  tenantContext.userId
+                );
+                emailStatus = emailResult.status;
+                emailSkipReason = emailResult.skipReason;
+                await updateEmailSendAttempt(env, runId, "sent", { tenantId: tenantContext.tenantId });
+              } catch (error) {
+                emailStatus = "failed";
+                emailError = error instanceof Error ? error.message : String(error);
+                await updateEmailSendAttempt(env, runId, "failed", { tenantId: tenantContext.tenantId, error: emailError });
+              }
+            }
+          } else {
+            const emailResult = await maybeSendEmail(
+              env,
+              notificationJobs.newJobs,
+              notificationJobs.updatedJobs,
+              inventory.runAt,
+              runId,
+              tenantContext.userId
+            );
+            emailStatus = emailResult.status;
+            emailSkipReason = emailResult.skipReason;
+          }
+          if (notificationJobs.newJobs.length > 0 && emailStatus === "sent") {
+            await ensureActiveRunOwnership(env, runId);
+            await markJobsAsSeen(env, notificationJobs.newJobs, inventory.runAt, runId, tenantContext.tenantId);
+          }
+        } catch (error) {
+          if (error instanceof ActiveRunOwnershipError) {
+            throw error;
+          }
+          emailStatus = "failed";
+          emailError = error instanceof Error ? error.message : String(error);
+        }
+
+        await ensureActiveRunOwnership(env, runId);
+        await recordAppLog(env, {
+          level: "info",
+          event: "run_completed",
+          message: `Run completed with ${inventory.stats.totalJobsMatched} current matches, ${newJobs.length} new jobs, and ${updatedJobs.length} updated jobs`,
+          tenantId: tenantContext.tenantId,
+          runId,
+          route: "/api/run",
+          details: {
+            totalMatched: inventory.stats.totalJobsMatched,
+            totalNewMatches: newJobs.length,
+            totalUpdatedMatches: updatedJobs.length,
+            totalFetched: inventory.stats.totalFetched,
+            emailStatus,
+            emailSkipReason,
+            emailError,
+          },
+        });
+        writeAnalytics(env, {
+          event: "manual_run_completed",
+          indexes: ["manual", "/api/run"],
+          blobs: [runId, emailStatus],
+          doubles: [inventory.stats.totalJobsMatched, newJobs.length, updatedJobs.length, inventory.stats.totalFetched],
+        });
+        return jsonResponse({
+          ok: true,
+          runAt: inventory.runAt,
+          totalNewMatches: newJobs.length,
+          totalUpdatedMatches: updatedJobs.length,
+          totalMatched: inventory.stats.totalJobsMatched,
+          totalFetched: inventory.stats.totalFetched,
+          byCompany: inventory.stats.byCompany,
+          emailedJobs: notificationJobs.newJobs.map((job) => ({ company: job.company, title: job.title, id: job.id })),
+          emailedUpdatedJobs: notificationJobs.updatedJobs.map((job) => ({ company: job.company, title: job.title, id: job.id })),
+          emailStatus,
+          emailError,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (error instanceof ActiveRunOwnershipError) {
+          await recordAppLog(env, {
+            level: "warn",
+            event: "manual_run_aborted",
+            message: "Manual run stopped after losing the active run lock",
+            tenantId: tenantContext.tenantId,
+            route: "/api/run",
+            runId,
+            details: {
+              activeRunId: error.activeRunId,
+            },
+          });
+          return jsonResponse({ ok: false, aborted: true, runId, error: "This scan was aborted." }, 409);
+        }
+        writeAnalytics(env, {
+          event: "manual_run_failed",
+          indexes: ["manual", "/api/run"],
+          blobs: [runId, message],
+          doubles: [1],
+        });
+        await recordErrorLog(env, {
+          event: "manual_run_failed",
+          message,
+          tenantId: tenantContext.tenantId,
+          route: "/api/run",
+          runId,
+          details: {
+            stack: error instanceof Error ? error.stack : null,
+          },
+        });
+        return jsonResponse({ ok: false, error: message, runId }, 500);
+      } finally {
+        await releaseActiveRunLock(env, runId);
+      }
+    }
+
+    if (url.pathname === "/api/run/status" && request.method === "GET") {
+      const activeRun = await loadActiveRunLock(env);
+      return jsonResponse({
+        ok: true,
+        activeRun,
+      });
+    }
+
+    if (url.pathname === "/api/run/abort" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const activeRun = await loadActiveRunLock(env);
+      if (!activeRun) {
+        return jsonResponse({ ok: true, cleared: false, activeRun: null });
+      }
+
+      await clearActiveRunLock(env);
+      await recordAppLog(env, {
+        level: "warn",
+        event: "manual_run_aborted",
+        message: "Active scan was aborted manually",
+        tenantId: tenantContext.tenantId,
+        route: "/api/run/abort",
+        runId: activeRun.runId,
+        details: {
+          activeRunId: activeRun.runId,
+          activeTriggerType: activeRun.triggerType,
+          activeStartedAt: activeRun.startedAt,
+        },
+      });
+
+      return jsonResponse({ ok: true, cleared: true, activeRun });
+    }
+
+    if (url.pathname === "/api/jobs/remove-broken-links" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const cleanup = await removeBrokenAvailableJobs(env, inventory, {
+        tenantId: tenantContext.tenantId,
+        route: "/api/jobs/remove-broken-links",
+      });
+      if (!cleanup.removedCount) {
+        await recordAppLog(env, {
+          level: "info",
+          event: "broken_link_cleanup_completed",
+          message: `Checked ${cleanup.checkedCount} available jobs and found no broken links`,
+          route: "/api/jobs/remove-broken-links",
+          details: { checkedCount: cleanup.checkedCount, removedCount: 0 },
+        });
+        writeAnalytics(env, {
+          event: "broken_link_cleanup_completed",
+          indexes: ["none_removed", "/api/jobs/remove-broken-links"],
+          blobs: [],
+          doubles: [cleanup.checkedCount, 0],
+        });
+        return jsonResponse({ ok: true, checkedCount: cleanup.checkedCount, removedCount: 0, removedJobs: [] });
+      }
+      await saveInventory(env, cleanup.inventory, tenantContext.tenantId);
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      for (const removedJob of cleanup.brokenJobs) {
+        delete jobNotes[removedJob.jobKey];
+      }
+      await saveJobNotes(env, jobNotes, tenantContext.tenantId);
+      await recordAppLog(env, {
+        level: "info",
+        event: "broken_link_cleanup_completed",
+        message: `Removed ${cleanup.removedCount} broken available-job links from inventory`,
+        route: "/api/jobs/remove-broken-links",
+        details: {
+          checkedCount: cleanup.checkedCount,
+          removedCount: cleanup.removedCount,
+          removedJobs: cleanup.brokenJobs.slice(0, 20),
+        },
+      });
+      writeAnalytics(env, {
+        event: "broken_link_cleanup_completed",
+        indexes: ["removed", "/api/jobs/remove-broken-links"],
+        blobs: [],
+        doubles: [cleanup.checkedCount, cleanup.removedCount],
+      });
+
+      return jsonResponse({ ok: true, checkedCount: cleanup.checkedCount, removedCount: cleanup.removedCount, removedJobs: cleanup.brokenJobs });
+    }
+
+    if (url.pathname === "/api/jobs" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantContext.tenantId);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      const newJobKeys = new Set(inventoryState.lastNewJobKeys);
+      const updatedJobKeys = new Set(inventoryState.lastUpdatedJobKeys);
+      const newOnly = url.searchParams.get("newOnly") === "true";
+      const updatedOnly = url.searchParams.get("updatedOnly") === "true";
+      const availableJobs = inventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
+      const companyOptions = uniqueSortedCompanies(availableJobs.map((job) => job.company));
+      const totalNewAvailable = availableJobs.filter((job) => newJobKeys.has(jobKey(job))).length;
+      const totalUpdatedAvailable = availableJobs.filter((job) => updatedJobKeys.has(jobKey(job))).length;
+      const jobs = filterJobs(availableJobs, url.searchParams)
+        .filter((job) => !newOnly || newJobKeys.has(jobKey(job)))
+        .filter((job) => !updatedOnly || updatedJobKeys.has(jobKey(job)))
+        .sort((a, b) => {
+          const aKey = jobKey(a);
+          const bKey = jobKey(b);
+          const aDay = formatETDayKey(a.postedAt);
+          const bDay = formatETDayKey(b.postedAt);
+          if (aDay !== bDay) return bDay.localeCompare(aDay);
+
+          const aPriority = newJobKeys.has(aKey) ? 0 : updatedJobKeys.has(aKey) ? 1 : 2;
+          const bPriority = newJobKeys.has(bKey) ? 0 : updatedJobKeys.has(bKey) ? 1 : 2;
+          if (aPriority !== bPriority) return aPriority - bPriority;
+
+          const aTime = a.postedAt ? new Date(a.postedAt).getTime() : 0;
+          const bTime = b.postedAt ? new Date(b.postedAt).getTime() : 0;
+          if (aTime !== bTime) return bTime - aTime;
+
+          return a.title.localeCompare(b.title);
+        });
+
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
+      const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);
+      const pagedJobs = jobs.slice(offset, offset + limit);
+
+      return jsonResponse({
+        ok: true,
+        runAt: inventory.runAt,
+        total: jobs.length,
+        pagination: {
+          offset,
+          limit,
+          nextOffset: Math.min(jobs.length, offset + pagedJobs.length),
+          hasMore: offset + pagedJobs.length < jobs.length,
+        },
+        totals: {
+          availableJobs: availableJobs.length,
+          newJobs: totalNewAvailable,
+          updatedJobs: totalUpdatedAvailable,
+        },
+        companyOptions,
+        jobs: pagedJobs.map((job) => ({
+          jobKey: jobKey(job),
+          notes: jobNotes[jobKey(job)] || "",
+          company: job.company,
+          source: job.source,
+          jobTitle: job.title,
+          postedAt: formatET(job.postedAt),
+          postedAtDate: formatDateOnly(job.postedAt),
+          location: job.location,
+          url: job.url,
+          usLikely: job.isUSLikely,
+          detectedCountry: job.detectedCountry ?? "Unknown",
+          isNew: newJobKeys.has(jobKey(job)),
+          isUpdated: updatedJobKeys.has(jobKey(job)),
+        })),
+      });
+    }
+
+    if (url.pathname === "/api/jobs/manual-add" && request.method === "POST") {
+      const body = await readJsonBody<{
+        company?: string;
+        jobTitle?: string;
+        url?: string;
+        location?: string;
+        notes?: string;
+      } & Record<string, unknown>>(request);
+      const company = String(body.company ?? "").trim();
+      const jobTitle = String(body.jobTitle ?? "").trim();
+      if (!company || !jobTitle) {
+        return jsonResponse({ ok: false, error: "company and jobTitle are required" }, 400);
+      }
+
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const notes = String(body.notes ?? "").trim();
+      const manualJob: JobPosting = {
+        source: "manual",
+        company,
+        id: crypto.randomUUID(),
+        title: jobTitle,
+        location: String(body.location ?? "").trim() || "",
+        url: String(body.url ?? "").trim(),
+        manualEntry: true,
+        postedAt: nowISO(),
+      };
+      // Manual jobs should appear immediately in Available Jobs without waiting for the next scan cycle.
+      const nextJobs = [manualJob, ...inventory.jobs];
+      const nextInventory = {
+        ...inventory,
+        runAt: nowISO(),
+        jobs: nextJobs,
+        stats: summarizeInventoryJobs(nextJobs, inventory),
+      };
+
+      await saveInventory(env, nextInventory, tenantContext.tenantId);
+      if (notes) {
+        const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+        jobNotes[jobKey(manualJob)] = notes;
+        await saveJobNotes(env, jobNotes, tenantContext.tenantId);
+      }
+
+      writeAnalytics(env, {
+        event: "job_manual_added",
+        indexes: ["manual", "/api/jobs/manual-add"],
+        blobs: [company, jobKey(manualJob)],
+        doubles: [],
+      });
+
+      return jsonResponse({ ok: true, jobKey: jobKey(manualJob) });
+    }
+
+    if (url.pathname === "/api/settings/email-webhook" && request.method === "GET") {
+      const stored = await loadEmailWebhookConfig(env);
+      return jsonResponse({
+        webhookUrl: stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || null,
+        sharedSecretConfigured: Boolean(stored?.sharedSecret || env.APPS_SCRIPT_SHARED_SECRET),
+      });
+    }
+
+    if (url.pathname === "/api/settings/email-webhook" && request.method === "PUT") {
+      const body = await readJsonBody<{ webhookUrl?: string; sharedSecret?: string } & Record<string, unknown>>(request);
+      await saveEmailWebhookConfig(env, {
+        webhookUrl: body.webhookUrl,
+        sharedSecret: body.sharedSecret,
+      });
+      return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/api/applied-jobs" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      const { updatedJobKeys } = await loadLatestRunMarkers(env, tenantContext.tenantId);
+      const mergedRows = mergeAppliedJobsWithInventory(appliedJobs, inventory);
+      const companyOptions = uniqueSortedCompanies(mergedRows.map((row) => row.job.company));
+      const rows = filterAppliedJobs(mergedRows, url.searchParams).sort(
+        (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
+      );
+
+      return jsonResponse({
+        ok: true,
+        total: rows.length,
+        companyOptions,
+        jobs: rows.map((row) => ({
+          jobKey: row.jobKey,
+          notes: row.notes || jobNotes[row.jobKey] || "",
+          company: row.job.company,
+          jobTitle: row.job.title,
+          appliedAt: formatET(row.appliedAt),
+          appliedAtDate: formatDateOnly(row.appliedAt),
+          postedAt: formatET(row.job.postedAt),
+          postedAtDate: formatDateOnly(row.job.postedAt),
+          url: row.job.url,
+          status: row.status,
+          isUpdated: updatedJobKeys.has(row.jobKey),
+        })),
+      });
+    }
+
+    if (url.pathname === "/api/jobs/apply" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
+      if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
+
+      appliedJobs[body.jobKey] = createAppliedRecord(job, body.jobKey, appliedJobs[body.jobKey], jobNotes[body.jobKey]);
+      delete jobNotes[body.jobKey];
+      await saveJobNotes(env, jobNotes, tenantContext.tenantId);
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      writeAnalytics(env, {
+        event: "job_applied",
+        indexes: [job.source, "/api/jobs/apply"],
+        blobs: [job.company, body.jobKey],
+        doubles: [],
+      });
+      return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/api/jobs/notes" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; notes?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const note = String(body.notes ?? "").trim();
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+
+      if (appliedJobs[body.jobKey]) {
+        appliedJobs[body.jobKey] = { ...appliedJobs[body.jobKey], notes: note || undefined };
+        delete jobNotes[body.jobKey];
+        await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      } else if (note) {
+        jobNotes[body.jobKey] = note;
+      } else {
+        delete jobNotes[body.jobKey];
+      }
+      await saveJobNotes(env, jobNotes, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, jobKey: body.jobKey, notes: note });
+    }
+
+    if (url.pathname === "/api/jobs/discard" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
+      if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
+
+      await addDiscardedJobKey(env, job, tenantContext.tenantId);
+      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      delete jobNotes[body.jobKey];
+      await saveJobNotes(env, jobNotes, tenantContext.tenantId);
+      await saveInventory(env, removeInventoryJobsByKeys(inventory, new Set([body.jobKey])), tenantContext.tenantId, undefined, { skipKeyPrune: true });
+      writeAnalytics(env, {
+        event: "job_discarded",
+        indexes: [job.source, "/api/jobs/discard"],
+        blobs: [job.company, body.jobKey],
+        doubles: [],
+      });
+      return jsonResponse({ ok: true, discarded: body.jobKey });
+    }
+
+    if (url.pathname === "/api/jobs/status" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; status?: AppliedJobStatus } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const nextStatus = normalizeAppliedStatus(body.status);
+      let next = { ...ensureBaseTimeline(existing), status: nextStatus };
+      if (nextStatus === "Interview" && existing.status !== "Interview") {
+        next = appendInterviewRound(next);
+      }
+      if (existing.status !== nextStatus) {
+        next = appendStatusEvent(next, nextStatus);
+      }
+      appliedJobs[body.jobKey] = next;
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      writeAnalytics(env, {
+        event: "job_status_updated",
+        indexes: [next.status, "/api/jobs/status"],
+        blobs: [existing.job.company, body.jobKey],
+        doubles: [],
+      });
+
+      return jsonResponse({ ok: true, actionPlanEnabled: next.interviewRounds.length > 0 });
+    }
+
+    if (url.pathname === "/api/action-plan" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const rows = filterAppliedJobs(Object.values(appliedJobs), url.searchParams);
+      const actionPlan = buildActionPlanRows(rows);
+      return jsonResponse({ ok: true, total: actionPlan.length, jobs: actionPlan });
+    }
+
+    if (url.pathname === "/api/action-plan/interview/add" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const next = appendInterviewRound(existing);
+      appliedJobs[body.jobKey] = next;
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      return jsonResponse({ ok: true, roundCount: next.interviewRounds.length, roundId: next.interviewRounds.at(-1)?.id });
+    }
+
+    if (url.pathname === "/api/action-plan/interview" && request.method === "POST") {
+      const body = await readJsonBody<{
+        jobKey?: string;
+        roundId?: string;
+        interviewAt?: string;
+        outcome?: InterviewOutcome;
+        designation?: InterviewRoundDesignation;
+        interviewer?: string;
+        notes?: string;
+      } & Record<string, unknown>>(request);
+      if (!body.jobKey || !body.roundId) {
+        return jsonResponse({ ok: false, error: "jobKey and roundId are required" }, 400);
+      }
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const interviewRounds = existing.interviewRounds.map((round) => {
+        if (round.id !== body.roundId) return round;
+        return {
+          ...round,
+          designation: normalizeRoundDesignation(body.designation, round.designation),
+          interviewer: typeof body.interviewer === "string" ? body.interviewer.trim() || undefined : round.interviewer,
+          interviewAt: typeof body.interviewAt === "string" && body.interviewAt ? body.interviewAt : round.interviewAt,
+          outcome:
+            body.outcome === "Passed" || body.outcome === "Failed" || body.outcome === "Follow-up" || body.outcome === "Pending"
+              ? body.outcome
+              : round.outcome,
+          notes: typeof body.notes === "string" ? body.notes : round.notes,
+          updatedAt: nowISO(),
+        };
+      });
+
+      const targetRound = interviewRounds.find((round) => round.id === body.roundId);
+      if (!targetRound) return jsonResponse({ ok: false, error: "Interview round not found" }, 404);
+
+      const safe = ensureBaseTimeline(existing);
+      const timeline = safe.timeline.filter((event) => {
+        if (event.roundId !== body.roundId) return true;
+        return event.type !== "outcome";
+      });
+
+      const interviewEventIndex = timeline.findIndex((event) => event.roundId === body.roundId && event.type === "interview");
+      if (interviewEventIndex >= 0) {
+        timeline[interviewEventIndex] = {
+          ...timeline[interviewEventIndex],
+          at: targetRound.interviewAt,
+          label: `Interview round ${targetRound.roundNumber}`,
+        };
+      }
+      if (targetRound.outcome && targetRound.outcome !== "Pending") {
+        timeline.push(
+          makeTimelineEvent({
+            type: "outcome",
+            label: `Outcome round ${targetRound.roundNumber}`,
+            value: targetRound.outcome,
+            at: targetRound.updatedAt,
+            roundId: targetRound.id,
+          })
+        );
+      }
+
+      appliedJobs[body.jobKey] = { ...safe, interviewRounds, timeline };
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/api/action-plan/interview/delete" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; roundId?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey || !body.roundId) {
+        return jsonResponse({ ok: false, error: "jobKey and roundId are required" }, 400);
+      }
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const safe = ensureBaseTimeline(existing);
+      const interviewRounds = safe.interviewRounds
+        .filter((round) => round.id !== body.roundId)
+        .map((round, index) => ({ ...round, roundNumber: index + 1, updatedAt: nowISO() }));
+      if (interviewRounds.length === safe.interviewRounds.length) {
+        return jsonResponse({ ok: false, error: "Interview round not found" }, 404);
+      }
+      const timeline = safe.timeline.filter((event) => event.roundId !== body.roundId);
+
+      appliedJobs[body.jobKey] = { ...safe, interviewRounds, timeline };
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+      return jsonResponse({ ok: true, roundCount: interviewRounds.length });
+    }
+
+    if (url.pathname === "/api/dashboard" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantContext.tenantId);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      return jsonResponse({ ok: true, ...(await buildDashboardPayload(env, inventory, appliedJobs, tenantContext.tenantId, inventoryState)) });
+    }
+
+    if (url.pathname === "/api/filters" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const scopeRaw = String(url.searchParams.get("scope") ?? "").trim();
+      let scope: SavedFilterScope | undefined;
+      if (scopeRaw) {
+        if (!isSavedFilterScope(scopeRaw)) {
+          return jsonResponse({ ok: false, error: "Invalid filter scope" }, 400);
+        }
+        scope = scopeRaw;
+      }
+
+      const filters = await listSavedFilters(env, tenantContext.tenantId, scope);
+      return jsonResponse({ ok: true, total: filters.length, filters });
+    }
+
+    if (url.pathname === "/api/filters" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const name = String(body.name ?? "").trim();
+      const scopeRaw = String(body.scope ?? "").trim();
+      if (!name) return jsonResponse({ ok: false, error: "name is required" }, 400);
+      if (!isSavedFilterScope(scopeRaw)) return jsonResponse({ ok: false, error: "Valid scope is required" }, 400);
+      const filter = body.filter && typeof body.filter === "object" ? (body.filter as Record<string, unknown>) : null;
+      if (!filter) return jsonResponse({ ok: false, error: "filter is required" }, 400);
+
+      let filterId: string;
+      try {
+        filterId = await saveSavedFilter(env, {
+          tenantId: tenantContext.tenantId,
+          userId: tenantContext.userId,
+          filterId: typeof body.id === "string" && body.id ? body.id : undefined,
+          name,
+          scope: scopeRaw,
+          filter,
+          isDefault: body.isDefault === true,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        return jsonResponse({ ok: false, error: message }, message.includes("already exists") ? 409 : 500);
+      }
+
+      const filters = await listSavedFilters(env, tenantContext.tenantId, scopeRaw);
+      const saved = filters.find((entry) => entry.id === filterId) ?? null;
+      return jsonResponse({ ok: true, filter: saved });
+    }
+
+    if (url.pathname.startsWith("/api/filters/") && request.method === "DELETE") {
+      const tenantContext = await getTenantContext();
+      const filterId = decodeURIComponent(url.pathname.slice("/api/filters/".length)).trim();
+      if (!filterId) return jsonResponse({ ok: false, error: "filter id is required" }, 400);
+      const deleted = await deleteSavedFilter(env, tenantContext.tenantId, filterId);
+      if (!deleted) return jsonResponse({ ok: false, error: "Saved filter not found" }, 404);
+      return jsonResponse({ ok: true, deleted: filterId });
+    }
+
+    if (url.pathname === "/api/logs" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      if (!tenantContext.isAdmin) {
+        return jsonResponse({ ok: false, error: "Admin access required" }, 403);
+      }
+      const tenantIdFilter = (url.searchParams.get("tenantId") ?? url.searchParams.get("userId") ?? "").trim();
+      const reason = (url.searchParams.get("reason") ?? "").trim();
+      if (!tenantIdFilter) {
+        return jsonResponse({ ok: false, error: "tenantId is required for break-glass log access" }, 400);
+      }
+      if (reason.length < 8) {
+        return jsonResponse({ ok: false, error: "reason is required for break-glass log access" }, 400);
+      }
+      await recordEvent({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, "ADMIN_ACTION", {
+        action: "break_glass_log_access",
+        targetTenantId: tenantIdFilter,
+        reason,
+      });
+      const companies = parseMultiValues(url.searchParams, "company");
+      const sharedLogOptions = {
+        tenantId: tenantContext.tenantId,
+        tenantIdFilter,
+        allTenants: true,
+        event: url.searchParams.get("event") ?? "",
+        query: url.searchParams.get("query") ?? url.searchParams.get("q") ?? "",
+        level: url.searchParams.get("level") ?? "",
+        source: url.searchParams.get("source") ?? "",
+        runId: url.searchParams.get("runId") ?? "",
+        limit: Number(url.searchParams.get("limit") ?? 200),
+        compact: url.searchParams.get("compact") !== "false",
+      };
+      const logs = await listAppLogs(env, {
+        ...sharedLogOptions,
+        route: url.searchParams.get("route") ?? "",
+        company: url.searchParams.get("company") ?? "",
+        companies,
+      });
+      const companyOptionLogs = await listAppLogs(env, {
+        ...sharedLogOptions,
+        route: url.searchParams.get("route") ?? "",
+        compact: false,
+        limit: MAX_APP_LOG_LIMIT,
+      });
+      return jsonResponse({
+        ok: true,
+        total: logs.length,
+        storage: "kv",
+        retentionHours: 6,
+        companyOptions: uniqueSortedCompanies(companyOptionLogs.map((log) => log.company ?? "")),
+        logs,
+      });
+    }
+
+    if (url.pathname === "/api/debug/webhook-url" && request.method === "GET") {
+      const stored = await loadEmailWebhookConfig(env);
+      return jsonResponse({
+        hasWebhook: Boolean(stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL),
+        hasSharedSecret: Boolean(stored?.sharedSecret || env.APPS_SCRIPT_SHARED_SECRET),
+        webhookUrl: stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || null,
+      });
+    }
+
+    if (url.pathname === "/api/debug/schedule" && request.method === "GET") {
+      return jsonResponse({
+        ok: true,
+        triggerCronUtc: [
+          "0 6,9,12,15,18,21 * * MON-FRI",
+        ],
+        effectiveScheduleEt: {
+          weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
+          hoursEt: ["6 AM", "9 AM", "12 PM", "3 PM", "6 PM", "9 PM"],
+          note: "EventBridge Scheduler uses America/New_York and skips weekends plus the 11 PM to 6 AM ET window.",
+        },
+      });
+    }
+
+    if (url.pathname === "/api/debug/discovery/reset" && request.method === "POST") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const companyName = String(body.company ?? url.searchParams.get("company") ?? "").trim();
+      if (!companyName) return jsonResponse({ ok: false, error: "company is required" }, 400);
+      await resetDiscoveryForCompany(env, companyName);
+      return jsonResponse({ ok: true, company: companyName, reset: ["No discovery state to reset in explicit-config mode"] });
+    }
+
+    if (url.pathname === "/api/debug/discovery" && request.method === "GET") {
+      const companyName = url.searchParams.get("company")?.trim();
+      if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
+      const detected = await getDetectedConfig(env, { company: companyName, enabled: true });
+      const protectedRecord = await getProtectedDiscoveryRecord(env, companyName);
+      return jsonResponse({ ok: true, detected, protectedRecord });
+    }
+
+    if (url.pathname === "/api/debug/workday" && request.method === "GET") {
+      const companyName = url.searchParams.get("company")?.trim();
+      if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
+      const detected = await resolveWorkdayForCompany(env, companyName);
+      if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const jobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
+      return jsonResponse({ ok: true, detected, includeKeywords: config.jobtitles.includeKeywords, count: jobs.length, firstFive: jobs.slice(0, 5) });
+    }
+
+    if (url.pathname === "/api/debug/workday-filter" && request.method === "GET") {
+      const companyName = url.searchParams.get("company")?.trim();
+      if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
+      const tenantContext = await getTenantContext();
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const detected = await resolveWorkdayForCompany(env, companyName);
+      if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
+      const rawJobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
+      const enriched = rawJobs.map((job) => enrichJob(job, config.jobtitles));
+      const matched = enriched.filter((job) => isInterestingTitle(job.title, config.jobtitles));
+      return jsonResponse({
+        ok: true,
+        includeKeywords: config.jobtitles.includeKeywords,
+        excludeKeywords: config.jobtitles.excludeKeywords,
+        rawCount: rawJobs.length,
+        matchedCount: matched.length,
+        rawSample: rawJobs.slice(0, 15).map((job) => job.title),
+        matchedSample: matched.slice(0, 15).map((job) => job.title),
+      });
+    }
+
+    if (url.pathname === "/api/debug/email" && request.method === "POST") {
+      const testJobs: JobPosting[] = [
+        {
+          source: "workday",
+          company: "Debug Company",
+          id: "debug-1",
+          title: "Staff Technical Program Manager",
+          location: "Sunnyvale, CA",
+          url: "https://example.com/job/debug-1",
+          postedAt: new Date().toISOString(),
+        },
+      ];
+      const testUpdatedJobs: UpdatedEmailJob[] = [
+        {
+          source: "greenhouse",
+          company: "Debug Company",
+          id: "debug-2",
+          title: "Lead Technical Program Manager",
+          location: "Remote, US",
+          url: "https://example.com/job/debug-2",
+          postedAt: new Date().toISOString(),
+          updateJustification: "Tracked inventory fields changed since the previous snapshot.",
+          updateChanges: [
+            {
+              field: "title",
+              previous: "Technical Program Manager",
+              current: "Lead Technical Program Manager",
+            },
+            {
+              field: "location",
+              previous: "San Francisco, CA",
+              current: "Remote, US",
+            },
+          ],
+        },
+      ];
+
+      const tenantContext = await getTenantContext();
+      if (!(env.SES_FROM_EMAIL || process.env.SES_FROM_EMAIL)) {
+        return jsonResponse({ ok: false, error: "SES_FROM_EMAIL is missing" }, 500);
+      }
+
+      try {
+        await maybeSendEmail(env, testJobs, testUpdatedJobs, new Date().toISOString(), "debug-email", tenantContext.userId);
+        return jsonResponse({ ok: true, sent: true, totalNewMatches: testJobs.length, totalUpdatedMatches: testUpdatedJobs.length });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/registry/meta" && request.method === "GET") {
+      const cache = await loadRegistryCache();
+      return jsonResponse({
+        ok: true,
+        meta: cache.meta,
+        loadedAt: cache.loadedAt,
+        adapters: registeredAdapterIds(),
+        counts: {
+          total: cache.all.length,
+          tier1: cache.all.filter((e) => e.tier === "TIER1_VERIFIED").length,
+          tier2: cache.all.filter((e) => e.tier === "TIER2_MEDIUM").length,
+          tier3: cache.all.filter((e) => e.tier === "TIER3_LOW").length,
+          needsReview: cache.all.filter((e) => e.tier === "NEEDS_REVIEW").length,
+        },
+      });
+    }
+
+    if (url.pathname === "/api/registry/companies" && request.method === "GET") {
+      await loadRegistryCache();
+      const ats = url.searchParams.get("ats");
+      const tier = url.searchParams.get("tier");
+      const search = (url.searchParams.get("search") ?? "").trim().toLowerCase();
+      const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 500);
+      let entries = ats ? listByAts(ats) : listAll();
+      if (tier) entries = entries.filter((e) => e.tier === tier);
+      if (search) entries = entries.filter((e) => e.company.toLowerCase().includes(search));
+      return jsonResponse({ ok: true, total: entries.length, entries: entries.slice(0, limit) });
+    }
+
+    if (url.pathname.startsWith("/api/registry/companies/") && request.method === "GET") {
+      await loadRegistryCache();
+      const name = decodeURIComponent(url.pathname.slice("/api/registry/companies/".length));
+      const entry = getByCompany(name);
+      if (!entry) return jsonResponse({ ok: false, error: `No registry entry for ${name}` }, 404);
+      return jsonResponse({ ok: true, entry });
+    }
+
+    if (url.pathname === "/api/registry/scrape" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { company?: string; applyPipeline?: boolean };
+      if (!body.company) return jsonResponse({ ok: false, error: "company required" }, 400);
+      const config = await loadRuntimeConfig(env);
+      const result = await scrapeOne(body.company, config, { applyPipeline: body.applyPipeline });
+      if (!result) return jsonResponse({ ok: false, error: `No registry entry for ${body.company}` }, 404);
+      return jsonResponse({
+        ok: true,
+        company: body.company,
+        entry: result.entry,
+        status: result.status,
+        jobCount: result.jobs.length,
+        jobs: result.jobs.slice(0, 100),
+        error: result.error,
+        ms: result.ms,
+      });
+    }
+
+    if (url.pathname === "/api/registry/scrape/ats" && request.method === "POST") {
+      const body = (await request.json().catch(() => ({}))) as { ats?: string; applyPipeline?: boolean; limit?: number };
+      if (!body.ats) return jsonResponse({ ok: false, error: "ats required" }, 400);
+      const config = await loadRuntimeConfig(env);
+      const limit = Math.min(body.limit ?? 25, 100);
+      await loadRegistryCache();
+      const targets = listByAts(body.ats).slice(0, limit);
+      const results = await Promise.all(
+        targets.map((entry) => scrapeOne(entry.company, config, { applyPipeline: body.applyPipeline })),
+      );
+      return jsonResponse({
+        ok: true,
+        ats: body.ats,
+        total: targets.length,
+        summary: results.filter((r): r is NonNullable<typeof r> => r !== null).map((r) => ({
+          company: r.entry.company,
+          status: r.status,
+          jobCount: r.jobs.length,
+          ms: r.ms,
+          error: r.error,
+        })),
+      });
+    }
+
+    if (url.pathname === "/health") {
+      return jsonResponse({ ok: true, appName: env.APP_NAME ?? "Career Jump" });
+    }
+
+    return withSecurity(await env.ASSETS.fetch(request));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.log("[routes] unhandled exception", JSON.stringify({ error: message, stack: error instanceof Error ? error.stack : null }));
+    return jsonResponse({ ok: false, error: message }, 500);
+  }
+}

@@ -1,0 +1,376 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Career Jump Cognito User Pool for multi-tenant SaaS authentication.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+    Description: Application name used for resource naming.
+  Stage:
+    Type: String
+    Default: poc
+    Description: Deployment stage (poc, dev, staging, prod).
+  SESFromEmail:
+    Type: String
+    Description: Verified SES email address used to send Cognito verification emails.
+  DynamoDBTableName:
+    Type: String
+    Description: Name of the main DynamoDB table where user profiles are stored.
+  NotificationTopicArn:
+    Type: String
+    Description: SNS topic ARN for triggering welcome emails after confirmation.
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # User Pool
+  # ---------------------------------------------------------------------------
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      UserPoolName: !Sub "${AppName}-${Stage}-user-pool"
+
+      # Email as the primary sign-in identifier
+      UsernameAttributes:
+        - email
+      AliasAttributes: []
+
+      # Automatically verify email on sign-up
+      AutoVerifiedAttributes:
+        - email
+
+      # Users may sign themselves up
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: false
+
+      # Schema – email (built-in) + custom username attribute
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: username
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+
+      # Password policy
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          TemporaryPasswordValidityDays: 7
+
+      # MFA – optional (users can enrol TOTP or SMS themselves)
+      MfaConfiguration: OPTIONAL
+      EnabledMfas:
+        - SOFTWARE_TOKEN_MFA
+
+      # Email verification method
+      UserPoolAddOns:
+        AdvancedSecurityMode: AUDIT
+
+      VerificationMessageTemplate:
+        DefaultEmailOption: CONFIRM_WITH_CODE
+        EmailSubject: "Your Career Jump verification code"
+        EmailMessage: "Your Career Jump verification code is {####}."
+
+      # Account recovery – email only
+      AccountRecoverySetting:
+        RecoveryMechanisms:
+          - Name: verified_email
+            Priority: 1
+
+      # SES integration for outbound email
+      EmailConfiguration:
+        EmailSendingAccount: DEVELOPER
+        From: !Ref SESFromEmail
+        SourceArn: !Sub "arn:aws:ses:${AWS::Region}:${AWS::AccountId}:identity/${SESFromEmail}"
+
+      # Post Confirmation trigger — wired after Lambda is created (no circular dep:
+      # Lambda has no reference to UserPool; UserPool references Lambda ARN only)
+      LambdaConfig:
+        PostConfirmation: !GetAtt PostConfirmationFunction.Arn
+
+      # Deletion protection
+      DeletionProtection: ACTIVE
+
+      # Tag the pool
+      UserPoolTags:
+        App: !Ref AppName
+        Stage: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # Post Confirmation Lambda — fires after email verification succeeds.
+  # Creates the DynamoDB user profile record and triggers the welcome email.
+  # Using sub (not email) as the stable tenant identifier throughout.
+  # ---------------------------------------------------------------------------
+  PostConfirmationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-${Stage}-post-confirm-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: PostConfirmationPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Write the user profile partition to DynamoDB
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                Resource: !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+              # Publish welcome-email event to SNS
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref NotificationTopicArn
+
+  PostConfirmationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AppName}-${Stage}-post-confirmation"
+      RetentionInDays: 30
+
+  PostConfirmationFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PostConfirmationLogGroup
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-post-confirmation"
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt PostConfirmationRole.Arn
+      Timeout: 10
+      MemorySize: 128
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DynamoDBTableName
+          NOTIFICATION_TOPIC_ARN: !Ref NotificationTopicArn
+          STAGE: !Ref Stage
+      Code:
+        ZipFile: |
+          import os
+          import json
+          import logging
+          import boto3
+          from datetime import datetime, timezone
+
+          logger = logging.getLogger()
+          logger.setLevel(logging.INFO)
+
+          dynamodb = boto3.resource("dynamodb")
+          sns = boto3.client("sns")
+
+          TABLE_NAME = os.environ["TABLE_NAME"]
+          TOPIC_ARN = os.environ["NOTIFICATION_TOPIC_ARN"]
+
+          def handler(event, context):
+              """
+              Cognito Post Confirmation trigger.
+
+              Fires after:
+                - User confirms their email via code (triggerSource = PostConfirmation_ConfirmSignUp)
+                - Admin confirms a user             (triggerSource = PostConfirmation_ConfirmForgotPassword — skip)
+
+              Responsibilities:
+                1. Write USER#{sub} partition to DynamoDB with verified email, username,
+                   timestamps, and default notification preferences.
+                2. Publish a welcome-email event to SNS so the notification Lambda sends
+                   the branded welcome email via SES.
+
+              IMPORTANT: Must return the event object unchanged — Cognito rejects any
+              other return value and will block the confirmation.
+              """
+              trigger_source = event.get("triggerSource", "")
+              logger.info("PostConfirmation trigger: %s", trigger_source)
+
+              # Only act on email verification, not password reset confirmation
+              if trigger_source != "PostConfirmation_ConfirmSignUp":
+                  return event
+
+              attrs = event["request"]["userAttributes"]
+              # sub is the stable, immutable Cognito identifier — use as tenant ID
+              user_sub  = attrs["sub"]
+              user_email = attrs.get("email", "")
+              # custom:username written by the frontend at signup; fall back to email prefix
+              username = attrs.get("custom:username", user_email.split("@")[0])
+              now = datetime.now(timezone.utc).isoformat()
+
+              table = dynamodb.Table(TABLE_NAME)
+
+              try:
+                  # Idempotent upsert — safe to call multiple times
+                  table.put_item(
+                      Item={
+                          # Partition key: user profile record
+                          "pk": f"USER#{user_sub}",
+                          "sk": "PROFILE",
+                          # Identity
+                          "userId": user_sub,
+                          "email": user_email,
+                          "username": username,
+                          "emailVerified": True,
+                          # Timestamps
+                          "createdAt": now,
+                          "updatedAt": now,
+                          "verifiedAt": now,
+                          # Default notification preferences — user can change in Settings
+                          "notifPrefs": {
+                              "newJobsAlert": True,
+                              "weeklyDigest": True,
+                              "statusUpdate": True,
+                          },
+                          # Compliance: track when consent was given
+                          "privacyConsentAt": now,
+                          "dataRegion": "us-east-1",
+                      },
+                      # Don't overwrite if somehow already exists
+                      ConditionExpression="attribute_not_exists(pk)",
+                  )
+                  logger.info("User profile created for sub=%s", user_sub)
+              except dynamodb.meta.client.exceptions.ConditionalCheckFailedException:
+                  # Profile already exists — idempotent, not an error
+                  logger.info("User profile already exists for sub=%s — skipping create", user_sub)
+              except Exception as exc:
+                  # Log but don't raise — a DynamoDB failure must not block confirmation
+                  logger.error("Failed to create user profile for sub=%s: %s", user_sub, exc)
+
+              # Publish welcome-email event — non-blocking, best-effort
+              try:
+                  sns.publish(
+                      TopicArn=TOPIC_ARN,
+                      Message=json.dumps({
+                          "notification_type": "welcome",
+                          "user_sub": user_sub,
+                          "email": user_email,
+                          "username": username,
+                      }),
+                      Subject="welcome",
+                  )
+                  logger.info("Welcome email event published for sub=%s", user_sub)
+              except Exception as exc:
+                  logger.error("Failed to publish welcome event for sub=%s: %s", user_sub, exc)
+
+              # Must return the unmodified event
+              return event
+
+  # Grant Cognito permission to invoke the Lambda
+  PostConfirmationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt PostConfirmationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  # ---------------------------------------------------------------------------
+  # App Client (SPA – no client secret)
+  # ---------------------------------------------------------------------------
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "${AppName}-${Stage}-spa-client"
+      UserPoolId: !Ref UserPool
+
+      # SPA must not have a client secret
+      GenerateSecret: false
+
+      # Supported auth flows
+      ExplicitAuthFlows:
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+
+      # Prevent leaking user-existence information
+      PreventUserExistenceErrors: ENABLED
+
+      # Token validity
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
+      # Read/write attributes
+      ReadAttributes:
+        - email
+        - email_verified
+        - custom:username
+      WriteAttributes:
+        - email
+        - custom:username
+
+      # OAuth / hosted-UI scopes (required for domain usage)
+      AllowedOAuthFlows:
+        - code
+      AllowedOAuthScopes:
+        - email
+        - openid
+        - profile
+      AllowedOAuthFlowsUserPoolClient: true
+      SupportedIdentityProviders:
+        - COGNITO
+
+      # Callback & logout URLs – adjust per environment
+      CallbackURLs:
+        - !Sub "https://${AppName}-${Stage}.auth.${AWS::Region}.amazoncognito.com/oauth2/idpresponse"
+        - "http://localhost:5173"
+      LogoutURLs:
+        - "http://localhost:5173"
+
+  # ---------------------------------------------------------------------------
+  # Hosted UI domain
+  # ---------------------------------------------------------------------------
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub "${AppName}-${Stage}"
+      UserPoolId: !Ref UserPool
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID.
+    Value: !Ref UserPool
+    Export:
+      Name: !Sub "${AppName}-${Stage}-UserPoolId"
+
+  UserPoolArn:
+    Description: Cognito User Pool ARN.
+    Value: !GetAtt UserPool.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-UserPoolArn"
+
+  UserPoolClientId:
+    Description: Cognito App Client ID (used by the SPA).
+    Value: !Ref UserPoolClient
+    Export:
+      Name: !Sub "${AppName}-${Stage}-UserPoolClientId"
+
+  UserPoolDomain:
+    Description: Cognito hosted-UI domain prefix.
+    Value: !Sub "${AppName}-${Stage}.auth.${AWS::Region}.amazoncognito.com"
+    Export:
+      Name: !Sub "${AppName}-${Stage}-UserPoolDomain"
+
+  PostConfirmationFunctionArn:
+    Description: ARN of the Post Confirmation Lambda trigger.
+    Value: !GetAtt PostConfirmationFunction.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-PostConfirmationArn"

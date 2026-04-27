@@ -1,0 +1,67 @@
+stages:
+  - check
+  - build
+  - release
+
+default:
+  image: node:22-alpine
+  cache:
+    key:
+      files:
+        - package-lock.json
+    paths:
+      - .npm/
+
+check:
+  stage: check
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - npm run check
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+sam-build:
+  stage: build
+  image: public.ecr.aws/sam/build-nodejs22.x:latest
+  script:
+    - npm ci --cache .npm --prefer-offline
+    - sam build
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+    - if: '$CI_COMMIT_BRANCH'
+
+release-prod:
+  stage: release
+  image: public.ecr.aws/sam/build-nodejs22.x:latest
+  environment:
+    name: production
+  resource_group: production
+  script:
+    - export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+    - |
+      if [ -z "${AWS_ACCESS_KEY_ID:-}" ] || [ -z "${AWS_SECRET_ACCESS_KEY:-}" ]; then
+        echo "Missing AWS credentials for release-prod."
+        echo "Set protected GitLab CI/CD variables AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_DEFAULT_REGION."
+        echo "If these variables already exist, make sure the release tag or release branch is protected so GitLab exposes protected variables to this job."
+        exit 1
+      fi
+    - aws sts get-caller-identity
+    - npm ci --cache .npm --prefer-offline
+    - npm run check
+    - sam validate --lint --region "$AWS_DEFAULT_REGION"
+    - sam build
+    - export SAM_PARAMETER_OVERRIDES="AllowedUserEmail=${ALLOWED_USER_EMAIL:-dipak.bhujbal23@gmail.com} BudgetEmail=${BUDGET_EMAIL:-dipak.bhujbal23@gmail.com}"
+    - if [ -n "${APPS_SCRIPT_WEBHOOK_URL:-}" ]; then export SAM_PARAMETER_OVERRIDES="$SAM_PARAMETER_OVERRIDES AppsScriptWebhookUrl=$APPS_SCRIPT_WEBHOOK_URL"; fi
+    - if [ -n "${APPS_SCRIPT_SHARED_SECRET:-}" ]; then export SAM_PARAMETER_OVERRIDES="$SAM_PARAMETER_OVERRIDES AppsScriptSharedSecret=$APPS_SCRIPT_SHARED_SECRET"; fi
+    - >
+      sam deploy --config-env poc --no-confirm-changeset --region "$AWS_DEFAULT_REGION"
+      --parameter-overrides $SAM_PARAMETER_OVERRIDES
+    - AWS_REGION="$AWS_DEFAULT_REGION" npm run aws:unpark
+    - AWS_REGION="$AWS_DEFAULT_REGION" npm run aws:sync-frontend
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v\d+\.\d+\.\d+$/'
+      when: on_success
+    - if: '$CI_PIPELINE_SOURCE == "web" && $CI_COMMIT_BRANCH =~ /^release[\/-]\d+\.\d+$/'
+      when: manual
+    - when: never

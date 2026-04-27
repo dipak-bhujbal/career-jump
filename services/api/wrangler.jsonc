@@ -1,0 +1,45 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "career-jump",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-04-03",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "triggers": {
+    "crons": [
+      "0 9,12,15,18,21 * * MON-FRI",
+      "0 0,3 * * TUE-SAT"
+    ]
+  },
+  "limits": {
+    "cpu_ms": 90000
+  },
+  "vars": {
+    "APP_NAME": "Career Jump",
+    "APP_ENV": "prod"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "ATS_CACHE",
+      "id": "4f550a44a6384c8699f23bcc68263b3a"
+    },
+    {
+      "binding": "CONFIG_STORE",
+      "id": "4414b1d59f9f4d3d9ec17c560779c997"
+    },
+    {
+      "binding": "JOB_STATE",
+      "id": "0cac4e3260b64de6a53e47f36a9d27be"
+    }
+  ],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "career-jump-prod",
+      "database_id": "2ce4e2b1-289e-4563-9662-96cc886eb17a",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

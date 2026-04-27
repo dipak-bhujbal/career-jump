@@ -1,0 +1,40 @@
+{
+  "name": "@career-jump/api",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "aws:build": "sam build",
+    "aws:deploy": "sam deploy --config-env prod",
+    "aws:import-cloudflare-runtime": "node scripts/import-cloudflare-runtime-to-aws.mjs",
+    "aws:unpark": "bash scripts/unpark-aws.sh",
+    "aws:sync-frontend": "bash scripts/sync-frontend.sh",
+    "check": "tsc --noEmit",
+    "verify": "npm run check",
+    "ats:refresh-fixtures": "tsx scripts/refresh-ats-fixtures.ts",
+    "ats:check-schemas": "tsx scripts/check-ats-schemas.ts",
+    "ats:demo": "tsx scripts/demo-registry-scrape.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "@aws-sdk/client-cognito-identity-provider": "^3.1037.0",
+    "@aws-sdk/client-dynamodb": "^3.787.0",
+    "@aws-sdk/client-lambda": "^3.787.0",
+    "@aws-sdk/client-sesv2": "^3.1037.0",
+    "@aws-sdk/util-dynamodb": "^3.787.0",
+    "aws-jwt-verify": "^5.1.0",
+    "esbuild": "^0.25.12"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260401.0",
+    "@types/aws-lambda": "^8.10.147",
+    "@types/node": "^22.15.3",
+    "@vitest/coverage-v8": "^4.1.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.5",
+    "wrangler": "^4.11.1"
+  }
+}

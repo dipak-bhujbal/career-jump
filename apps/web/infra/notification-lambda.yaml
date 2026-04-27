@@ -1,0 +1,571 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: Career Jump notification Lambda – sends transactional SES emails triggered by SNS.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: career-jump-web
+    Description: Application name used for resource naming.
+  Stage:
+    Type: String
+    Default: poc
+    Description: Deployment stage (poc, dev, staging, prod).
+  UserPoolId:
+    Type: String
+    Description: Cognito User Pool ID (used to look up user email when not in DynamoDB profile).
+  SESFromEmail:
+    Type: String
+    Description: Verified SES sender email address.
+  DynamoDBTableName:
+    Type: String
+    Description: DynamoDB table name that stores user profiles and application records.
+  NotificationTopicArn:
+    Type: String
+    Description: SNS topic ARN that triggers the notification Lambda.
+
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # CloudWatch Log Group (created before the function so retention is set)
+  # ---------------------------------------------------------------------------
+  NotificationLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${AppName}-${Stage}-notification"
+      RetentionInDays: 30
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # SSM Parameter – runtime config (avoids hard-coding in env vars)
+  # ---------------------------------------------------------------------------
+  NotificationConfigParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${AppName}/${Stage}/notification/config"
+      Type: String
+      Value: !Sub |
+        {
+          "ses_config_set": "${AppName}-${Stage}-config",
+          "from_email": "${SESFromEmail}",
+          "app_name": "${AppName}",
+          "stage": "${Stage}"
+        }
+      Description: Notification Lambda runtime configuration.
+      Tags:
+        App: !Ref AppName
+        Stage: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # IAM Role
+  # ---------------------------------------------------------------------------
+  NotificationLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "${AppName}-${Stage}-notification-lambda-role"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: NotificationLambdaPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # SES – send templated emails only
+              - Sid: SESPermissions
+                Effect: Allow
+                Action:
+                  - ses:SendTemplatedEmail
+                  - ses:SendEmail
+                Resource: "*"
+                Condition:
+                  StringEquals:
+                    ses:FromAddress: !Ref SESFromEmail
+
+              # DynamoDB – read user profiles and application records
+              - Sid: DynamoDBReadPermissions
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}"
+                  - !Sub "arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/${DynamoDBTableName}/index/*"
+
+              # Cognito – look up user attributes (email) when not in DynamoDB
+              - Sid: CognitoReadPermissions
+                Effect: Allow
+                Action:
+                  - cognito-idp:AdminGetUser
+                  - cognito-idp:ListUsers
+                Resource: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPoolId}"
+
+              # SSM – read configuration parameter
+              - Sid: SSMReadPermissions
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource:
+                  - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${AppName}/${Stage}/notification/*"
+
+              # CloudWatch – write structured logs (already covered by AWSLambdaBasicExecutionRole
+              # but explicitly scoped here for clarity)
+              - Sid: CloudWatchPermissions
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt NotificationLogGroup.Arn
+
+      Tags:
+        - Key: App
+          Value: !Ref AppName
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # Lambda Function
+  # ---------------------------------------------------------------------------
+  NotificationLambda:
+    Type: AWS::Lambda::Function
+    DependsOn: NotificationLogGroup
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-notification"
+      Description: Sends transactional SES emails based on SNS notification events.
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt NotificationLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Environment:
+        Variables:
+          APP_NAME: !Ref AppName
+          STAGE: !Ref Stage
+          USER_POOL_ID: !Ref UserPoolId
+          FROM_EMAIL: !Ref SESFromEmail
+          DYNAMODB_TABLE: !Ref DynamoDBTableName
+          SSM_CONFIG_PATH: !Sub "/${AppName}/${Stage}/notification/config"
+          LOG_LEVEL: INFO
+      Code:
+        ZipFile: |
+          """
+          Career Jump – Notification Lambda
+          Handles SNS-triggered notification events and sends SES templated emails.
+
+          Supported notification_type values:
+            new_jobs_alert        – new jobs matching user preferences
+            weekly_digest         – weekly job-search summary
+            status_update         – application status change
+            welcome               – post-signup welcome email
+          """
+          from __future__ import annotations
+
+          import json
+          import logging
+          import os
+          from typing import Any
+
+          import boto3
+          from botocore.exceptions import ClientError
+
+          # ---------------------------------------------------------------------------
+          # Bootstrap
+          # ---------------------------------------------------------------------------
+          LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
+          logging.basicConfig(
+              format="%(asctime)s %(levelname)s %(name)s %(message)s",
+              level=getattr(logging, LOG_LEVEL, logging.INFO),
+          )
+          logger = logging.getLogger("notification_lambda")
+
+          APP_NAME = os.environ["APP_NAME"]
+          STAGE = os.environ["STAGE"]
+          USER_POOL_ID = os.environ["USER_POOL_ID"]
+          FROM_EMAIL = os.environ["FROM_EMAIL"]
+          DYNAMODB_TABLE = os.environ["DYNAMODB_TABLE"]
+
+          # AWS clients – initialised once at cold-start for connection reuse
+          ses = boto3.client("ses")
+          dynamodb = boto3.resource("dynamodb")
+          cognito = boto3.client("cognito-idp")
+          ssm = boto3.client("ssm")
+
+          # Resolved lazily and cached in the execution environment
+          _config: dict[str, str] | None = None
+
+          # ---------------------------------------------------------------------------
+          # Helpers
+          # ---------------------------------------------------------------------------
+
+          def get_config() -> dict[str, str]:
+              """Return the SSM-backed runtime config (cached after first load)."""
+              global _config
+              if _config is None:
+                  param_path = os.environ.get(
+                      "SSM_CONFIG_PATH",
+                      f"/{APP_NAME}/{STAGE}/notification/config",
+                  )
+                  try:
+                      response = ssm.get_parameter(Name=param_path, WithDecryption=True)
+                      _config = json.loads(response["Parameter"]["Value"])
+                      logger.info("Loaded runtime config from SSM: %s", param_path)
+                  except Exception as exc:  # noqa: BLE001
+                      logger.warning(
+                          "Could not load SSM config (%s), using env-var defaults: %s",
+                          param_path,
+                          exc,
+                      )
+                      _config = {
+                          "ses_config_set": f"{APP_NAME}-{STAGE}-config",
+                          "from_email": FROM_EMAIL,
+                          "app_name": APP_NAME,
+                          "stage": STAGE,
+                      }
+              return _config
+
+
+          def get_user_email_from_cognito(user_id: str) -> str | None:
+              """Fetch the email attribute for a Cognito user."""
+              try:
+                  resp = cognito.admin_get_user(UserPoolId=USER_POOL_ID, Username=user_id)
+                  for attr in resp.get("UserAttributes", []):
+                      if attr["Name"] == "email":
+                          return attr["Value"]
+              except ClientError as exc:
+                  logger.warning(
+                      "Cognito lookup failed for user_id=%s: %s", user_id, exc.response["Error"]
+                  )
+              return None
+
+
+          def get_user_profile_from_dynamodb(user_id: str) -> dict[str, Any]:
+              """Return the user profile item from DynamoDB (empty dict on miss)."""
+              table = dynamodb.Table(DYNAMODB_TABLE)
+              try:
+                  # Match the React-owned DynamoDB table and the Cognito trigger,
+                  # both of which use lowercase pk/sk keys.
+                  resp = table.get_item(Key={"pk": f"USER#{user_id}", "sk": "PROFILE"})
+                  return resp.get("Item", {})
+              except ClientError as exc:
+                  logger.warning(
+                      "DynamoDB GetItem failed for user_id=%s: %s",
+                      user_id,
+                      exc.response["Error"],
+                  )
+              return {}
+
+
+          def resolve_user_email(user_id: str) -> str | None:
+              """
+              Resolve an email address for user_id.
+              Prefers DynamoDB profile; falls back to Cognito lookup.
+              """
+              profile = get_user_profile_from_dynamodb(user_id)
+              email = profile.get("email")
+              if email:
+                  return email
+              return get_user_email_from_cognito(user_id)
+
+
+          def send_templated_email(
+              to_address: str,
+              template_name: str,
+              template_data: dict[str, Any],
+              config: dict[str, str],
+          ) -> bool:
+              """
+              Send a single SES templated email.
+              Returns True on success, False on any error (non-blocking).
+              """
+              try:
+                  ses.send_templated_email(
+                      Source=config["from_email"],
+                      Destination={"ToAddresses": [to_address]},
+                      Template=template_name,
+                      TemplateData=json.dumps(template_data),
+                      ConfigurationSetName=config["ses_config_set"],
+                  )
+                  logger.info(
+                      "Email sent: template=%s to=%s", template_name, to_address
+                  )
+                  return True
+              except ClientError as exc:
+                  error_code = exc.response["Error"]["Code"]
+                  logger.error(
+                      "SES send failed: template=%s to=%s error_code=%s message=%s",
+                      template_name,
+                      to_address,
+                      error_code,
+                      exc.response["Error"]["Message"],
+                  )
+                  return False
+
+
+          def build_template_name(suffix: str, config: dict[str, str]) -> str:
+              return f"{config['app_name']}-{config['stage']}-{suffix}"
+
+
+          # ---------------------------------------------------------------------------
+          # Notification handlers
+          # ---------------------------------------------------------------------------
+
+          def handle_new_jobs_alert(payload: dict[str, Any], config: dict[str, str]) -> None:
+              """Send a new-jobs alert email to the user."""
+              user_id = payload.get("user_id") or payload.get("userId")
+              if not user_id:
+                  logger.error("new_jobs_alert: missing user_id in payload")
+                  return
+
+              email = resolve_user_email(user_id)
+              if not email:
+                  logger.error("new_jobs_alert: could not resolve email for user_id=%s", user_id)
+                  return
+
+              job_count = payload.get("job_count", payload.get("jobCount", 0))
+              top_jobs_html = payload.get("top_jobs_html", payload.get("topJobsHtml", ""))
+              dashboard_url = payload.get(
+                  "dashboard_url",
+                  payload.get("dashboardUrl", "https://app.careerjump.io/dashboard"),
+              )
+
+              send_templated_email(
+                  to_address=email,
+                  template_name=build_template_name("new-jobs-alert", config),
+                  template_data={
+                      "jobCount": str(job_count),
+                      "topJobs": top_jobs_html,
+                      "dashboardUrl": dashboard_url,
+                  },
+                  config=config,
+              )
+
+
+          def handle_weekly_digest(payload: dict[str, Any], config: dict[str, str]) -> None:
+              """Send a weekly digest email to the user."""
+              user_id = payload.get("user_id") or payload.get("userId")
+              if not user_id:
+                  logger.error("weekly_digest: missing user_id in payload")
+                  return
+
+              email = resolve_user_email(user_id)
+              if not email:
+                  logger.error("weekly_digest: could not resolve email for user_id=%s", user_id)
+                  return
+
+              dashboard_url = payload.get(
+                  "dashboard_url",
+                  payload.get("dashboardUrl", "https://app.careerjump.io/dashboard"),
+              )
+
+              send_templated_email(
+                  to_address=email,
+                  template_name=build_template_name("weekly-digest", config),
+                  template_data={
+                      "availableJobs": str(payload.get("available_jobs", payload.get("availableJobs", 0))),
+                      "appliedJobs": str(payload.get("applied_jobs", payload.get("appliedJobs", 0))),
+                      "interviews": str(payload.get("interviews", 0)),
+                      "dashboardUrl": dashboard_url,
+                  },
+                  config=config,
+              )
+
+
+          def handle_status_update(payload: dict[str, Any], config: dict[str, str]) -> None:
+              """Send an application status-change email."""
+              user_id = payload.get("user_id") or payload.get("userId")
+              if not user_id:
+                  logger.error("status_update: missing user_id in payload")
+                  return
+
+              email = resolve_user_email(user_id)
+              if not email:
+                  logger.error("status_update: could not resolve email for user_id=%s", user_id)
+                  return
+
+              company = payload.get("company", "")
+              job_title = payload.get("job_title", payload.get("jobTitle", ""))
+              status = payload.get("status", "")
+              dashboard_url = payload.get(
+                  "dashboard_url",
+                  payload.get("dashboardUrl", "https://app.careerjump.io/dashboard"),
+              )
+
+              if not company or not status:
+                  logger.error(
+                      "status_update: missing required fields company=%s status=%s",
+                      company,
+                      status,
+                  )
+                  return
+
+              send_templated_email(
+                  to_address=email,
+                  template_name=build_template_name("application-status", config),
+                  template_data={
+                      "company": company,
+                      "jobTitle": job_title,
+                      "status": status,
+                      "dashboardUrl": dashboard_url,
+                  },
+                  config=config,
+              )
+
+
+          def handle_welcome(payload: dict[str, Any], config: dict[str, str]) -> None:
+              """Send a welcome email after signup."""
+              user_id = payload.get("user_id") or payload.get("userId")
+              # Allow direct email in payload (e.g. sent right after Cognito signup
+              # before the DynamoDB profile has been created)
+              email = payload.get("email") or (
+                  resolve_user_email(user_id) if user_id else None
+              )
+              if not email:
+                  logger.error(
+                      "welcome: could not resolve email; user_id=%s payload_email=%s",
+                      user_id,
+                      payload.get("email"),
+                  )
+                  return
+
+              dashboard_url = payload.get(
+                  "dashboard_url",
+                  payload.get("dashboardUrl", "https://app.careerjump.io/dashboard"),
+              )
+
+              send_templated_email(
+                  to_address=email,
+                  template_name=build_template_name("welcome", config),
+                  template_data={"dashboardUrl": dashboard_url},
+                  config=config,
+              )
+
+
+          # ---------------------------------------------------------------------------
+          # Dispatch table
+          # ---------------------------------------------------------------------------
+          HANDLERS = {
+              "new_jobs_alert": handle_new_jobs_alert,
+              "weekly_digest": handle_weekly_digest,
+              "status_update": handle_status_update,
+              "welcome": handle_welcome,
+          }
+
+          # ---------------------------------------------------------------------------
+          # Lambda entry point
+          # ---------------------------------------------------------------------------
+
+          def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
+              """
+              Lambda handler.
+              Expects SNS records containing a JSON Message with:
+                {
+                  "notification_type": "<type>",
+                  ... type-specific fields ...
+                }
+              """
+              config = get_config()
+              processed = 0
+              errors = 0
+
+              records = event.get("Records", [])
+              if not records:
+                  logger.warning("No Records in event; nothing to process")
+                  return {"processed": 0, "errors": 0}
+
+              for record in records:
+                  try:
+                      sns_message_raw = record.get("Sns", {}).get("Message", "{}")
+                      payload: dict[str, Any] = json.loads(sns_message_raw)
+                  except (json.JSONDecodeError, AttributeError) as exc:
+                      logger.error("Failed to parse SNS message: %s | raw=%s", exc, record)
+                      errors += 1
+                      continue
+
+                  notification_type = payload.get("notification_type", "").strip().lower()
+                  logger.info("Processing notification_type=%s", notification_type)
+
+                  handler_fn = HANDLERS.get(notification_type)
+                  if handler_fn is None:
+                      logger.warning(
+                          "Unknown notification_type=%s – skipping", notification_type
+                      )
+                      errors += 1
+                      continue
+
+                  try:
+                      handler_fn(payload, config)
+                      processed += 1
+                  except Exception as exc:  # noqa: BLE001
+                      # Non-blocking: log and continue processing remaining records
+                      logger.error(
+                          "Handler %s raised an unexpected error: %s",
+                          notification_type,
+                          exc,
+                          exc_info=True,
+                      )
+                      errors += 1
+
+              logger.info("Finished: processed=%d errors=%d", processed, errors)
+              return {"processed": processed, "errors": errors}
+
+      Tags:
+        - Key: App
+          Value: career-jump
+        - Key: Stage
+          Value: !Ref Stage
+
+  # ---------------------------------------------------------------------------
+  # SNS → Lambda subscription
+  # ---------------------------------------------------------------------------
+  NotificationLambdaSNSPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt NotificationLambda.Arn
+      Action: lambda:InvokeFunction
+      Principal: sns.amazonaws.com
+      SourceArn: !Ref NotificationTopicArn
+
+  NotificationSNSSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref NotificationTopicArn
+      Protocol: lambda
+      Endpoint: !GetAtt NotificationLambda.Arn
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+  LambdaArn:
+    Description: Notification Lambda function ARN.
+    Value: !GetAtt NotificationLambda.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-NotificationLambdaArn"
+
+  LambdaRoleArn:
+    Description: IAM role ARN for the notification Lambda.
+    Value: !GetAtt NotificationLambdaRole.Arn
+    Export:
+      Name: !Sub "${AppName}-${Stage}-NotificationLambdaRoleArn"
+
+  LogGroupName:
+    Description: CloudWatch log group name for the notification Lambda.
+    Value: !Ref NotificationLogGroup
+    Export:
+      Name: !Sub "${AppName}-${Stage}-NotificationLogGroupName"
+
+  SSMConfigPath:
+    Description: SSM Parameter Store path for notification runtime config.
+    Value: !Ref NotificationConfigParameter
+    Export:
+      Name: !Sub "${AppName}-${Stage}-NotificationSSMConfigPath"

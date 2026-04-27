@@ -1,0 +1,318 @@
+<svg width="1280" height="780" viewBox="0 0 1280 780" xmlns="http://www.w3.org/2000/svg" font-family="'Segoe UI', Arial, sans-serif">
+
+  <!-- Defs: arrowhead markers -->
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#555"/>
+    </marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#FF9900"/>
+    </marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#4053D6"/>
+    </marker>
+    <marker id="arrow-dashed" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#999"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#00000020"/>
+    </filter>
+  </defs>
+
+  <!-- Page background -->
+  <rect width="1280" height="780" fill="#F2F3F3"/>
+
+  <!-- Title -->
+  <text x="640" y="34" text-anchor="middle" font-size="20" font-weight="700" fill="#232F3E">Career Jump AWS — Infrastructure Overview</text>
+  <text x="640" y="54" text-anchor="middle" font-size="13" fill="#666">AWS Account 561303652551 · us-east-1 · v3.0</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- AWS Account boundary -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="280" y="70" width="970" height="690" rx="12" fill="white" stroke="#232F3E" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="280" y="70" width="970" height="30" rx="12" fill="#232F3E"/>
+  <rect x="280" y="88" width="970" height="12" fill="#232F3E"/>
+  <text x="765" y="90" text-anchor="middle" font-size="12" font-weight="700" fill="white">AWS Account · us-east-1</text>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- EXTERNAL: Browser -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="150" width="130" height="80" rx="8" fill="#37474F" stroke="#263238" stroke-width="1.5"/>
+    <rect x="30" y="150" width="130" height="26" rx="8" fill="#263238"/>
+    <rect x="30" y="164" width="130" height="12" fill="#263238"/>
+    <text x="95" y="170" text-anchor="middle" font-size="11" font-weight="700" fill="white">Browser</text>
+    <text x="95" y="192" text-anchor="middle" font-size="11" fill="#CFD8DC">User Agent</text>
+    <text x="95" y="210" text-anchor="middle" font-size="10" fill="#90A4AE">HTTPS / PKCE</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- EXTERNAL: GitHub -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <g filter="url(#shadow)">
+    <rect x="30" y="580" width="130" height="80" rx="8" fill="#24292F" stroke="#1a1f24" stroke-width="1.5"/>
+    <rect x="30" y="580" width="130" height="26" rx="8" fill="#1a1f24"/>
+    <rect x="30" y="594" width="130" height="12" fill="#1a1f24"/>
+    <text x="95" y="600" text-anchor="middle" font-size="11" font-weight="700" fill="white">GitHub</text>
+    <text x="95" y="622" text-anchor="middle" font-size="11" fill="#8B949E">career-jump-aws</text>
+    <text x="95" y="640" text-anchor="middle" font-size="10" fill="#6E7681">sam deploy</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- FRONTEND GROUP -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="300" y="110" width="500" height="140" rx="8" fill="#F3EEFF" stroke="#8C4FFF" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="318" y="128" font-size="11" font-weight="600" fill="#8C4FFF">Frontend &amp; CDN</text>
+
+  <!-- CloudFront -->
+  <g filter="url(#shadow)">
+    <rect x="320" y="135" width="150" height="90" rx="8" fill="white" stroke="#8C4FFF" stroke-width="1.5"/>
+    <rect x="320" y="135" width="150" height="26" rx="8" fill="#8C4FFF"/>
+    <rect x="320" y="149" width="150" height="12" fill="#8C4FFF"/>
+    <text x="395" y="155" text-anchor="middle" font-size="11" font-weight="700" fill="white">CloudFront</text>
+    <text x="395" y="177" text-anchor="middle" font-size="11" fill="#4A235A">Amazon CloudFront</text>
+    <text x="395" y="193" text-anchor="middle" font-size="10" fill="#7D3C98">CDN + OAC + HSTS</text>
+    <text x="395" y="209" text-anchor="middle" font-size="10" fill="#7D3C98">CSP + Cache</text>
+  </g>
+
+  <!-- S3 -->
+  <g filter="url(#shadow)">
+    <rect x="510" y="135" width="150" height="90" rx="8" fill="white" stroke="#7AA116" stroke-width="1.5"/>
+    <rect x="510" y="135" width="150" height="26" rx="8" fill="#7AA116"/>
+    <rect x="510" y="149" width="150" height="12" fill="#7AA116"/>
+    <text x="585" y="155" text-anchor="middle" font-size="11" font-weight="700" fill="white">S3</text>
+    <text x="585" y="177" text-anchor="middle" font-size="11" fill="#1A5276">Amazon S3</text>
+    <text x="585" y="193" text-anchor="middle" font-size="10" fill="#1E8449">Private bucket</text>
+    <text x="585" y="209" text-anchor="middle" font-size="10" fill="#1E8449">HTML/CSS/JS/docs</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- AUTH GROUP -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="820" y="110" width="200" height="140" rx="8" fill="#FDEDEC" stroke="#BF0816" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="838" y="128" font-size="11" font-weight="600" fill="#BF0816">Authentication</text>
+
+  <!-- Cognito -->
+  <g filter="url(#shadow)">
+    <rect x="840" y="135" width="150" height="90" rx="8" fill="white" stroke="#BF0816" stroke-width="1.5"/>
+    <rect x="840" y="135" width="150" height="26" rx="8" fill="#BF0816"/>
+    <rect x="840" y="149" width="150" height="12" fill="#BF0816"/>
+    <text x="915" y="155" text-anchor="middle" font-size="11" font-weight="700" fill="white">Cognito</text>
+    <text x="915" y="177" text-anchor="middle" font-size="11" fill="#641E16">Amazon Cognito</text>
+    <text x="915" y="193" text-anchor="middle" font-size="10" fill="#922B21">Hosted UI + PKCE</text>
+    <text x="915" y="209" text-anchor="middle" font-size="10" fill="#922B21">ID Token issuance</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- API COMPUTE GROUP -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="300" y="280" width="240" height="130" rx="8" fill="#FFF8EE" stroke="#FF9900" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="318" y="298" font-size="11" font-weight="600" fill="#CC7A00">API Compute</text>
+
+  <!-- Lambda API -->
+  <g filter="url(#shadow)">
+    <rect x="318" y="305" width="200" height="90" rx="8" fill="white" stroke="#FF9900" stroke-width="1.5"/>
+    <rect x="318" y="305" width="200" height="26" rx="8" fill="#FF9900"/>
+    <rect x="318" y="319" width="200" height="12" fill="#FF9900"/>
+    <text x="418" y="325" text-anchor="middle" font-size="11" font-weight="700" fill="white">Lambda · API</text>
+    <text x="418" y="347" text-anchor="middle" font-size="11" fill="#7E5109">Function URL</text>
+    <text x="418" y="363" text-anchor="middle" font-size="10" fill="#935116">Routes + token validation</text>
+    <text x="418" y="379" text-anchor="middle" font-size="10" fill="#935116">concurrency: 20</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- SCAN COMPUTE GROUP -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="300" y="450" width="670" height="140" rx="8" fill="#FFF8EE" stroke="#FF9900" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="318" y="468" font-size="11" font-weight="600" fill="#CC7A00">Scan Pipeline (fanout)</text>
+
+  <!-- Lambda Orchestrator -->
+  <g filter="url(#shadow)">
+    <rect x="318" y="478" width="160" height="90" rx="8" fill="white" stroke="#FF9900" stroke-width="1.5"/>
+    <rect x="318" y="478" width="160" height="26" rx="8" fill="#FF9900"/>
+    <rect x="318" y="492" width="160" height="12" fill="#FF9900"/>
+    <text x="398" y="498" text-anchor="middle" font-size="11" font-weight="700" fill="white">Lambda · Orchestrator</text>
+    <text x="398" y="520" text-anchor="middle" font-size="10" fill="#7E5109">Acquire lock</text>
+    <text x="398" y="536" text-anchor="middle" font-size="10" fill="#7E5109">Invoke per company</text>
+    <text x="398" y="552" text-anchor="middle" font-size="10" fill="#7E5109">timeout: 300s</text>
+  </g>
+
+  <!-- Lambda Scanner -->
+  <g filter="url(#shadow)">
+    <rect x="510" y="478" width="160" height="90" rx="8" fill="white" stroke="#FF9900" stroke-width="1.5"/>
+    <rect x="510" y="478" width="160" height="26" rx="8" fill="#FF9900"/>
+    <rect x="510" y="492" width="160" height="12" fill="#FF9900"/>
+    <text x="590" y="498" text-anchor="middle" font-size="11" font-weight="700" fill="white">Lambda · Scanner ×N</text>
+    <text x="590" y="520" text-anchor="middle" font-size="10" fill="#7E5109">Fetch ATS jobs</text>
+    <text x="590" y="536" text-anchor="middle" font-size="10" fill="#7E5109">Filter + write fragment</text>
+    <text x="590" y="552" text-anchor="middle" font-size="10" fill="#7E5109">timeout: 180s · 256 MB</text>
+  </g>
+
+  <!-- Lambda Finalizer -->
+  <g filter="url(#shadow)">
+    <rect x="702" y="478" width="160" height="90" rx="8" fill="white" stroke="#FF9900" stroke-width="1.5"/>
+    <rect x="702" y="478" width="160" height="26" rx="8" fill="#FF9900"/>
+    <rect x="702" y="492" width="160" height="12" fill="#FF9900"/>
+    <text x="782" y="498" text-anchor="middle" font-size="11" font-weight="700" fill="white">Lambda · Finalizer</text>
+    <text x="782" y="520" text-anchor="middle" font-size="10" fill="#7E5109">Merge results</text>
+    <text x="782" y="536" text-anchor="middle" font-size="10" fill="#7E5109">Save inventory</text>
+    <text x="782" y="552" text-anchor="middle" font-size="10" fill="#7E5109">Notify + release lock</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- STATE GROUP -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <rect x="990" y="280" width="230" height="340" rx="8" fill="#EBF5FB" stroke="#4053D6" stroke-width="1.5" stroke-dasharray="6,3"/>
+  <text x="1008" y="298" font-size="11" font-weight="600" fill="#4053D6">State &amp; Observability</text>
+
+  <!-- DynamoDB -->
+  <g filter="url(#shadow)">
+    <rect x="1008" y="308" width="190" height="90" rx="8" fill="white" stroke="#4053D6" stroke-width="1.5"/>
+    <rect x="1008" y="308" width="190" height="26" rx="8" fill="#4053D6"/>
+    <rect x="1008" y="322" width="190" height="12" fill="#4053D6"/>
+    <text x="1103" y="328" text-anchor="middle" font-size="11" font-weight="700" fill="white">DynamoDB</text>
+    <text x="1103" y="350" text-anchor="middle" font-size="11" fill="#1A237E">career-jump-aws-poc-state</text>
+    <text x="1103" y="366" text-anchor="middle" font-size="10" fill="#283593">On-demand · KV adapter</text>
+    <text x="1103" y="382" text-anchor="middle" font-size="10" fill="#283593">App logs TTL 6h</text>
+  </g>
+
+  <!-- CloudWatch -->
+  <g filter="url(#shadow)">
+    <rect x="1008" y="420" width="190" height="80" rx="8" fill="white" stroke="#E7157B" stroke-width="1.5"/>
+    <rect x="1008" y="420" width="190" height="26" rx="8" fill="#E7157B"/>
+    <rect x="1008" y="434" width="190" height="12" fill="#E7157B"/>
+    <text x="1103" y="440" text-anchor="middle" font-size="11" font-weight="700" fill="white">CloudWatch Logs</text>
+    <text x="1103" y="462" text-anchor="middle" font-size="11" fill="#880E4F">4 log groups</text>
+    <text x="1103" y="478" text-anchor="middle" font-size="10" fill="#AD1457">Retention: 1 day</text>
+  </g>
+
+  <!-- Budgets -->
+  <g filter="url(#shadow)">
+    <rect x="1008" y="518" width="190" height="80" rx="8" fill="white" stroke="#E7157B" stroke-width="1.5"/>
+    <rect x="1008" y="518" width="190" height="26" rx="8" fill="#E7157B"/>
+    <rect x="1008" y="532" width="190" height="12" fill="#E7157B"/>
+    <text x="1103" y="538" text-anchor="middle" font-size="11" font-weight="700" fill="white">AWS Budgets</text>
+    <text x="1103" y="560" text-anchor="middle" font-size="11" fill="#880E4F">Monthly guardrail</text>
+    <text x="1103" y="576" text-anchor="middle" font-size="10" fill="#AD1457">Email alert on breach</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- SCHEDULER -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <g filter="url(#shadow)">
+    <rect x="300" y="640" width="200" height="90" rx="8" fill="white" stroke="#E7157B" stroke-width="1.5"/>
+    <rect x="300" y="640" width="200" height="26" rx="8" fill="#E7157B"/>
+    <rect x="300" y="654" width="200" height="12" fill="#E7157B"/>
+    <text x="400" y="660" text-anchor="middle" font-size="11" font-weight="700" fill="white">EventBridge Scheduler</text>
+    <text x="400" y="682" text-anchor="middle" font-size="11" fill="#880E4F">Weekday 6am–9pm ET</text>
+    <text x="400" y="698" text-anchor="middle" font-size="10" fill="#AD1457">Every 3 hours · cron</text>
+    <text x="400" y="714" text-anchor="middle" font-size="10" fill="#AD1457">MON–FRI · us-east-1</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- EXTERNAL: ATS Providers -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <g filter="url(#shadow)">
+    <rect x="570" y="640" width="200" height="90" rx="8" fill="#546E7A" stroke="#37474F" stroke-width="1.5"/>
+    <rect x="570" y="640" width="200" height="26" rx="8" fill="#37474F"/>
+    <rect x="570" y="654" width="200" height="12" fill="#37474F"/>
+    <text x="670" y="660" text-anchor="middle" font-size="11" font-weight="700" fill="white">ATS Providers</text>
+    <text x="670" y="682" text-anchor="middle" font-size="11" fill="#CFD8DC">Workday · Greenhouse</text>
+    <text x="670" y="698" text-anchor="middle" font-size="10" fill="#B0BEC5">Ashby · Lever</text>
+    <text x="670" y="714" text-anchor="middle" font-size="10" fill="#B0BEC5">SmartRecruiters</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- EXTERNAL: Google Apps Script -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <g filter="url(#shadow)">
+    <rect x="820" y="640" width="200" height="90" rx="8" fill="#1A73E8" stroke="#1557B0" stroke-width="1.5"/>
+    <rect x="820" y="640" width="200" height="26" rx="8" fill="#1557B0"/>
+    <rect x="820" y="654" width="200" height="12" fill="#1557B0"/>
+    <text x="920" y="660" text-anchor="middle" font-size="11" font-weight="700" fill="white">Google Apps Script</text>
+    <text x="920" y="682" text-anchor="middle" font-size="11" fill="#BBDEFB">Email webhook</text>
+    <text x="920" y="698" text-anchor="middle" font-size="10" fill="#90CAF9">New/updated job alerts</text>
+    <text x="920" y="714" text-anchor="middle" font-size="10" fill="#90CAF9">HMAC shared secret</text>
+  </g>
+
+  <!-- ──────────────────────────────────────────────────────────── -->
+  <!-- ARROWS -->
+  <!-- ──────────────────────────────────────────────────────────── -->
+
+  <!-- Browser → CloudFront -->
+  <line x1="160" y1="185" x2="318" y2="185" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="240" y="178" text-anchor="middle" font-size="9" fill="#555">HTTPS</text>
+
+  <!-- Browser → Cognito -->
+  <path d="M 160 175 Q 500 140 838 175" fill="none" stroke="#BF0816" stroke-width="1.5" marker-end="url(#arrow)" stroke-dasharray="5,3"/>
+  <text x="500" y="148" text-anchor="middle" font-size="9" fill="#BF0816">PKCE auth</text>
+
+  <!-- Browser → Lambda API -->
+  <path d="M 160 200 L 160 350 L 316 350" fill="none" stroke="#FF9900" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <text x="140" y="295" text-anchor="middle" font-size="9" fill="#FF9900" transform="rotate(-90 140 295)">Bearer token</text>
+
+  <!-- CloudFront → S3 (OAC) -->
+  <line x1="470" y1="180" x2="508" y2="180" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="489" y="173" text-anchor="middle" font-size="9" fill="#555">OAC</text>
+
+  <!-- Lambda API → DynamoDB -->
+  <line x1="518" y1="350" x2="1006" y2="350" stroke="#4053D6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+  <text x="762" y="343" text-anchor="middle" font-size="9" fill="#4053D6">KV read/write</text>
+
+  <!-- Lambda API → Orchestrator (invoke) -->
+  <path d="M 418 397 L 418 476" fill="none" stroke="#FF9900" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <text x="430" y="440" font-size="9" fill="#FF9900">async invoke</text>
+
+  <!-- Orchestrator → Scanner -->
+  <line x1="478" y1="523" x2="508" y2="523" stroke="#FF9900" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <text x="493" y="514" text-anchor="middle" font-size="9" fill="#FF9900">fanout</text>
+
+  <!-- Scanner → Finalizer -->
+  <line x1="670" y1="523" x2="700" y2="523" stroke="#FF9900" stroke-width="1.5" marker-end="url(#arrow-orange)"/>
+  <text x="685" y="514" text-anchor="middle" font-size="9" fill="#FF9900">invoke</text>
+
+  <!-- Scanner → DynamoDB -->
+  <line x1="670" y1="500" x2="1006" y2="380" stroke="#4053D6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+  <!-- Finalizer → DynamoDB -->
+  <line x1="862" y1="500" x2="1006" y2="400" stroke="#4053D6" stroke-width="1.5" marker-end="url(#arrow-blue)"/>
+
+  <!-- Orchestrator → DynamoDB -->
+  <line x1="478" y1="500" x2="1006" y2="350" stroke="#4053D6" stroke-width="1.5" stroke-dasharray="5,3" marker-end="url(#arrow-blue)"/>
+
+  <!-- EventBridge → Orchestrator -->
+  <line x1="400" y1="640" x2="398" y2="570" stroke="#E7157B" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="412" y="610" font-size="9" fill="#E7157B">schedule trigger</text>
+
+  <!-- Scanner → ATS -->
+  <line x1="590" y1="568" x2="650" y2="638" stroke="#555" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="600" y="608" font-size="9" fill="#555">HTTPS fetch</text>
+
+  <!-- Finalizer → Apps Script -->
+  <line x1="782" y1="568" x2="870" y2="638" stroke="#1A73E8" stroke-width="1.5" marker-end="url(#arrow)"/>
+  <text x="845" y="610" font-size="9" fill="#1A73E8">webhook</text>
+
+  <!-- GitHub → AWS (deploy, dashed) -->
+  <path d="M 95 580 L 95 540 L 280 540" fill="none" stroke="#999" stroke-width="1.5" stroke-dasharray="6,3" marker-end="url(#arrow-dashed)"/>
+  <text x="190" y="530" text-anchor="middle" font-size="9" fill="#999">sam deploy (manual)</text>
+
+  <!-- CloudWatch alarms label -->
+  <text x="1103" y="510" text-anchor="middle" font-size="9" fill="#E7157B">4 metric filters + alarms + SNS</text>
+
+  <!-- Legend -->
+  <rect x="30" y="680" width="220" height="80" rx="6" fill="white" stroke="#ccc" stroke-width="1"/>
+  <text x="40" y="698" font-size="11" font-weight="700" fill="#333">Legend</text>
+  <rect x="40" y="706" width="14" height="10" rx="2" fill="#FF9900"/>
+  <text x="60" y="716" font-size="10" fill="#555">AWS Lambda</text>
+  <rect x="40" y="722" width="14" height="10" rx="2" fill="#4053D6"/>
+  <text x="60" y="732" font-size="10" fill="#555">Amazon DynamoDB</text>
+  <rect x="130" y="706" width="14" height="10" rx="2" fill="#8C4FFF"/>
+  <text x="150" y="716" font-size="10" fill="#555">Amazon CloudFront</text>
+  <rect x="130" y="722" width="14" height="10" rx="2" fill="#E7157B"/>
+  <text x="150" y="732" font-size="10" fill="#555">EventBridge / CW / Budget</text>
+  <rect x="40" y="738" width="14" height="10" rx="2" fill="#7AA116"/>
+  <text x="60" y="748" font-size="10" fill="#555">Amazon S3</text>
+  <rect x="130" y="738" width="14" height="10" rx="2" fill="#BF0816"/>
+  <text x="150" y="748" font-size="10" fill="#555">Amazon Cognito</text>
+
+</svg>

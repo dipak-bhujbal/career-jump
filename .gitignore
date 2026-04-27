@@ -1,0 +1,33 @@
+.DS_Store
+
+# Node / local tooling
+node_modules/
+npm-debug.log*
+
+# Frontend build artifacts
+dist/
+dist-ssr/
+
+# AWS/SAM build artifacts
+.aws-sam/
+.cache/
+coverage/
+
+# Local secrets and runtime config
+.dev.vars
+.env
+.env.*
+!.env.example
+*.local
+
+# Local session/tool artifacts
+.agentchattr/
+.claude/
+.mcp.json
+.wrangler/
+uploads/
+
+# Local databases and scratch files
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

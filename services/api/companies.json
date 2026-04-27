@@ -1,0 +1,9 @@
+[
+  { "company": "Anthropic", "enabled": true },
+  { "company": "OpenAI", "enabled": true },
+  { "company": "Visa", "enabled": true },
+  { "company": "LinkedIn", "enabled": true },
+  { "company": "Cloudflare", "enabled": true },
+  { "company": "Datadog", "enabled": true },
+  { "company": "Walmart", "enabled": true }
+]
