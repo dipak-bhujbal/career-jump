@@ -128,6 +128,9 @@ export async function markWorkdayScanSuccess(
   return saveState({
     ...previous,
     scanLayer: downgraded ? "layer1" : previous.scanLayer,
+    // Once a promoted company proves Layer 1 is healthy again, reset the
+    // fallback chain to start from Layer 2 on the next failure.
+    fallbackLayer: downgraded ? DEFAULT_FALLBACK_LAYER : previous.fallbackLayer,
     rateLimitStatus: downgraded ? "ok" : previous.rateLimitStatus === "layer_promoted" ? "layer_promoted" : "ok",
     resumeAfter: null,
     failureCount24h: 0,
@@ -178,6 +181,9 @@ export async function markWorkdayLayerPromotion(
   return saveState({
     ...previous,
     scanLayer: nextLayer,
+    // Promotion should advance the fallback pointer so a Layer 2 company can
+    // later escalate to Layer 3 without re-reading migration history.
+    fallbackLayer: nextLayer === "layer2" ? "layer3" : previous.fallbackLayer,
     rateLimitStatus: "layer_promoted",
     resumeAfter: null,
     probeSuccessCount: 0,

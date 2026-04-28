@@ -32,6 +32,10 @@ Parameters:
     Type: String
     Default: ""
     NoEcho: true
+  ScraperApiKey:
+    Type: String
+    Default: ""
+    NoEcho: true
 
 Globals:
   Function:
@@ -63,6 +67,7 @@ Globals:
         AWS_BILLING_TABLE: !Ref BillingTable
         WORKDAY_CLOUDFLARE_WORKER_URL: !Ref WorkdayCloudflareWorkerUrl
         WORKDAY_CLOUDFLARE_WORKER_SECRET: !Ref WorkdayCloudflareWorkerSecret
+        SCRAPERAPI_KEY: !Ref ScraperApiKey
     Tags:
       app: !Ref AppName
       stage: !Ref Stage
@@ -780,6 +785,10 @@ Resources:
         Minify: true
         Target: es2022
         Sourcemap: false
+        External:
+          - "@sparticuz/chromium"
+          - "playwright-core"
+          - "chromium-bidi/*"
         Loader:
           - .json=json
 
@@ -827,6 +836,10 @@ Resources:
         Minify: true
         Target: es2022
         Sourcemap: false
+        External:
+          - "@sparticuz/chromium"
+          - "playwright-core"
+          - "chromium-bidi/*"
         Loader:
           - .json=json
 
@@ -836,11 +849,12 @@ Resources:
       FunctionName: !Sub "${AppName}-${Stage}-scan-company"
       Handler: src/aws/scan-company.handler
       Timeout: 180
-      MemorySize: 256
+      # Headless Workday fallback needs more room than the default transport.
+      MemorySize: 1024
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
-        - DynamoDBReadPolicy:
+        - DynamoDBCrudPolicy:
             TableName: !Ref RegistryTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RawScansTable
@@ -860,6 +874,10 @@ Resources:
         Minify: true
         Target: es2022
         Sourcemap: false
+        External:
+          - "@sparticuz/chromium"
+          - "playwright-core"
+          - "chromium-bidi/*"
         Loader:
           - .json=json
 

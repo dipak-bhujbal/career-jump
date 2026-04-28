@@ -19,6 +19,8 @@ const WORKDAY_PAGE_DELAY_MS = 250;
 const WORKDAY_QUERY_DELAY_MS = 400;
 const WORKDAY_REQUEST_JITTER_MIN_MS = 500;
 const WORKDAY_REQUEST_JITTER_MAX_MS = 5000;
+const WORKDAY_HEADLESS_NAVIGATION_TIMEOUT_MS = 15_000;
+const WORKDAY_HEADLESS_PAGE_IDLE_WAIT_MS = 750;
 
 type WorkdayFields = {
   host: string;
@@ -38,6 +40,11 @@ type WorkdayTransportResponse = {
   status: number;
   retryAfter?: string | null;
   bodyText: string;
+};
+
+type HeadlessRuntime = {
+  chromium: typeof import("@sparticuz/chromium").default;
+  playwright: typeof import("playwright-core");
 };
 
 type WorkdayPageSuccess = {
@@ -265,6 +272,23 @@ function workerSecret(): string | null {
   return value ? value : null;
 }
 
+function scraperApiKey(): string | null {
+  const value = process.env.SCRAPERAPI_KEY?.trim();
+  return value ? value : null;
+}
+
+export function isScraperApiConfigured(): boolean {
+  return Boolean(scraperApiKey());
+}
+
+async function loadHeadlessRuntime(): Promise<HeadlessRuntime> {
+  const [{ default: Chromium }, playwright] = await Promise.all([
+    import("@sparticuz/chromium"),
+    import("playwright-core"),
+  ]);
+  return { chromium: Chromium, playwright };
+}
+
 function buildRequestHeaders(fields: WorkdayFields, profile: UserAgentProfile): Record<string, string> {
   return {
     Accept: "application/json, text/plain, */*",
@@ -379,19 +403,96 @@ async function requestLayer1(
 }
 
 async function requestLayer2(
-  _fields: WorkdayFields,
-  _payload: Record<string, unknown>
+  fields: WorkdayFields,
+  payload: Record<string, unknown>
 ): Promise<WorkdayTransportResponse> {
-  // Keep promoted-layer behavior explicit until the headless executor exists.
-  throw new Error("Not implemented: Workday layer2 headless transport.");
+  const { chromium, playwright } = await loadHeadlessRuntime();
+  const profile = randomUserAgent();
+  const browser = await playwright.chromium.launch({
+    args: [
+      ...chromium.args,
+      "--disable-blink-features=AutomationControlled",
+    ],
+    executablePath: await chromium.executablePath(),
+    headless: true,
+  });
+
+  try {
+    const context = await browser.newContext({
+      userAgent: profile.userAgent,
+      locale: "en-US",
+      extraHTTPHeaders: {
+        "Accept-Language": "en-US,en;q=0.9",
+      },
+    });
+    // Hide webdriver so the browser context looks less synthetic before the
+    // board page establishes cookies and fetches the JSON API.
+    await context.addInitScript(() => {
+      Object.defineProperty(navigator, "webdriver", {
+        get: () => undefined,
+      });
+    });
+
+    const page = await context.newPage();
+    await page.goto(buildBoardBaseUrl(fields), {
+      waitUntil: "domcontentloaded",
+      timeout: WORKDAY_HEADLESS_NAVIGATION_TIMEOUT_MS,
+    });
+    await page.waitForTimeout(WORKDAY_HEADLESS_PAGE_IDLE_WAIT_MS);
+
+    return page.evaluate(async ({ jobsUrl, requestPayload }) => {
+      const response = await fetch(jobsUrl, {
+        method: "POST",
+        headers: {
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(requestPayload),
+      });
+
+      return {
+        status: response.status,
+        retryAfter: response.headers.get("Retry-After"),
+        bodyText: await response.text(),
+      };
+    }, {
+      jobsUrl: buildJobsEndpoint(fields),
+      requestPayload: payload,
+    });
+  } finally {
+    await browser.close();
+  }
 }
 
 async function requestLayer3(
-  _fields: WorkdayFields,
-  _payload: Record<string, unknown>
+  fields: WorkdayFields,
+  payload: Record<string, unknown>
 ): Promise<WorkdayTransportResponse> {
-  // Keep promoted-layer behavior explicit until the ScraperAPI executor exists.
-  throw new Error("Not implemented: Workday layer3 ScraperAPI transport.");
+  const key = scraperApiKey();
+  if (!key) {
+    throw new Error("ScraperAPI key is not configured.");
+  }
+
+  const response = await fetch("https://api.scraperapi.com/", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      api_key: key,
+      url: buildJobsEndpoint(fields),
+      method: "POST",
+      post_data: JSON.stringify(payload),
+      render: false,
+    }),
+  });
+
+  return {
+    status: response.status,
+    retryAfter: response.headers.get("Retry-After"),
+    bodyText: await response.text(),
+  };
 }
 
 function requestForLayer(

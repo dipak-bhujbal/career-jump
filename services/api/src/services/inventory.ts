@@ -27,14 +27,28 @@ import {
   markWorkdayScanFailure,
   markWorkdayScanSuccess,
   recordAppLog,
+  recordEvent,
   saveRawScan,
   saveJobNotes,
   seenJobKey,
   shouldBypassLiveWorkdayScan,
 } from "../storage";
-import { scanWorkdayJobs } from "../ats/core/workday";
+import { isScraperApiConfigured, scanWorkdayJobs } from "../ats/core/workday";
 import { fetchJobsForDetectedConfig, getDetectedConfig } from "./discovery";
-import type { DetectedConfig, Env, InventorySnapshot, JobPosting, MatchDecisionSummary, RuntimeConfig, TrendPoint, UpdatedEmailJob, UpdatedJobChange } from "../types";
+import type {
+  DetectedConfig,
+  Env,
+  InventorySnapshot,
+  JobPosting,
+  MatchDecisionSummary,
+  RuntimeConfig,
+  TrendPoint,
+  UpdatedEmailJob,
+  UpdatedJobChange,
+  WorkdayScanLayer,
+  WorkdayScanResult,
+  WorkdayScanState,
+} from "../types";
 
 type DiscardReason =
   | "excluded_title"
@@ -336,10 +350,91 @@ type CompanyFetchOutcome = {
   };
 };
 
-async function fetchCompanyJobsWithSharedCache(
+const STALE_WORKDAY_CACHE_ALERT_HOURS = 12;
+
+function analyticsActorForTenant(tenantId?: string) {
+  return tenantId
+    ? { userId: tenantId, tenantId, email: "", displayName: "", scope: "user" as const, isAdmin: false }
+    : null;
+}
+
+function rawScanAgeHours(scannedAt: string | undefined): number | null {
+  if (!scannedAt) return null;
+  const scannedAtMs = Date.parse(scannedAt);
+  if (!Number.isFinite(scannedAtMs)) return null;
+  return (Date.now() - scannedAtMs) / (60 * 60 * 1000);
+}
+
+async function emitStaleWorkdayCacheAlert(
+  env: Env,
   companyName: string,
   detected: DetectedConfig,
-  includeKeywords: string[]
+  scannedAt: string | undefined,
+  tenantId: string | undefined,
+  reason: string,
+): Promise<void> {
+  const ageHours = rawScanAgeHours(scannedAt);
+  if (ageHours === null || ageHours < STALE_WORKDAY_CACHE_ALERT_HOURS) return;
+
+  await recordAppLog(env, {
+    level: "warn",
+    event: "workday_stale_cache_alert",
+    message: `Serving stale Workday cache for ${companyName} (${Math.round(ageHours)}h old)`,
+    tenantId,
+    company: companyName,
+    source: detected.source,
+    route: "scan",
+    details: {
+      scannedAt: scannedAt ?? null,
+      cacheAgeHours: ageHours,
+      reason,
+    },
+  });
+
+  const actor = analyticsActorForTenant(tenantId);
+  await recordEvent(actor, "SCAN_STALE_CACHE_ALERT", {
+    company: companyName,
+    atsType: detected.source,
+    cacheAgeHours: ageHours,
+    scannedAt: scannedAt ?? null,
+    reason,
+  });
+}
+
+function buildWorkdayLayerAttemptOrder(
+  scanState: WorkdayScanState,
+  layerFlags: { layer2: boolean; layer3: boolean },
+): WorkdayScanLayer[] {
+  const order: WorkdayScanLayer[] = [];
+  const layer3Available = layerFlags.layer3 && isScraperApiConfigured();
+
+  // Promoted companies probe Layer 1 first so we can automatically downgrade
+  // when the tenant becomes healthy again, while still falling back to the
+  // promoted layer within the same run if the cheap probe fails.
+  if (scanState.scanLayer !== "layer1") {
+    order.push("layer1");
+  }
+
+  if (scanState.scanLayer === "layer2" && layerFlags.layer2) {
+    order.push("layer2");
+    if (layer3Available) order.push("layer3");
+  } else if (scanState.scanLayer === "layer3" && layer3Available) {
+    order.push("layer3");
+  } else {
+    order.push("layer1");
+    if (layerFlags.layer2) order.push("layer2");
+    if (layer3Available) order.push("layer3");
+  }
+
+  return [...new Set(order)];
+}
+
+async function fetchCompanyJobsWithSharedCache(
+  env: Env,
+  companyName: string,
+  detected: DetectedConfig,
+  includeKeywords: string[],
+  tenantId?: string
 ): Promise<CompanyFetchOutcome> {
   const freshRawScan = await loadLatestRawScan(companyName, detected);
   if (freshRawScan) {
@@ -372,6 +467,15 @@ async function fetchCompanyJobsWithSharedCache(
       throw new Error(`Workday scan for ${companyName} is temporarily ${scanState.rateLimitStatus}.`);
     }
 
+    await emitStaleWorkdayCacheAlert(
+      env,
+      companyName,
+      detected,
+      staleRawScan.scannedAt,
+      tenantId,
+      String(scanState.rateLimitStatus),
+    );
+
     return {
       fetchedJobs: staleRawScan.jobs,
       rawScanCache: {
@@ -383,59 +487,68 @@ async function fetchCompanyJobsWithSharedCache(
     };
   }
 
-  const result = await scanWorkdayJobs(companyName, {
+  const layerFlags = await loadSystemWorkdayLayerFlags();
+  const workdayConfig = {
     sampleUrl: detected.sampleUrl,
     workdayBaseUrl: detected.workdayBaseUrl,
     host: detected.host,
     tenant: detected.tenant,
     site: detected.site,
-  }, includeKeywords, scanState.scanLayer);
+  };
+  const attemptLayers = buildWorkdayLayerAttemptOrder(scanState, layerFlags);
+  let finalFailure: WorkdayScanResult | null = null;
 
-  if (!result.ok) {
+  for (let index = 0; index < attemptLayers.length; index += 1) {
+    const layer = attemptLayers[index];
+    if (layer !== "layer1" && scanState.scanLayer !== layer) {
+      await markWorkdayLayerPromotion(companyName, layer);
+    }
+
+    const result = await scanWorkdayJobs(companyName, workdayConfig, includeKeywords, layer);
+    if (result.ok) {
+      await saveRawScan(companyName, detected, result.jobs);
+      await markWorkdayScanSuccess(companyName, result.layerUsed);
+      return {
+        fetchedJobs: result.jobs,
+        rawScanCache: {
+          hit: false,
+          stale: false,
+        },
+      };
+    }
+
     await markWorkdayScanFailure(companyName, {
       layerUsed: result.layerUsed,
       failureReason: result.failureReason,
       retryAfter: result.retryAfter ?? null,
     });
+    finalFailure = result;
+  }
 
-    const layerFlags = await loadSystemWorkdayLayerFlags();
-    const promotedLayer =
-      scanState.fallbackLayer === "layer2"
-        ? (layerFlags.layer2 ? "layer2" : null)
-        : (layerFlags.layer3 ? "layer3" : null);
-
-    if (promotedLayer) {
-      await markWorkdayLayerPromotion(companyName, promotedLayer);
-      const promotedResult = await scanWorkdayJobs(companyName, {
-        sampleUrl: detected.sampleUrl,
-        workdayBaseUrl: detected.workdayBaseUrl,
-        host: detected.host,
-        tenant: detected.tenant,
-        site: detected.site,
-      }, includeKeywords, promotedLayer);
-
-      if (promotedResult.ok) {
-        await saveRawScan(companyName, detected, promotedResult.jobs);
-        await markWorkdayScanSuccess(companyName, promotedResult.layerUsed);
-        return {
-          fetchedJobs: promotedResult.jobs,
-          rawScanCache: {
-            hit: false,
-            stale: false,
-          },
-        };
-      }
-
-      await markWorkdayScanFailure(companyName, {
-        layerUsed: promotedResult.layerUsed,
-        failureReason: promotedResult.failureReason,
-        retryAfter: promotedResult.retryAfter ?? null,
-      });
-    }
+  if (finalFailure && !finalFailure.ok) {
+    const analyticsActor = analyticsActorForTenant(tenantId);
+    // Only emit SCAN_FAILED once the scan has exhausted every available layer.
+    void recordEvent(analyticsActor, "SCAN_FAILED", {
+      company: companyName,
+      atsType: detected.source,
+      failureReason: finalFailure.failureReason,
+      layer: finalFailure.layerUsed,
+    }).catch((error) => {
+      console.warn("[analytics] failed to record scan failure event", error);
+    });
 
     if (!staleRawScan) {
-      throw new Error(result.message);
+      throw new Error(finalFailure.message);
     }
+
+    await emitStaleWorkdayCacheAlert(
+      env,
+      companyName,
+      detected,
+      staleRawScan.scannedAt,
+      tenantId,
+      finalFailure.failureReason,
+    );
 
     return {
       fetchedJobs: staleRawScan.jobs,
@@ -443,20 +556,12 @@ async function fetchCompanyJobsWithSharedCache(
         hit: true,
         stale: true,
         scannedAt: staleRawScan.scannedAt,
-        reason: result.failureReason,
+        reason: finalFailure.failureReason,
       },
     };
   }
 
-  await saveRawScan(companyName, detected, result.jobs);
-  await markWorkdayScanSuccess(companyName, result.layerUsed);
-  return {
-    fetchedJobs: result.jobs,
-    rawScanCache: {
-      hit: false,
-      stale: false,
-    },
-  };
+  throw new Error(`Workday scan failed for ${companyName} without a typed result.`);
 }
 
 export async function buildInventory(
@@ -557,9 +662,11 @@ export async function buildInventory(
 
       fetchStartedAt = Date.now();
       const companyFetch = await fetchCompanyJobsWithSharedCache(
+        env,
         company.company,
         detected,
-        config.jobtitles.includeKeywords
+        config.jobtitles.includeKeywords,
+        tenantId
       );
       const fetchedJobs = companyFetch.fetchedJobs;
       totalCompaniesDetected += 1;
