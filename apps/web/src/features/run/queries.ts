@@ -43,7 +43,33 @@ export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.post<RunStatus>("/api/run"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: runStatusKey }),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: runStatusKey });
+      const previousStatus = qc.getQueryData<RunStatus>(runStatusKey);
+      // `/api/run` is a long-running request today, so flip the UI into an
+      // active polling state immediately instead of waiting for the mutation to
+      // finish before the first `/api/run/status` refresh happens.
+      qc.setQueryData<RunStatus>(runStatusKey, {
+        ok: true,
+        active: true,
+        triggerType: "manual",
+        startedAt: new Date().toISOString(),
+        fetchedCompanies: 0,
+        totalCompanies: previousStatus?.totalCompanies,
+        detail: "starting scan",
+        message: "scan starting",
+        percent: 0,
+      });
+      return { previousStatus };
+    },
+    onError: (_error, _variables, context) => {
+      if (context?.previousStatus) {
+        qc.setQueryData(runStatusKey, context.previousStatus);
+        return;
+      }
+      qc.removeQueries({ queryKey: runStatusKey, exact: true });
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: runStatusKey }),
   });
 }
 
