@@ -43,8 +43,39 @@ type WorkdayTransportResponse = {
 };
 
 type HeadlessRuntime = {
-  chromium: typeof import("@sparticuz/chromium").default;
-  playwright: typeof import("playwright-core");
+  chromium: {
+    args: string[];
+    executablePath(): Promise<string>;
+  };
+  playwright: {
+    chromium: {
+      launch(options: {
+        args: string[];
+        executablePath: string;
+        headless: boolean;
+      }): Promise<{
+        newContext(options: {
+          userAgent: string;
+          locale: string;
+          extraHTTPHeaders: Record<string, string>;
+        }): Promise<{
+          addInitScript(script: () => void): Promise<void>;
+          newPage(): Promise<{
+            goto(
+              url: string,
+              options: { waitUntil: "domcontentloaded"; timeout: number }
+            ): Promise<void>;
+            waitForTimeout(ms: number): Promise<void>;
+            evaluate<Result, Arg>(
+              pageFunction: (arg: Arg) => Promise<Result>,
+              arg: Arg
+            ): Promise<Result>;
+          }>;
+        }>;
+        close(): Promise<void>;
+      }>;
+    };
+  };
 };
 
 type WorkdayPageSuccess = {
@@ -282,11 +313,18 @@ export function isScraperApiConfigured(): boolean {
 }
 
 async function loadHeadlessRuntime(): Promise<HeadlessRuntime> {
-  const [{ default: Chromium }, playwright] = await Promise.all([
-    import("@sparticuz/chromium"),
-    import("playwright-core"),
-  ]);
-  return { chromium: Chromium, playwright };
+  // Use runtime-only require so SAM/esbuild does not try to crawl Playwright's
+  // optional browser internals during Lambda bundling. Layer 2 is feature-
+  // flagged and only loads when a promoted Workday board actually needs it.
+  const runtimeRequire = Function("return require")() as NodeRequire;
+  const chromiumModule = runtimeRequire("@sparticuz/chromium") as {
+    default: HeadlessRuntime["chromium"];
+  };
+  const playwrightModule = runtimeRequire("playwright-core") as HeadlessRuntime["playwright"];
+  return {
+    chromium: chromiumModule.default,
+    playwright: playwrightModule,
+  };
 }
 
 function buildRequestHeaders(fields: WorkdayFields, profile: UserAgentProfile): Record<string, string> {
