@@ -46,7 +46,22 @@ export function parseWorkdaySampleUrl(
     const host = url.hostname.toLowerCase();
 
     const parts = url.pathname.split("/").filter(Boolean);
-    const site = parts.length >= 2 ? parts[1] : "";
+    const firstSegment = parts[0] ?? "";
+    const secondSegment = parts[1] ?? "";
+    const hasLocalePrefix = /^[a-z]{2}-[A-Z]{2}$/.test(firstSegment);
+    /**
+     * Workday boards commonly use one of two canonical shapes:
+     *   /en-US/<jobboard>
+     *   /<jobboard>
+     *
+     * Posting URLs can also include /job/... which is not enough to recover
+     * the board token on its own, so keep site empty in that case.
+     */
+    const site = hasLocalePrefix
+      ? secondSegment
+      : firstSegment && firstSegment !== "job"
+        ? firstSegment
+        : "";
 
     /**
      * For hosts like:
@@ -60,7 +75,11 @@ export function parseWorkdaySampleUrl(
     /**
      * Keep the old workdayBaseUrl too for backward compatibility / debugging.
      */
-    const workdayBaseUrl = site ? `${url.origin}/en-US/${site}` : undefined;
+    const workdayBaseUrl = site
+      ? hasLocalePrefix
+        ? `${url.origin}/${firstSegment}/${site}`
+        : `${url.origin}/${site}`
+      : undefined;
 
     if (!host || !tenant || !site) return {};
 

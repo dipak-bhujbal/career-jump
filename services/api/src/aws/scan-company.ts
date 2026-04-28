@@ -5,9 +5,17 @@ import { jobStateKv } from "../lib/bindings";
 import { logErrorEvent } from "../lib/logger";
 import { tenantScopedKey } from "../lib/tenant";
 import { buildInventory } from "../services/inventory";
+import { heartbeatActiveRun } from "../storage";
 import type { InventorySnapshot } from "../types";
 import { makeAwsEnv } from "./env";
-import { companyResultKey, failedCompanyResultKey, markCompanyFinished, tryStartFinalize, type AwsRunMeta } from "./run-state";
+import {
+  companyResultKey,
+  failedCompanyResultKey,
+  getRunMeta,
+  markCompanyFinished,
+  tryStartFinalize,
+  type AwsRunMeta,
+} from "./run-state";
 
 type ScanCompanyEvent = {
   runId: string;
@@ -40,6 +48,37 @@ async function maybeInvokeFinalize(
   }));
 }
 
+async function publishAwsRunHeartbeat(
+  runId: string,
+  patch: {
+    currentCompany: string;
+    currentSource?: string;
+    currentStage: string;
+    lastEvent: string;
+  }
+): Promise<void> {
+  const env = makeAwsEnv();
+  const meta = await getRunMeta(runId);
+  if (!meta) return;
+
+  try {
+    // AWS runs fan out one company per Lambda, so progress must come from the
+    // shared run meta counters instead of the local one-company inventory loop.
+    await heartbeatActiveRun(env, runId, {
+      totalCompanies: meta.expectedCompanies,
+      fetchedCompanies: meta.totalFinishedCompanies ?? (meta.completedCompanies + meta.failedCompanies),
+      currentCompany: patch.currentCompany,
+      currentSource: patch.currentSource,
+      currentStage: patch.currentStage,
+      lastEvent: patch.lastEvent,
+    });
+  } catch {
+    // Finalize or manual abort can release the run lock between worker steps.
+    // Heartbeats are best-effort progress updates, so losing the lock should
+    // not convert a finished company scan into a failed Lambda invocation.
+  }
+}
+
 export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; runId: string; companyName: string }> {
   const env = makeAwsEnv();
   const { runId, tenantId, companyName } = event;
@@ -51,6 +90,13 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
     const company = config.companies.find((entry) => entry.company === companyName);
     if (!company) throw new Error(`Company ${companyName} was not found in runtime config`);
 
+    await publishAwsRunHeartbeat(runId, {
+      currentCompany: company.company,
+      currentSource: company.source,
+      currentStage: "scanning_company",
+      lastEvent: "company_scan_started",
+    });
+
     const previousInventory = await loadPreviousInventory(tenantId);
     const inventory = await buildInventory(
       env,
@@ -58,7 +104,12 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
       previousInventory,
       runId,
       tenantId,
-      { preserveUnscannedJobs: false }
+      {
+        preserveUnscannedJobs: false,
+        // The shared AWS run lock is updated from run meta counters instead of
+        // the local single-company loop so progress stays 0/N -> N/N.
+        disableActiveRunHeartbeat: true,
+      }
     );
 
     await jobStateKv(env).put(companyResultKey(runId, companyName), JSON.stringify({
@@ -85,6 +136,11 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
     });
   } finally {
     const finish = await markCompanyFinished({ runId, failed });
+    await publishAwsRunHeartbeat(runId, {
+      currentCompany: companyName,
+      currentStage: failed ? "company_failed" : "company_completed",
+      lastEvent: failed ? "company_scan_failed" : "company_scan_completed",
+    });
     await maybeInvokeFinalize(runId, finish.meta, finish.shouldStartFinalize, tenantId);
   }
 

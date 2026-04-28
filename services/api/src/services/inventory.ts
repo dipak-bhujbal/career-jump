@@ -570,7 +570,11 @@ export async function buildInventory(
   previousInventory: InventorySnapshot | null = null,
   runId?: string,
   tenantId?: string,
-  options: { preserveUnscannedJobs?: boolean; metadata?: BuildInventoryMetadata } = {}
+  options: {
+    preserveUnscannedJobs?: boolean;
+    metadata?: BuildInventoryMetadata;
+    disableActiveRunHeartbeat?: boolean;
+  } = {}
 ): Promise<InventorySnapshot> {
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
   const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
@@ -588,7 +592,7 @@ export async function buildInventory(
   for (let index = 0; index < enabledCompanies.length; index += 1) {
     const company = enabledCompanies[index];
     let fetchStartedAt = Date.now();
-    if (runId) {
+    if (runId && !options.disableActiveRunHeartbeat) {
       await ensureActiveRunOwnership(env, runId);
       // Publish a heartbeat before each company so the UI can show live scan
       // progress instead of only a one-time "scan started" toast.
@@ -647,7 +651,7 @@ export async function buildInventory(
           route: "scan",
           details: { progress: { current: index + 1, total: enabledCompanies.length } },
         });
-        if (runId) {
+        if (runId && !options.disableActiveRunHeartbeat) {
           await heartbeatActiveRun(env, runId, {
             totalCompanies: enabledCompanies.length,
             fetchedCompanies: index + 1,
@@ -812,7 +816,7 @@ export async function buildInventory(
           progress: { current: index + 1, total: enabledCompanies.length },
         },
       });
-      if (runId) {
+      if (runId && !options.disableActiveRunHeartbeat) {
         await heartbeatActiveRun(env, runId, {
           totalCompanies: enabledCompanies.length,
           fetchedCompanies: index + 1,
@@ -888,7 +892,7 @@ export async function buildInventory(
           progress: { current: index + 1, total: enabledCompanies.length },
         },
       });
-      if (runId && !isOwnershipLost) {
+      if (runId && !options.disableActiveRunHeartbeat && !isOwnershipLost) {
         await heartbeatActiveRun(env, runId, {
           totalCompanies: enabledCompanies.length,
           fetchedCompanies: index + 1,

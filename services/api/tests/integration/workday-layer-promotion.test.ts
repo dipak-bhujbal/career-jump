@@ -10,6 +10,7 @@ const markWorkdayScanSuccessMock = vi.fn();
 const saveRawScanMock = vi.fn();
 const recordAppLogMock = vi.fn();
 const recordEventMock = vi.fn();
+const heartbeatActiveRunMock = vi.fn();
 
 const getDetectedConfigMock = vi.fn();
 const scanWorkdayJobsMock = vi.fn();
@@ -31,6 +32,7 @@ vi.mock("../../src/storage", async () => {
     markWorkdayScanSuccess: markWorkdayScanSuccessMock,
     recordAppLog: recordAppLogMock,
     recordEvent: recordEventMock,
+    heartbeatActiveRun: heartbeatActiveRunMock,
     saveRawScan: saveRawScanMock,
     saveJobNotes: vi.fn(async () => undefined),
     seenJobKey: vi.fn(() => "seen"),
@@ -124,6 +126,7 @@ describe("integration workday layer promotion", () => {
     saveRawScanMock.mockResolvedValue(undefined);
     recordAppLogMock.mockResolvedValue(undefined);
     recordEventMock.mockReturnValue(Promise.resolve(undefined));
+    heartbeatActiveRunMock.mockResolvedValue(undefined);
   });
 
   it("attempts layer2 promotion after a layer1 failure when the flag is enabled", async () => {
@@ -289,5 +292,20 @@ describe("integration workday layer promotion", () => {
       "layer3",
     );
     expect(markWorkdayScanSuccessMock).toHaveBeenCalledWith("Acme", "layer3");
+  });
+
+  it("can skip direct active-run heartbeats when an outer worker owns shared progress", async () => {
+    scanWorkdayJobsMock.mockResolvedValueOnce({
+      ok: true,
+      layerUsed: "layer1",
+      jobs: [],
+    });
+    const { buildInventory } = await import("../../src/services/inventory");
+
+    await buildInventory(mockEnv, runtimeConfig, null, "run-123", "tenant-123", {
+      disableActiveRunHeartbeat: true,
+    });
+
+    expect(heartbeatActiveRunMock).not.toHaveBeenCalled();
   });
 });
