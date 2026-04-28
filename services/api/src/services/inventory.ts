@@ -16,15 +16,25 @@ import {
   ActiveRunOwnershipError,
   ensureActiveRunOwnership,
   firstSeenFingerprintKey,
+  heartbeatActiveRun,
   legacySeenJobKeys,
   loadAppliedJobs,
   loadJobNotes,
+  loadLatestRawScan,
+  loadSystemWorkdayLayerFlags,
+  loadWorkdayScanState,
+  markWorkdayLayerPromotion,
+  markWorkdayScanFailure,
+  markWorkdayScanSuccess,
   recordAppLog,
+  saveRawScan,
   saveJobNotes,
   seenJobKey,
+  shouldBypassLiveWorkdayScan,
 } from "../storage";
+import { scanWorkdayJobs } from "../ats/core/workday";
 import { fetchJobsForDetectedConfig, getDetectedConfig } from "./discovery";
-import type { Env, InventorySnapshot, JobPosting, MatchDecisionSummary, RuntimeConfig, TrendPoint, UpdatedEmailJob, UpdatedJobChange } from "../types";
+import type { DetectedConfig, Env, InventorySnapshot, JobPosting, MatchDecisionSummary, RuntimeConfig, TrendPoint, UpdatedEmailJob, UpdatedJobChange } from "../types";
 
 type DiscardReason =
   | "excluded_title"
@@ -316,6 +326,139 @@ async function listDecisionSummariesForRun(
   return rows.filter((row): row is MatchDecisionSummary => Boolean(row));
 }
 
+type CompanyFetchOutcome = {
+  fetchedJobs: JobPosting[];
+  rawScanCache: {
+    hit: boolean;
+    stale: boolean;
+    scannedAt?: string;
+    reason?: string;
+  };
+};
+
+async function fetchCompanyJobsWithSharedCache(
+  companyName: string,
+  detected: DetectedConfig,
+  includeKeywords: string[]
+): Promise<CompanyFetchOutcome> {
+  const freshRawScan = await loadLatestRawScan(companyName, detected);
+  if (freshRawScan) {
+    return {
+      fetchedJobs: freshRawScan.jobs,
+      rawScanCache: {
+        hit: true,
+        stale: false,
+        scannedAt: freshRawScan.scannedAt,
+      },
+    };
+  }
+
+  if (detected.source !== "workday") {
+    const fetchedJobs = await fetchJobsForDetectedConfig(companyName, detected, includeKeywords);
+    await saveRawScan(companyName, detected, fetchedJobs);
+    return {
+      fetchedJobs,
+      rawScanCache: {
+        hit: false,
+        stale: false,
+      },
+    };
+  }
+
+  const staleRawScan = await loadLatestRawScan(companyName, detected, { allowStale: true });
+  const scanState = await loadWorkdayScanState(companyName);
+  if (shouldBypassLiveWorkdayScan(scanState)) {
+    if (!staleRawScan) {
+      throw new Error(`Workday scan for ${companyName} is temporarily ${scanState.rateLimitStatus}.`);
+    }
+
+    return {
+      fetchedJobs: staleRawScan.jobs,
+      rawScanCache: {
+        hit: true,
+        stale: true,
+        scannedAt: staleRawScan.scannedAt,
+        reason: scanState.rateLimitStatus,
+      },
+    };
+  }
+
+  const result = await scanWorkdayJobs(companyName, {
+    sampleUrl: detected.sampleUrl,
+    workdayBaseUrl: detected.workdayBaseUrl,
+    host: detected.host,
+    tenant: detected.tenant,
+    site: detected.site,
+  }, includeKeywords, scanState.scanLayer);
+
+  if (!result.ok) {
+    await markWorkdayScanFailure(companyName, {
+      layerUsed: result.layerUsed,
+      failureReason: result.failureReason,
+      retryAfter: result.retryAfter ?? null,
+    });
+
+    const layerFlags = await loadSystemWorkdayLayerFlags();
+    const promotedLayer =
+      scanState.fallbackLayer === "layer2"
+        ? (layerFlags.layer2 ? "layer2" : null)
+        : (layerFlags.layer3 ? "layer3" : null);
+
+    if (promotedLayer) {
+      await markWorkdayLayerPromotion(companyName, promotedLayer);
+      const promotedResult = await scanWorkdayJobs(companyName, {
+        sampleUrl: detected.sampleUrl,
+        workdayBaseUrl: detected.workdayBaseUrl,
+        host: detected.host,
+        tenant: detected.tenant,
+        site: detected.site,
+      }, includeKeywords, promotedLayer);
+
+      if (promotedResult.ok) {
+        await saveRawScan(companyName, detected, promotedResult.jobs);
+        await markWorkdayScanSuccess(companyName, promotedResult.layerUsed);
+        return {
+          fetchedJobs: promotedResult.jobs,
+          rawScanCache: {
+            hit: false,
+            stale: false,
+          },
+        };
+      }
+
+      await markWorkdayScanFailure(companyName, {
+        layerUsed: promotedResult.layerUsed,
+        failureReason: promotedResult.failureReason,
+        retryAfter: promotedResult.retryAfter ?? null,
+      });
+    }
+
+    if (!staleRawScan) {
+      throw new Error(result.message);
+    }
+
+    return {
+      fetchedJobs: staleRawScan.jobs,
+      rawScanCache: {
+        hit: true,
+        stale: true,
+        scannedAt: staleRawScan.scannedAt,
+        reason: result.failureReason,
+      },
+    };
+  }
+
+  await saveRawScan(companyName, detected, result.jobs);
+  await markWorkdayScanSuccess(companyName, result.layerUsed);
+  return {
+    fetchedJobs: result.jobs,
+    rawScanCache: {
+      hit: false,
+      stale: false,
+    },
+  };
+}
+
 export async function buildInventory(
   env: Env,
   config: RuntimeConfig,
@@ -340,9 +483,22 @@ export async function buildInventory(
   for (let index = 0; index < enabledCompanies.length; index += 1) {
     const company = enabledCompanies[index];
     let fetchStartedAt = Date.now();
+    if (runId) {
+      await ensureActiveRunOwnership(env, runId);
+      // Publish a heartbeat before each company so the UI can show live scan
+      // progress instead of only a one-time "scan started" toast.
+      await heartbeatActiveRun(env, runId, {
+        totalCompanies: enabledCompanies.length,
+        fetchedCompanies: index,
+        currentCompany: company.company,
+        currentSource: company.source,
+        currentStage: "scanning_company",
+        lastEvent: "company_scan_started",
+      });
+    }
 
     try {
-      const detected = await getDetectedConfig(env, company);
+      const detected = await getDetectedConfig(env, company, tenantId);
       if (!detected) {
         byCompany[company.company] = 0;
         byCompanyFetched[company.company] = 0;
@@ -386,11 +542,26 @@ export async function buildInventory(
           route: "scan",
           details: { progress: { current: index + 1, total: enabledCompanies.length } },
         });
+        if (runId) {
+          await heartbeatActiveRun(env, runId, {
+            totalCompanies: enabledCompanies.length,
+            fetchedCompanies: index + 1,
+            currentCompany: company.company,
+            currentSource: company.source,
+            currentStage: "company_skipped",
+            lastEvent: "company_scan_skipped",
+          });
+        }
         continue;
       }
 
       fetchStartedAt = Date.now();
-      const fetchedJobs = await fetchJobsForDetectedConfig(company.company, detected, config.jobtitles.includeKeywords);
+      const companyFetch = await fetchCompanyJobsWithSharedCache(
+        company.company,
+        detected,
+        config.jobtitles.includeKeywords
+      );
+      const fetchedJobs = companyFetch.fetchedJobs;
       totalCompaniesDetected += 1;
       totalFetched += fetchedJobs.length;
       byCompanyFetched[company.company] = fetchedJobs.length;
@@ -530,9 +701,20 @@ export async function buildInventory(
           groupedDuplicateCount: companyGroupedDuplicate,
           suppressedSeenCount: companySuppressedSeen,
           fetchDurationMs: Date.now() - fetchStartedAt,
+          rawScanCache: companyFetch.rawScanCache,
           progress: { current: index + 1, total: enabledCompanies.length },
         },
       });
+      if (runId) {
+        await heartbeatActiveRun(env, runId, {
+          totalCompanies: enabledCompanies.length,
+          fetchedCompanies: index + 1,
+          currentCompany: company.company,
+          currentSource: detected.source,
+          currentStage: "company_completed",
+          lastEvent: "company_scan_completed",
+        });
+      }
     } catch (error) {
       byCompany[company.company] = 0;
       byCompanyFetched[company.company] = 0;
@@ -599,6 +781,16 @@ export async function buildInventory(
           progress: { current: index + 1, total: enabledCompanies.length },
         },
       });
+      if (runId && !isOwnershipLost) {
+        await heartbeatActiveRun(env, runId, {
+          totalCompanies: enabledCompanies.length,
+          fetchedCompanies: index + 1,
+          currentCompany: company.company,
+          currentSource: company.source,
+          currentStage: "company_failed",
+          lastEvent: "company_scan_failed",
+        });
+      }
 
       if (isOwnershipLost) {
         throw error;

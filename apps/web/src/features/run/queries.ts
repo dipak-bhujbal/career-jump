@@ -21,7 +21,18 @@ export const runStatusKey = ["run", "status"] as const;
 export function useRunStatus() {
   return useQuery({
     queryKey: runStatusKey,
-    queryFn: () => api.get<RunStatus>("/api/run/status"),
+    queryFn: async () => {
+      const result = await api.get<RunStatus & { activeRun?: RunStatus }>("/api/run/status");
+      // Accept both the newer flattened shape and the older nested activeRun
+      // response so the progress UI survives incremental backend deploys.
+      if (result.active !== undefined) return result;
+      if (!result.activeRun) return result;
+      return {
+        ...result.activeRun,
+        ok: true,
+        active: true,
+      };
+    },
     refetchInterval: (q) => (q.state.data?.active ? 2000 : 30_000),
     refetchOnWindowFocus: true,
     staleTime: 0,

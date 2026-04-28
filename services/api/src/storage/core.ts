@@ -491,6 +491,8 @@ export async function loadActiveRunLock(env: Env): Promise<ActiveRunLock | null>
     startedAt: String(lock.startedAt),
     expiresAt: String(lock.expiresAt),
     lastHeartbeatAt: typeof lock.lastHeartbeatAt === "string" ? lock.lastHeartbeatAt : undefined,
+    totalCompanies: typeof lock.totalCompanies === "number" ? lock.totalCompanies : undefined,
+    fetchedCompanies: typeof lock.fetchedCompanies === "number" ? lock.fetchedCompanies : undefined,
     currentCompany: typeof lock.currentCompany === "string" ? lock.currentCompany : undefined,
     currentSource: typeof lock.currentSource === "string" ? lock.currentSource : undefined,
     currentStage: typeof lock.currentStage === "string" ? lock.currentStage : undefined,
@@ -681,6 +683,8 @@ export async function acquireActiveRunLock(
     expiresAt: new Date(Date.now() + ACTIVE_RUN_LOCK_TTL_SECONDS * 1000).toISOString(),
     expiresAtEpoch,
     lastHeartbeatAt: startedAt,
+    totalCompanies: undefined,
+    fetchedCompanies: 0,
     currentStage: "run_started",
     lastEvent: `${input.triggerType}_run_started`,
   };
@@ -752,7 +756,7 @@ export async function ensureActiveRunOwnership(env: Env, runId: string): Promise
 export async function heartbeatActiveRun(
   env: Env,
   runId: string,
-  patch?: Partial<Pick<ActiveRunLock, "currentCompany" | "currentSource" | "currentStage" | "currentPage" | "lastEvent">>
+  patch?: Partial<Pick<ActiveRunLock, "totalCompanies" | "fetchedCompanies" | "currentCompany" | "currentSource" | "currentStage" | "currentPage" | "lastEvent">>
 ): Promise<ActiveRunLock> {
   const existing = await loadActiveRunLock(env);
   if (!existing || existing.runId !== runId || isRunLockExpired(existing)) {

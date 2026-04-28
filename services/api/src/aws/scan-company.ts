@@ -24,14 +24,19 @@ async function loadPreviousInventory(tenantId?: string): Promise<InventorySnapsh
   return data && typeof data === "object" ? (data as InventorySnapshot) : null;
 }
 
-async function maybeInvokeFinalize(runId: string, meta: AwsRunMeta, shouldStartFinalize: boolean): Promise<void> {
+async function maybeInvokeFinalize(
+  runId: string,
+  meta: AwsRunMeta,
+  shouldStartFinalize: boolean,
+  tenantId?: string
+): Promise<void> {
   const shouldFinalize = shouldStartFinalize ? await tryStartFinalize(runId, meta) : false;
   const functionName = process.env.FINALIZE_RUN_FUNCTION_NAME;
   if (!shouldFinalize || !functionName) return;
   await lambda.send(new InvokeCommand({
     FunctionName: functionName,
     InvocationType: "Event",
-    Payload: Buffer.from(JSON.stringify({ runId })),
+    Payload: Buffer.from(JSON.stringify({ runId, tenantId })),
   }));
 }
 
@@ -80,7 +85,7 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
     });
   } finally {
     const finish = await markCompanyFinished({ runId, failed });
-    await maybeInvokeFinalize(runId, finish.meta, finish.shouldStartFinalize);
+    await maybeInvokeFinalize(runId, finish.meta, finish.shouldStartFinalize, tenantId);
   }
 
   return { ok: !failed, runId, companyName };

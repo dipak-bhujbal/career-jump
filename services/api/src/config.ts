@@ -1,7 +1,8 @@
 import { CONFIG_KEY } from "./constants";
-import { nowISO, slugify } from "./lib/utils";
+import { hyphenSlug, nowISO, slugify } from "./lib/utils";
 import { configStoreKv } from "./lib/bindings";
 import { tenantScopedKey } from "./lib/tenant";
+import { getByCompany, loadRegistryCache } from "./storage/registry-cache";
 import { loadCompanyScanOverrides } from "./storage";
 import type { CompanyInput, DetectedConfig, Env, JobTitleConfig, RuntimeConfig, Source } from "./types";
 import { typedSeedCompanies, typedSeedJobtitles } from "./types";
@@ -92,14 +93,21 @@ function parseGreenhouseSampleUrl(sampleUrl: string): Pick<CompanyInput, "boardT
     const url = new URL(sampleUrl);
     const parts = url.pathname.split("/").filter(Boolean);
     const host = url.hostname.toLowerCase();
-
-    if (host !== "boards.greenhouse.io" && host !== "job-boards.greenhouse.io") {
-      return {};
-    }
+    const nativeGreenhouseHost = host === "boards.greenhouse.io" || host === "job-boards.greenhouse.io";
 
     const queryBoardToken = url.searchParams.get("for")?.trim();
     if (queryBoardToken) {
       return { boardToken: queryBoardToken };
+    }
+    // Custom-domain Greenhouse job URLs often look like
+    // https://stripe.com/jobs/search?gh_jid=12345 where the board token still
+    // matches the first path segment.
+    const hostedGreenhouseJob = url.searchParams.get("gh_jid")?.trim();
+    if (hostedGreenhouseJob && parts[0]) {
+      return { boardToken: parts[0] };
+    }
+    if (!nativeGreenhouseHost) {
+      return {};
     }
 
     const isEmbedBoardPath =
@@ -187,6 +195,30 @@ export function parseConfiguredAts(
   }
 }
 
+/**
+ * Registry-backed companies should keep a canonical board URL so scans do not
+ * depend on a fragile sample posting URL once the company has already been
+ * discovered and validated.
+ */
+export function canonicalBoardUrlForCompany(company: CompanyInput): string | undefined {
+  switch (company.source) {
+    case "workday":
+      return company.workdayBaseUrl || company.boardUrl || company.sampleUrl;
+    case "greenhouse":
+      return company.boardToken ? `https://job-boards.greenhouse.io/${company.boardToken}` : company.boardUrl || company.sampleUrl;
+    case "ashby":
+      return company.companySlug ? `https://jobs.ashbyhq.com/${company.companySlug}` : company.boardUrl || company.sampleUrl;
+    case "lever":
+      return company.leverSite ? `https://jobs.lever.co/${company.leverSite}` : company.boardUrl || company.sampleUrl;
+    case "smartrecruiters":
+      return company.smartRecruitersCompanyId
+        ? `https://jobs.smartrecruiters.com/${company.smartRecruitersCompanyId}`
+        : company.boardUrl || company.sampleUrl;
+    default:
+      return company.boardUrl || company.sampleUrl;
+  }
+}
+
 export function companyToDetectedConfig(company: CompanyInput): DetectedConfig | null {
   switch (company.source) {
     case "workday":
@@ -233,20 +265,38 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
 
 function normalizeCompany(input: Record<string, unknown>): CompanyInput {
   const source = normalizeSource(input.source);
+  const companyName = String(input.company).trim();
   const sampleUrl = typeof input.sampleUrl === "string" && input.sampleUrl.trim() ? input.sampleUrl.trim() : undefined;
-  const parsed = parseConfiguredAts(source, sampleUrl);
+  const boardUrl = typeof input.boardUrl === "string" && input.boardUrl.trim() ? input.boardUrl.trim() : undefined;
+  const atsParsingSource = boardUrl || sampleUrl;
+  const parsed = parseConfiguredAts(source, atsParsingSource);
+  const inferredGreenhouseBoardToken = source === "greenhouse"
+    ? (parsed.boardToken || slugify(companyName) || hyphenSlug(companyName))
+    : undefined;
 
   return {
-    company: String(input.company).trim(),
+    company: companyName,
     aliases: sanitizeStringArray(input.aliases),
     enabled: input.enabled !== false,
     source,
+    boardUrl,
     sampleUrl,
+    // Preserve registry provenance so custom rows stay editable after save and
+    // refresh instead of being reclassified from source/sampleUrl alone.
+    isRegistry: input.isRegistry === true,
+    registryAts:
+      typeof input.registryAts === "string" && input.registryAts.trim()
+        ? input.registryAts.trim()
+        : undefined,
+    registryTier:
+      typeof input.registryTier === "string" && input.registryTier.trim()
+        ? input.registryTier.trim()
+        : undefined,
 
     boardToken:
       typeof input.boardToken === "string" && input.boardToken.trim()
         ? input.boardToken.trim()
-        : parsed.boardToken,
+        : inferredGreenhouseBoardToken,
 
     companySlug:
       typeof input.companySlug === "string" && input.companySlug.trim()
@@ -266,7 +316,7 @@ function normalizeCompany(input: Record<string, unknown>): CompanyInput {
     workdayBaseUrl:
       typeof input.workdayBaseUrl === "string" && input.workdayBaseUrl.trim()
         ? input.workdayBaseUrl.trim().replace(/\/$/, "")
-        : parsed.workdayBaseUrl,
+        : parsed.workdayBaseUrl || (source === "workday" ? boardUrl : undefined),
 
     host:
       typeof input.host === "string" && input.host.trim()
@@ -303,6 +353,37 @@ export function sanitizeCompanies(input: unknown): CompanyInput[] {
     .map(normalizeCompany);
 }
 
+async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
+  const needsRegistryHydration = companies.some((company) =>
+    (company.isRegistry === true || Boolean(company.registryAts || company.registryTier))
+    && !company.boardUrl
+  );
+  if (!needsRegistryHydration) return companies;
+
+  await loadRegistryCache();
+  return companies.map((company) => {
+    const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
+    if (!isRegistryBacked) return company;
+
+    const entry = getByCompany(company.company);
+    if (!entry?.board_url) return company;
+
+    const parsed = parseConfiguredAts(company.source, entry.board_url);
+    return {
+      ...company,
+      boardUrl: entry.board_url,
+      sampleUrl: company.source === "workday" ? entry.board_url : (company.sampleUrl || entry.sample_url || entry.board_url),
+      workdayBaseUrl:
+        typeof parsed.workdayBaseUrl === "string" && parsed.workdayBaseUrl.trim()
+          ? parsed.workdayBaseUrl
+          : company.workdayBaseUrl,
+      host: typeof parsed.host === "string" && parsed.host.trim() ? parsed.host : company.host,
+      tenant: typeof parsed.tenant === "string" && parsed.tenant.trim() ? parsed.tenant : company.tenant,
+      site: typeof parsed.site === "string" && parsed.site.trim() ? parsed.site : company.site,
+    };
+  });
+}
+
 export async function applyCompanyScanOverrides(env: Env, config: RuntimeConfig, tenantId?: string): Promise<RuntimeConfig> {
   const overrides = await loadCompanyScanOverrides(env, tenantId);
   if (!Object.keys(overrides).length) return config;
@@ -325,20 +406,29 @@ export function sanitizeJobtitles(input: unknown): JobTitleConfig {
   };
 }
 
-export async function loadRuntimeConfig(env: Env, _tenantId?: string): Promise<RuntimeConfig> {
+export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<RuntimeConfig> {
   const kv = configStoreKv(env);
-  const scopedKey = tenantScopedKey(undefined, CONFIG_KEY);
-  const raw = await kv.get(scopedKey, "json");
+  const scopedKey = tenantScopedKey(tenantId, CONFIG_KEY);
+  const legacyKey = tenantScopedKey(undefined, CONFIG_KEY);
+  const scopedRaw = await kv.get(scopedKey, "json");
+  const legacyRaw = !scopedRaw && tenantId
+    // Migrate legacy single-tenant configs forward so existing users keep
+    // their saved company lists when tenant scoping is enabled.
+    ? await kv.get(legacyKey, "json")
+    : null;
+  const raw = scopedRaw ?? legacyRaw;
+  const usedLegacyFallback = !scopedRaw && Boolean(legacyRaw);
 
   if (!raw || typeof raw !== "object") {
     const seeded = seedRuntimeConfig();
-    await saveRuntimeConfig(env, seeded);
+    await saveRuntimeConfig(env, seeded, tenantId);
     return seeded;
   }
 
   const obj = raw as Record<string, unknown>;
+  const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(obj.companies));
   const normalized = {
-    companies: sanitizeCompanies(obj.companies),
+    companies: hydratedCompanies,
     jobtitles: sanitizeJobtitles(obj.jobtitles),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
   };
@@ -346,6 +436,10 @@ export async function loadRuntimeConfig(env: Env, _tenantId?: string): Promise<R
   const serializedNormalized = JSON.stringify(normalized);
   if (serializedNormalized !== serializedRaw) {
     // Persist only when normalization actually repaired or enriched stored config.
+    await kv.put(scopedKey, serializedNormalized);
+  } else if (tenantId && usedLegacyFallback) {
+    // Copy unchanged legacy configs into the tenant key on first read so later
+    // scans and edits stay isolated per authenticated user/admin account.
     await kv.put(scopedKey, serializedNormalized);
   }
 
@@ -355,14 +449,15 @@ export async function loadRuntimeConfig(env: Env, _tenantId?: string): Promise<R
 export async function saveRuntimeConfig(
   env: Env,
   config: RuntimeConfig,
-  _tenantId?: string,
+  tenantId?: string,
   _createdByUserId?: string
 ): Promise<void> {
+  const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(config.companies));
   const normalized: RuntimeConfig = {
-    companies: sanitizeCompanies(config.companies),
+    companies: hydratedCompanies,
     jobtitles: sanitizeJobtitles(config.jobtitles),
     updatedAt: nowISO(),
   };
 
-  await configStoreKv(env).put(tenantScopedKey(undefined, CONFIG_KEY), JSON.stringify(normalized));
+  await configStoreKv(env).put(tenantScopedKey(tenantId, CONFIG_KEY), JSON.stringify(normalized));
 }

@@ -1,6 +1,6 @@
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { applyCompanyScanOverrides, loadRuntimeConfig } from "../config";
-import { resolveSystemTenantContext } from "../lib/tenant";
+import { resolveSystemTenantContext, type AuthenticatedTenantContext } from "../lib/tenant";
 import { logAppEvent, logErrorEvent } from "../lib/logger";
 import { acquireActiveRunLock, releaseActiveRunLock } from "../storage";
 import { makeAwsEnv } from "./env";
@@ -9,12 +9,30 @@ import { createRunMeta, type AwsRunTriggerType } from "./run-state";
 type OrchestratorEvent = {
   runId?: string;
   triggerType?: AwsRunTriggerType;
+  userId?: string;
+  tenantId?: string;
+  email?: string;
+  displayName?: string;
+  scope?: "user" | "admin";
+  isAdmin?: boolean;
 };
 
 const lambda = new LambdaClient({});
 
 function makeRunId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function eventTenantContext(event: OrchestratorEvent): AuthenticatedTenantContext | null {
+  if (!event.tenantId || !event.userId || !event.email) return null;
+  return {
+    userId: event.userId,
+    tenantId: event.tenantId,
+    email: event.email,
+    displayName: event.displayName || event.email,
+    scope: event.scope === "admin" ? "admin" : "user",
+    isAdmin: event.isAdmin === true,
+  };
 }
 
 export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: boolean; runId: string; expectedCompanies?: number }> {
@@ -41,7 +59,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
   }
 
   try {
-    const tenantContext = await resolveSystemTenantContext(env);
+    const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
     const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
     const companies = config.companies.filter((company) => company.enabled !== false);
     await createRunMeta({ runId, triggerType, expectedCompanies: companies.length });

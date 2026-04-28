@@ -101,6 +101,19 @@ function ticketPk(ticketId: string): string {
   return `TICKET#${ticketId}`;
 }
 
+async function generateSupportTicketId(): Promise<string> {
+  const day = new Date().toISOString().slice(2, 10).replace(/-/g, "");
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    // Keep support IDs short and human-friendly while still checking storage
+    // for collisions before we return them.
+    const randomPart = Math.floor(1000 + Math.random() * 9000);
+    const ticketId = `CJ-${day}-${randomPart}`;
+    const existing = await getSupportTicket(ticketId);
+    if (!existing) return ticketId;
+  }
+  return `CJ-${Date.now().toString().slice(-8)}`;
+}
+
 function normalizePlan(plan?: string | null): UserPlan {
   return plan === "pro" || plan === "power" ? plan : "free";
 }
@@ -438,6 +451,24 @@ export async function loadFeatureFlags(actor: RequestActor): Promise<FeatureFlag
   return defaults;
 }
 
+export async function loadSystemWorkdayLayerFlags(): Promise<{ layer2: boolean; layer3: boolean }> {
+  // Background scans need global flag reads without depending on a user session.
+  const existing = await queryRows<SupportFeatureFlagRow>(
+    supportTableName(),
+    "pk = :pk",
+    { ":pk": "FEATURE" },
+    { limit: 50 }
+  );
+
+  const layer2 = existing.find((flag) => flag.flagName === "workday_layer2_headless");
+  const layer3 = existing.find((flag) => flag.flagName === "workday_layer3_scraperapi");
+
+  return {
+    layer2: layer2?.enabled === true,
+    layer3: layer3?.enabled === true,
+  };
+}
+
 export async function saveFeatureFlag(actor: RequestActor, input: FeatureFlagRecord): Promise<FeatureFlagRecord> {
   const next: FeatureFlagRecord = {
     ...input,
@@ -482,7 +513,7 @@ export async function createSupportTicket(
   }
 ): Promise<SupportTicketRecord> {
   const createdAt = nowISO();
-  const ticketId = crypto.randomUUID();
+  const ticketId = await generateSupportTicketId();
   const ticket: SupportTicketRecord = {
     ticketId,
     userId: actor.userId,

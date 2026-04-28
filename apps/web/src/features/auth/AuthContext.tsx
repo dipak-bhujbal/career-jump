@@ -6,7 +6,7 @@
  */
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import { auth, type AuthUser, type AuthError } from "@/lib/auth";
+import { auth, type AuthUser, type AuthError, type AuthScope } from "@/lib/auth";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -22,12 +22,12 @@ export interface AuthContextValue {
   user: AuthUser | null;
   error: AuthError | null;
 
-  signIn: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
+  signIn: (email: string, password: string, rememberMe?: boolean, scope?: AuthScope) => Promise<void>;
   signUp: (email: string, password: string, username: string) => Promise<{ sub: string }>;
   confirmSignUp: (email: string, code: string) => Promise<void>;
   resendConfirmationCode: (email: string) => Promise<void>;
-  forgotPassword: (email: string) => Promise<void>;
-  confirmForgotPassword: (email: string, code: string, newPassword: string) => Promise<void>;
+  forgotPassword: (email: string, scope?: AuthScope) => Promise<void>;
+  confirmForgotPassword: (email: string, code: string, newPassword: string, scope?: AuthScope) => Promise<void>;
   signOut: () => void;
   deleteAccount: () => Promise<void>;
   clearError: () => void;
@@ -101,10 +101,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => { if (refreshTimer.current) clearTimeout(refreshTimer.current); };
   }, []);
 
-  const signIn = useCallback(async (email: string, password: string, rememberMe = false) => {
+  const signIn = useCallback(async (email: string, password: string, rememberMe = false, scope: AuthScope = "user") => {
     setError(null);
     try {
-      const u = await auth.signIn(email, password, rememberMe);
+      const u = await auth.signIn(email, password, rememberMe, scope);
       setUser(u);
       setStatus("authenticated");
     } catch (e) {
@@ -143,20 +143,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const forgotPassword = useCallback(async (email: string) => {
+  const forgotPassword = useCallback(async (email: string, scope: AuthScope = "user") => {
     setError(null);
     try {
-      await auth.forgotPassword(email);
+      await auth.forgotPassword(email, scope);
     } catch (e) {
       setError(e as AuthError);
       throw e;
     }
   }, []);
 
-  const confirmForgotPassword = useCallback(async (email: string, code: string, newPassword: string) => {
+  const confirmForgotPassword = useCallback(async (email: string, code: string, newPassword: string, scope: AuthScope = "user") => {
     setError(null);
     try {
-      await auth.confirmForgotPassword(email, code, newPassword);
+      await auth.confirmForgotPassword(email, code, newPassword, scope);
     } catch (e) {
       setError(e as AuthError);
       throw e;

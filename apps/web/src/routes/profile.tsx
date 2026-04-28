@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import {
   User, Lock, LogOut, Save, Trash2, DatabaseZap, KeyRound, AlertTriangle,
   ChevronRight, Briefcase, CheckCircle2, ClipboardList, ShieldCheck, Eye,
-  EyeOff, Info, Download,
+  EyeOff, Info, Download, LifeBuoy, MessageSquarePlus, Send,
 } from "lucide-react";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -18,16 +18,44 @@ import { useApplied } from "@/features/applied/queries";
 import { useActionPlan } from "@/features/plan/queries";
 import { getAuthDisplayEmail, getAuthDisplayName } from "@/features/auth/display";
 import { cn } from "@/lib/utils";
+import { Select } from "@/components/ui/select";
+import { useCreateSupportMessage, useCreateSupportTicket, useSupportTicket, useSupportTickets } from "@/features/support/queries";
+import { relativeTime } from "@/lib/format";
 
 export const Route = createFileRoute("/profile")({ component: ProfileRoute });
 
-type Section = "account" | "password" | "danger";
+type Section = "account" | "password" | "support" | "danger";
 
 const NAV: { id: Section; label: string; icon: React.ReactNode; danger?: boolean }[] = [
   { id: "account", label: "Account", icon: <User size={14} /> },
   { id: "password", label: "Password", icon: <KeyRound size={14} /> },
+  { id: "support", label: "Support", icon: <LifeBuoy size={14} /> },
   { id: "danger", label: "Danger zone", icon: <AlertTriangle size={14} />, danger: true },
 ];
+
+const SUPPORT_CATEGORIES = [
+  { value: "bug", label: "Bug" },
+  { value: "enhancement", label: "Enhancement request" },
+  { value: "subscription_assistance", label: "Subscription assistance" },
+  { value: "other", label: "Other" },
+] as const;
+
+function supportCategoryLabel(tag?: string | null): string {
+  return SUPPORT_CATEGORIES.find((option) => option.value === tag)?.label ?? "General";
+}
+
+function supportCategoryBadgeClass(tag?: string | null): string {
+  switch (tag) {
+    case "bug":
+      return "bg-rose-500/10 text-rose-300 border-rose-500/30";
+    case "enhancement":
+      return "bg-sky-500/10 text-sky-300 border-sky-500/30";
+    case "subscription_assistance":
+      return "bg-amber-500/10 text-amber-300 border-amber-500/30";
+    default:
+      return "bg-[hsl(var(--secondary))] text-[hsl(var(--muted-foreground))] border-[hsl(var(--border))]";
+  }
+}
 
 function FieldGroup({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -269,6 +297,190 @@ function PasswordSection() {
               title="Change regularly"
               body="Rotate your password every few months, especially if you suspect any compromise."
             />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SupportSection() {
+  const { data, isLoading } = useSupportTickets();
+  const tickets = data?.tickets ?? [];
+  const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
+  const [subject, setSubject] = useState("");
+  const [category, setCategory] = useState<(typeof SUPPORT_CATEGORIES)[number]["value"]>("bug");
+  const [body, setBody] = useState("");
+  const [reply, setReply] = useState("");
+  const createTicket = useCreateSupportTicket();
+  const createMessage = useCreateSupportMessage(selectedTicketId);
+  const { data: ticketData } = useSupportTicket(selectedTicketId);
+
+  useEffect(() => {
+    if (!selectedTicketId && tickets.length > 0) {
+      setSelectedTicketId(tickets[0]?.ticketId ?? null);
+    }
+  }, [selectedTicketId, tickets]);
+
+  const selectedTicket = ticketData?.ticket ?? tickets.find((ticket) => ticket.ticketId === selectedTicketId) ?? null;
+  const selectedCategory = selectedTicket?.tags?.[0] ?? null;
+
+  async function handleCreateTicket() {
+    if (!subject.trim() || !body.trim()) return;
+    const created = await createTicket.mutateAsync({
+      subject: subject.trim(),
+      body: body.trim(),
+      priority: "normal",
+      tags: [category],
+    });
+    const ticket = (created as { ticket?: { ticketId?: string } }).ticket;
+    const ticketId = ticket?.ticketId ?? null;
+    if (ticketId) {
+      setSelectedTicketId(ticketId);
+      toast(`Support ticket created: ${ticketId}`);
+    } else {
+      toast("Support ticket created");
+    }
+    setSubject("");
+    setBody("");
+    setCategory("bug");
+  }
+
+  async function handleReply() {
+    if (!selectedTicketId || !reply.trim()) return;
+    await createMessage.mutateAsync({ body: reply.trim() });
+    setReply("");
+    toast(`Reply sent for ${selectedTicketId}`);
+  }
+
+  return (
+    <div className="grid grid-cols-5 gap-6 items-start">
+      <div className="col-span-3 space-y-6">
+        <SectionCard title="Contact support" description="Open a ticket from your profile and keep the ticket ID for your records.">
+          <div className="space-y-4">
+            <div className="grid grid-cols-[minmax(0,1fr)_220px] gap-4">
+              <FieldGroup label="Subject">
+                <Input value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Short summary of the issue" />
+              </FieldGroup>
+              <FieldGroup label="Category">
+                <Select value={category} onChange={(e) => setCategory(e.target.value as (typeof SUPPORT_CATEGORIES)[number]["value"])}>
+                  {SUPPORT_CATEGORIES.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
+              </FieldGroup>
+            </div>
+            <FieldGroup label="Details">
+              <textarea
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+                placeholder="Tell us what happened, what you expected, and anything we should look at."
+                className="min-h-32 w-full rounded-md border border-[hsl(var(--border))] bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+              />
+            </FieldGroup>
+            <div className="rounded-lg bg-[hsl(var(--secondary))]/60 px-3 py-2.5 text-xs text-[hsl(var(--muted-foreground))]">
+              You’ll see the support ticket ID in the list below right after submission so you can reference it later.
+            </div>
+            <div className="flex justify-end">
+              <Button onClick={() => void handleCreateTicket()} disabled={createTicket.isPending || !subject.trim() || !body.trim()} className="gap-2">
+                <MessageSquarePlus size={14} />
+                {createTicket.isPending ? "Creating…" : "Create support ticket"}
+              </Button>
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard
+          title={selectedTicket ? selectedTicket.subject : "Ticket thread"}
+          description={selectedTicket ? `Ticket ID: ${selectedTicket.ticketId} · Status: ${selectedTicket.status}` : "Select a ticket to view the conversation."}
+        >
+          {selectedTicket ? (
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
+                <span className={cn("rounded-full border px-2.5 py-1 font-medium", supportCategoryBadgeClass(selectedCategory))}>
+                  {supportCategoryLabel(selectedCategory)}
+                </span>
+                <span className="rounded-full border border-[hsl(var(--border))] px-2.5 py-1">Ticket ID: {selectedTicket.ticketId}</span>
+                <span className="rounded-full border border-[hsl(var(--border))] px-2.5 py-1">Updated {relativeTime(selectedTicket.updatedAt)}</span>
+              </div>
+              <div className="space-y-3">
+                {ticketData?.messages?.map((message) => (
+                  <div key={`${message.sender}-${message.createdAt}`} className="rounded-lg border border-[hsl(var(--border))] p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-medium">{message.senderType === "admin" ? "Support" : "You"}</div>
+                      <div className="text-xs text-[hsl(var(--muted-foreground))]">{relativeTime(message.createdAt)}</div>
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-sm">{message.body}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="space-y-3 border-t border-[hsl(var(--border))] pt-4">
+                <textarea
+                  value={reply}
+                  onChange={(e) => setReply(e.target.value)}
+                  placeholder={`Reply to ticket ${selectedTicket.ticketId}`}
+                  className="min-h-28 w-full rounded-md border border-[hsl(var(--border))] bg-transparent px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+                />
+                <div className="flex justify-end">
+                  <Button onClick={() => void handleReply()} disabled={createMessage.isPending || !reply.trim()} className="gap-2">
+                    <Send size={14} />
+                    {createMessage.isPending ? "Sending…" : "Send reply"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="text-sm text-[hsl(var(--muted-foreground))]">
+              {isLoading ? "Loading tickets…" : "Create or select a support ticket to view the thread."}
+            </div>
+          )}
+        </SectionCard>
+      </div>
+
+      <div className="col-span-2">
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+          <div className="px-5 py-4 border-b border-[hsl(var(--border))]">
+            <div className="font-semibold text-sm">Your tickets</div>
+            <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
+              {isLoading ? "Loading…" : `${tickets.length} ticket${tickets.length === 1 ? "" : "s"} on your account`}
+            </div>
+          </div>
+          <div className="p-4 space-y-2">
+            {tickets.map((ticket) => {
+              const primaryCategory = ticket.tags?.[0] ?? null;
+              return (
+                <button
+                  key={ticket.ticketId}
+                  type="button"
+                  onClick={() => setSelectedTicketId(ticket.ticketId)}
+                  className={cn(
+                    "w-full rounded-xl border px-3 py-3 text-left transition-colors",
+                    selectedTicketId === ticket.ticketId
+                      ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70"
+                      : "border-[hsl(var(--border))] hover:bg-[hsl(var(--accent))]/40",
+                  )}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{ticket.subject}</div>
+                      <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">Ticket ID: {ticket.ticketId}</div>
+                    </div>
+                    <div className="text-[11px] uppercase text-[hsl(var(--muted-foreground))]">{ticket.status}</div>
+                  </div>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <span className={cn("rounded-full border px-2 py-0.5 text-[11px] font-medium", supportCategoryBadgeClass(primaryCategory))}>
+                      {supportCategoryLabel(primaryCategory)}
+                    </span>
+                    <span className="text-[11px] text-[hsl(var(--muted-foreground))]">{relativeTime(ticket.updatedAt)}</span>
+                  </div>
+                </button>
+              );
+            })}
+            {!tickets.length && !isLoading && (
+              <div className="text-sm text-[hsl(var(--muted-foreground))]">
+                No tickets yet. Create one on the left and we’ll show the ticket ID here right away.
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -575,6 +787,7 @@ function ProfileRoute() {
         <main className="flex-1 overflow-y-auto p-8">
           {activeSection === "account" && <AccountSection {...profileData} />}
           {activeSection === "password" && <PasswordSection />}
+          {activeSection === "support" && <SupportSection />}
           {activeSection === "danger" && <DangerSection />}
         </main>
       </div>

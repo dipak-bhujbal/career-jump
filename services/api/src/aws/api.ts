@@ -52,10 +52,21 @@ async function startAwsRun(request: Request): Promise<Response> {
   }
 
   const runId = makeRunId("manual");
+  // Forward the authenticated actor so manual scans run against the signed-in
+  // user's tenant instead of the scheduler's system tenant.
   await lambda.send(new InvokeCommand({
     FunctionName: functionName,
     InvocationType: "Event",
-    Payload: Buffer.from(JSON.stringify({ runId, triggerType: "manual" })),
+    Payload: Buffer.from(JSON.stringify({
+      runId,
+      triggerType: "manual",
+      userId: request.headers.get("x-cj-user-id") ?? undefined,
+      tenantId: request.headers.get("x-cj-tenant-id") ?? undefined,
+      email: request.headers.get("x-cj-email") ?? undefined,
+      displayName: request.headers.get("x-cj-display-name") ?? undefined,
+      scope: request.headers.get("x-cj-auth-scope") ?? undefined,
+      isAdmin: request.headers.get("x-cj-admin") === "true",
+    })),
   }));
 
   return new Response(JSON.stringify({ ok: true, runId, status: "accepted" }), {

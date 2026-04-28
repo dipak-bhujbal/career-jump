@@ -16,6 +16,7 @@ export const ACTIVE_RUN_LOCK_KEY = "runtime:active_run_lock";
 export const COMPANY_SCAN_OVERRIDES_KEY = "runtime:company_scan_overrides";
 export const EMAIL_WEBHOOK_CONFIG_KEY = "email-webhook-config";
 export const EMAIL_ATTEMPT_PREFIX = "runtime:email-attempt:";
+export const PASSWORD_RESET_PREFIX = "runtime:password-reset:";
 
 export const ATS_CACHE_PREFIX = "ats:";
 export const SEEN_PREFIX = "seen:";

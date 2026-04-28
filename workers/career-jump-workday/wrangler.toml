@@ -1,0 +1,8 @@
+name = "career-jump-workday"
+main = "src/index.ts"
+compatibility_date = "2026-04-27"
+workers_dev = true
+account_id = "8c8a9dae6a7a135c37c1610f908f6373"
+
+[observability]
+enabled = true

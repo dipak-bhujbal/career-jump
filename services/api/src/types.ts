@@ -37,7 +37,11 @@ export type CompanyInput = {
   aliases?: string[];
   enabled?: boolean;
   source?: Source;
+  boardUrl?: string;
   sampleUrl?: string;
+  isRegistry?: boolean;
+  registryAts?: string;
+  registryTier?: string;
   boardToken?: string;
   companySlug?: string;
   smartRecruitersCompanyId?: string;
@@ -225,6 +229,8 @@ export type ActiveRunLock = {
   expiresAt: string;
   expiresAtEpoch?: number;
   lastHeartbeatAt?: string;
+  totalCompanies?: number;
+  fetchedCompanies?: number;
   currentCompany?: string;
   currentSource?: string;
   currentStage?: string;
@@ -382,7 +388,14 @@ export type AnnouncementRecord = {
 
 export type SupportTicketStatus = "open" | "in_progress" | "resolved" | "closed";
 export type SupportTicketPriority = "low" | "normal" | "high" | "urgent";
-export type SupportTicketTag = "billing" | "scan" | "account" | "bug";
+export type SupportTicketTag =
+  | "bug"
+  | "enhancement"
+  | "subscription_assistance"
+  | "other"
+  | "billing"
+  | "scan"
+  | "account";
 
 export type SupportTicketRecord = {
   ticketId: string;
@@ -441,6 +454,52 @@ export type DetectedConfig =
       tenant?: string;
       site?: string;
     };
+
+export type WorkdayScanLayer = "layer1" | "layer2" | "layer3";
+
+export type WorkdayRateLimitStatus =
+  | "ok"
+  | "throttled"
+  | "blocked"
+  | "captcha"
+  | "parse_error"
+  | "paused"
+  | "layer_promoted";
+
+export type WorkdayFailureReason = Exclude<WorkdayRateLimitStatus, "ok" | "paused" | "layer_promoted">;
+
+export type WorkdayScanState = {
+  company: string;
+  companySlug: string;
+  scanLayer: WorkdayScanLayer;
+  fallbackLayer: Exclude<WorkdayScanLayer, "layer1">;
+  rateLimitStatus: WorkdayRateLimitStatus;
+  resumeAfter?: string | null;
+  failureCount24h: number;
+  lastFailureReason?: WorkdayFailureReason | null;
+  lastFailureAt?: string | null;
+  probeSuccessCount: number;
+  updatedAt: string;
+};
+
+export type WorkdayScanFailure = {
+  ok: false;
+  layerUsed: WorkdayScanLayer;
+  failureReason: WorkdayFailureReason;
+  message: string;
+  status?: number;
+  retryAfter?: string | null;
+  details?: Record<string, unknown>;
+};
+
+export type WorkdayScanSuccess = {
+  ok: true;
+  layerUsed: WorkdayScanLayer;
+  jobs: JobPosting[];
+  retryAfter?: string | null;
+};
+
+export type WorkdayScanResult = WorkdayScanSuccess | WorkdayScanFailure;
 
 export type DetectionCacheRecord =
   | { status: "detected"; company: string; config: DetectedConfig; checkedAt: string }

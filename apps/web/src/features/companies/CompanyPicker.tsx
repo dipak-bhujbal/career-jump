@@ -167,6 +167,14 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
         </div>
 
         <div className="flex-1 overflow-y-auto px-3 py-2">
+          {!results.isError && totalRegistry === 0 && !results.isFetching && (
+            <div className="px-4 py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
+              The live company registry is not loaded yet.
+              <span className="block mt-1">
+                Restore the production registry backup or add a custom company for now.
+              </span>
+            </div>
+          )}
           {results.isError && !results.isFetching && (
             <div className="px-4 py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
               Search requires a connection to the registry.{" "}
@@ -175,7 +183,7 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
               </button>{" "}instead.
             </div>
           )}
-          {!results.isError && resultEntries.length === 0 && !results.isFetching && (
+          {!results.isError && totalRegistry > 0 && resultEntries.length === 0 && !results.isFetching && (
             <div className="px-4 py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
               No matches in {activeTierLabel}. Try a different search or
               <button className="ml-1 underline hover:text-[hsl(var(--foreground))]" onClick={onAddCustom}>

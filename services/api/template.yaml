@@ -25,6 +25,13 @@ Parameters:
   BudgetEmail:
     Type: String
     Default: dipak.bhujbal23@gmail.com
+  WorkdayCloudflareWorkerUrl:
+    Type: String
+    Default: ""
+  WorkdayCloudflareWorkerSecret:
+    Type: String
+    Default: ""
+    NoEcho: true
 
 Globals:
   Function:
@@ -54,6 +61,8 @@ Globals:
         AWS_EVENTS_TABLE: !Ref EventsTable
         AWS_SUPPORT_TABLE: !Ref SupportTable
         AWS_BILLING_TABLE: !Ref BillingTable
+        WORKDAY_CLOUDFLARE_WORKER_URL: !Ref WorkdayCloudflareWorkerUrl
+        WORKDAY_CLOUDFLARE_WORKER_SECRET: !Ref WorkdayCloudflareWorkerSecret
     Tags:
       app: !Ref AppName
       stage: !Ref Stage
@@ -397,7 +406,9 @@ Resources:
             Protection: true
             Override: true
           ContentSecurityPolicy:
-            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://*.amazoncognito.com; img-src 'self' data:; frame-ancestors 'none'"
+            # Cognito auth flows call both the hosted UI domain and the regional
+            # cognito-idp API endpoint directly from the browser.
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; img-src 'self' data:; frame-ancestors 'none'"
             Override: true
 
   ApiNoCachePolicy:
@@ -716,6 +727,10 @@ Resources:
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
+      # The target production account currently has the default 10 concurrent
+      # executions quota, and AWS requires all 10 to remain unreserved. Keep
+      # these functions on the shared pool until the account concurrency limit
+      # is raised, then revisit per-function reservations if needed.
       FunctionName: !Sub "${AppName}-${Stage}-api"
       Handler: src/aws/api.handler
       Timeout: 30
@@ -736,6 +751,8 @@ Resources:
             TableName: !Ref SupportTable
         - DynamoDBCrudPolicy:
             TableName: !Ref BillingTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RawScansTable
         - LambdaInvokePolicy:
             FunctionName: !Ref RunOrchestratorFunction
         - Statement:
@@ -744,10 +761,16 @@ Resources:
                 - ses:SendEmail
                 - ses:SendRawEmail
               Resource: "*"
+            - Effect: Allow
+              Action:
+                - cognito-idp:AdminGetUser
+                - cognito-idp:AdminSetUserPassword
+              Resource:
+                - !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPool}"
+                - !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${AdminUserPool}"
       Environment:
         Variables:
           RUN_ORCHESTRATOR_FUNCTION_NAME: !Ref RunOrchestratorFunction
-      ReservedConcurrentExecutions: 20
       LoggingConfig:
         LogFormat: JSON
     Metadata:
@@ -767,7 +790,6 @@ Resources:
       Handler: src/aws/orchestrator.handler
       Timeout: 60
       MemorySize: 256
-      ReservedConcurrentExecutions: 1
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
@@ -788,6 +810,10 @@ Resources:
         WeekdayEtScan:
           Type: ScheduleV2
           Properties:
+            # Use an explicit schedule name so CloudFormation's early validation
+            # checks the real prod namespace instead of colliding on the
+            # generated logical-id based identifier during change-set creation.
+            Name: !Sub "${AppName}-${Stage}-weekday-et-scan"
             ScheduleExpression: "cron(0 6,9,12,15,18,21 ? * MON-FRI *)"
             ScheduleExpressionTimezone: "America/New_York"
             State: ENABLED
@@ -808,7 +834,6 @@ Resources:
       Handler: src/aws/scan-company.handler
       Timeout: 180
       MemorySize: 256
-      ReservedConcurrentExecutions: 40
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
@@ -842,7 +867,6 @@ Resources:
       Handler: src/aws/finalize-run.handler
       Timeout: 300
       MemorySize: 512
-      ReservedConcurrentExecutions: 1
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable

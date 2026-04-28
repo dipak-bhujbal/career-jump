@@ -2,17 +2,23 @@ import type {
   CompanyInput,
   DetectedConfig,
   JobPosting,
+  WorkdayFailureReason,
   WorkdayJobPosting,
+  WorkdayScanFailure,
+  WorkdayScanLayer,
+  WorkdayScanResult,
   WorkdaySearchResponse,
 } from "../../types";
 import { parseWorkdaySampleUrl } from "../../config";
 import { normalizePostedAtValue } from "../../lib/utils";
 
 const WORKDAY_PAGE_SIZE = 20;
-const MAX_PAGES_PER_QUERY = 12;
-const WORKDAY_RETRY_DELAYS_MS = [500, 1500, 3000];
+const MAX_PAGES_PER_QUERY = 3;
+const WORKDAY_RETRY_DELAYS_MS = [1000, 2500];
 const WORKDAY_PAGE_DELAY_MS = 250;
 const WORKDAY_QUERY_DELAY_MS = 400;
+const WORKDAY_REQUEST_JITTER_MIN_MS = 500;
+const WORKDAY_REQUEST_JITTER_MAX_MS = 5000;
 
 type WorkdayFields = {
   host: string;
@@ -21,12 +27,119 @@ type WorkdayFields = {
   workdayBaseUrl?: string;
 };
 
+type UserAgentProfile = {
+  userAgent: string;
+  secChUa: string;
+  secChUaMobile: string;
+  secChUaPlatform: string;
+};
+
+type WorkdayTransportResponse = {
+  status: number;
+  retryAfter?: string | null;
+  bodyText: string;
+};
+
+type WorkdayPageSuccess = {
+  ok: true;
+  layerUsed: WorkdayScanLayer;
+  retryAfter?: string | null;
+  response: WorkdaySearchResponse;
+};
+
+type WorkdayPageResult = WorkdayPageSuccess | WorkdayScanFailure;
+
+const USER_AGENT_POOL: UserAgentProfile[] = [
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"135\", \"Google Chrome\";v=\"135\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"134\", \"Google Chrome\";v=\"134\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"Windows\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"133\", \"Google Chrome\";v=\"133\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"132\", \"Google Chrome\";v=\"132\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"Linux\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 13_6_6) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"131\", \"Google Chrome\";v=\"131\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"130\", \"Google Chrome\";v=\"130\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"Windows\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_3_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15",
+    secChUa: "\"Safari\";v=\"17\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:124.0) Gecko/20100101 Firefox/124.0",
+    secChUa: "\"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"Windows\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (X11; Linux x86_64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    secChUa: "\"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"Linux\"",
+  },
+  {
+    userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36",
+    secChUa: "\"Chromium\";v=\"136\", \"Google Chrome\";v=\"136\", \"Not.A/Brand\";v=\"24\"",
+    secChUaMobile: "?0",
+    secChUaPlatform: "\"macOS\"",
+  },
+];
+
+export class WorkdayScanFailureError extends Error {
+  readonly result: WorkdayScanFailure;
+
+  constructor(result: WorkdayScanFailure) {
+    super(result.message);
+    this.name = "WorkdayScanFailureError";
+    this.result = result;
+  }
+}
+
 function uniqueNonEmpty(values: string[]): string[] {
-  return [...new Set(values.map((v) => v.trim()).filter(Boolean))];
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
 }
 
 function toWorkdaySearchText(value: string): string {
   return value.trim().split(/\s+/).filter(Boolean).join("+");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function randomBetween(min: number, max: number): number {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function randomUserAgent(): UserAgentProfile {
+  return USER_AGENT_POOL[Math.floor(Math.random() * USER_AGENT_POOL.length)];
 }
 
 function ensureWorkdayFields(input: {
@@ -85,14 +198,6 @@ function buildBoardBaseUrl(fields: WorkdayFields): string {
   return `https://${fields.host}/en-US/${fields.site}`;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function isTransientWorkdayStatus(status: number): boolean {
-  return status === 429 || status === 502 || status === 503 || status === 504;
-}
-
 function summarizeWorkdayErrorBody(text: string): string {
   const compact = text
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -103,13 +208,208 @@ function summarizeWorkdayErrorBody(text: string): string {
   return compact.slice(0, 240) || text.slice(0, 240);
 }
 
-async function parseWorkdayJson(response: Response): Promise<WorkdaySearchResponse> {
-  const text = await response.text();
+function isTransientWorkdayStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
+}
 
+function detectFailureReason(status: number, bodyText: string): WorkdayFailureReason {
+  const loweredBody = bodyText.toLowerCase();
+  if (status === 429) return "throttled";
+  if (status === 403) return "blocked";
+  if (
+    loweredBody.includes("captcha") ||
+    loweredBody.includes("attention required") ||
+    loweredBody.includes("verify you are human") ||
+    loweredBody.includes("cf-chl") ||
+    loweredBody.includes("challenge-platform")
+  ) {
+    return "captcha";
+  }
+  return "parse_error";
+}
+
+function normalizeFailure(
+  layerUsed: WorkdayScanLayer,
+  message: string,
+  status?: number,
+  bodyText = "",
+  retryAfter?: string | null,
+  details?: Record<string, unknown>
+): WorkdayScanFailure {
+  return {
+    ok: false,
+    layerUsed,
+    failureReason: detectFailureReason(status ?? 0, bodyText),
+    message,
+    status,
+    retryAfter: retryAfter ?? null,
+    details,
+  };
+}
+
+function parseWorkdayJson(text: string): WorkdaySearchResponse {
   try {
     return JSON.parse(text) as WorkdaySearchResponse;
   } catch {
     throw new Error(`Invalid Workday JSON: ${text.slice(0, 240)}`);
+  }
+}
+
+function workerUrl(): string | null {
+  const value = process.env.WORKDAY_CLOUDFLARE_WORKER_URL?.trim();
+  return value ? value : null;
+}
+
+function workerSecret(): string | null {
+  const value = process.env.WORKDAY_CLOUDFLARE_WORKER_SECRET?.trim();
+  return value ? value : null;
+}
+
+function buildRequestHeaders(fields: WorkdayFields, profile: UserAgentProfile): Record<string, string> {
+  return {
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    "Content-Type": "application/json",
+    Origin: `https://${fields.host}`,
+    Pragma: "no-cache",
+    Referer: buildBoardBaseUrl(fields),
+    "Sec-CH-UA": profile.secChUa,
+    "Sec-CH-UA-Mobile": profile.secChUaMobile,
+    "Sec-CH-UA-Platform": profile.secChUaPlatform,
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
+    "User-Agent": profile.userAgent,
+  };
+}
+
+async function requestThroughCloudflareWorker(
+  url: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string>
+): Promise<WorkdayTransportResponse> {
+  const cfWorkerUrl = workerUrl();
+  const cfWorkerSecret = workerSecret();
+  if (!cfWorkerUrl || !cfWorkerSecret) {
+    throw new Error("Cloudflare worker credentials are not configured.");
+  }
+
+  const response = await fetch(cfWorkerUrl, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Worker-Secret": cfWorkerSecret,
+    },
+    body: JSON.stringify({
+      url,
+      method: "POST",
+      payload,
+      headers,
+    }),
+  });
+
+  const text = await response.text();
+  if (!response.ok) {
+    return {
+      status: response.status,
+      retryAfter: response.headers.get("Retry-After"),
+      bodyText: text,
+    };
+  }
+
+  const parsed = JSON.parse(text) as {
+    status?: number;
+    retryAfter?: string | null;
+    data?: unknown;
+    bodyText?: string | null;
+  };
+
+  return {
+    status: Number(parsed.status ?? 500),
+    retryAfter: parsed.retryAfter ?? null,
+    bodyText: parsed.data ? JSON.stringify(parsed.data) : String(parsed.bodyText ?? ""),
+  };
+}
+
+async function requestDirectly(
+  url: string,
+  payload: Record<string, unknown>,
+  headers: Record<string, string>
+): Promise<WorkdayTransportResponse> {
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  return {
+    status: response.status,
+    retryAfter: response.headers.get("Retry-After"),
+    bodyText: await response.text(),
+  };
+}
+
+async function requestLayer1(
+  fields: WorkdayFields,
+  payload: Record<string, unknown>,
+  layerUsed: WorkdayScanLayer
+): Promise<WorkdayTransportResponse> {
+  await sleep(randomBetween(WORKDAY_REQUEST_JITTER_MIN_MS, WORKDAY_REQUEST_JITTER_MAX_MS));
+
+  const url = buildJobsEndpoint(fields);
+  const headers = buildRequestHeaders(fields, randomUserAgent());
+
+  if (workerUrl() && workerSecret()) {
+    try {
+      return await requestThroughCloudflareWorker(url, payload, headers);
+    } catch (error) {
+      // Keep Layer 1 resilient while the worker is being rolled out. A worker
+      // outage should not break scans that can still complete directly.
+      console.warn("[workday] cloudflare worker request failed, falling back to direct fetch", JSON.stringify({
+        host: fields.host,
+        site: fields.site,
+        layerUsed,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  return requestDirectly(url, payload, headers);
+}
+
+async function requestLayer2(
+  _fields: WorkdayFields,
+  _payload: Record<string, unknown>
+): Promise<WorkdayTransportResponse> {
+  // Keep promoted-layer behavior explicit until the headless executor exists.
+  throw new Error("Not implemented: Workday layer2 headless transport.");
+}
+
+async function requestLayer3(
+  _fields: WorkdayFields,
+  _payload: Record<string, unknown>
+): Promise<WorkdayTransportResponse> {
+  // Keep promoted-layer behavior explicit until the ScraperAPI executor exists.
+  throw new Error("Not implemented: Workday layer3 ScraperAPI transport.");
+}
+
+function requestForLayer(
+  layerUsed: WorkdayScanLayer,
+  fields: WorkdayFields,
+  payload: Record<string, unknown>
+): Promise<WorkdayTransportResponse> {
+  switch (layerUsed) {
+    case "layer1":
+      return requestLayer1(fields, payload, layerUsed);
+    case "layer2":
+      return requestLayer2(fields, payload);
+    case "layer3":
+      return requestLayer3(fields, payload);
+    default: {
+      const exhaustiveLayer: never = layerUsed;
+      throw new Error(`Unknown Workday layer: ${String(exhaustiveLayer)}`);
+    }
   }
 }
 
@@ -123,56 +423,66 @@ async function fetchWorkdayPage(
   },
   offset: number,
   limit: number,
-  searchText: string
-): Promise<WorkdaySearchResponse> {
+  searchText: string,
+  layerUsed: WorkdayScanLayer = "layer1"
+): Promise<WorkdayPageResult> {
   const fields = ensureWorkdayFields(cfg);
-  const url = buildJobsEndpoint(fields);
+  const payload = {
+    appliedFacets: {},
+    limit,
+    offset,
+    searchText,
+  };
 
   for (let attempt = 0; attempt <= WORKDAY_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      const response = await fetch(url, {
-        method: "POST",
-        headers: {
-          Accept: "application/json, text/plain, */*",
-          "Accept-Language": "en-US,en;q=0.9",
-          "Cache-Control": "no-cache",
-          "Content-Type": "application/json",
-          Origin: `https://${fields.host}`,
-          Pragma: "no-cache",
-          Referer: buildBoardBaseUrl(fields),
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
-        },
-        body: JSON.stringify({
-          appliedFacets: {},
-          limit,
-          offset,
-          searchText,
-        }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        const summary = summarizeWorkdayErrorBody(text);
-        if (isTransientWorkdayStatus(response.status) && attempt < WORKDAY_RETRY_DELAYS_MS.length) {
-          console.warn("[workday] transient fetch failure, retrying", JSON.stringify({
-            host: fields.host,
-            site: fields.site,
-            searchText,
-            offset,
-            limit,
-            status: response.status,
-            attempt: attempt + 1,
-          }));
-          await sleep(WORKDAY_RETRY_DELAYS_MS[attempt]);
-          continue;
+      const transport = await requestForLayer(layerUsed, fields, payload);
+      if (transport.status >= 200 && transport.status < 300) {
+        try {
+          return {
+            ok: true,
+            layerUsed,
+            retryAfter: transport.retryAfter ?? null,
+            response: parseWorkdayJson(transport.bodyText),
+          };
+        } catch (error) {
+          return normalizeFailure(
+            layerUsed,
+            error instanceof Error ? error.message : "Invalid Workday JSON response.",
+            transport.status,
+            transport.bodyText,
+            transport.retryAfter,
+            { host: fields.host, site: fields.site, searchText, offset, limit }
+          );
         }
-        throw new Error(`Workday fetch failed for ${url}: ${response.status} ${summary}`);
       }
 
-      return parseWorkdayJson(response);
+      const bodySummary = summarizeWorkdayErrorBody(transport.bodyText);
+      if (isTransientWorkdayStatus(transport.status) && attempt < WORKDAY_RETRY_DELAYS_MS.length) {
+        console.warn("[workday] transient fetch failure, retrying", JSON.stringify({
+          host: fields.host,
+          site: fields.site,
+          searchText,
+          offset,
+          limit,
+          status: transport.status,
+          attempt: attempt + 1,
+        }));
+        await sleep(WORKDAY_RETRY_DELAYS_MS[attempt]);
+        continue;
+      }
+
+      return normalizeFailure(
+        layerUsed,
+        `Workday fetch failed for ${buildJobsEndpoint(fields)}: ${transport.status} ${bodySummary}`,
+        transport.status,
+        transport.bodyText,
+        transport.retryAfter,
+        { host: fields.host, site: fields.site, searchText, offset, limit }
+      );
     } catch (error) {
       if (attempt < WORKDAY_RETRY_DELAYS_MS.length) {
-        console.warn("[workday] network/json failure, retrying", JSON.stringify({
+        console.warn("[workday] network failure, retrying", JSON.stringify({
           host: fields.host,
           site: fields.site,
           searchText,
@@ -184,11 +494,19 @@ async function fetchWorkdayPage(
         await sleep(WORKDAY_RETRY_DELAYS_MS[attempt]);
         continue;
       }
-      throw error;
+
+      return normalizeFailure(
+        layerUsed,
+        error instanceof Error ? error.message : "Workday network failure.",
+        undefined,
+        "",
+        null,
+        { host: fields.host, site: fields.site, searchText, offset, limit }
+      );
     }
   }
 
-  throw new Error(`Workday fetch failed for ${url}: exhausted retries`);
+  return normalizeFailure(layerUsed, "Workday fetch exhausted retries.");
 }
 
 /**
@@ -296,8 +614,9 @@ async function fetchWorkdayJobsForSearchText(
     tenant?: string;
     site?: string;
   },
-  searchText: string
-): Promise<JobPosting[]> {
+  searchText: string,
+  layerUsed: WorkdayScanLayer
+): Promise<WorkdayScanResult> {
   const all: JobPosting[] = [];
   let offset = 0;
 
@@ -305,23 +624,84 @@ async function fetchWorkdayJobsForSearchText(
     if (pageIndex > 0) {
       await sleep(WORKDAY_PAGE_DELAY_MS);
     }
-    const page = await fetchWorkdayPage(cfg, offset, WORKDAY_PAGE_SIZE, searchText);
-    const postings = Array.isArray(page.jobPostings) ? page.jobPostings : [];
 
-    if (postings.length === 0) break;
+    const page = await fetchWorkdayPage(cfg, offset, WORKDAY_PAGE_SIZE, searchText, layerUsed);
+    if (!page.ok) {
+      return page;
+    }
+
+    const postings = Array.isArray(page.response.jobPostings) ? page.response.jobPostings : [];
+    if (postings.length === 0) {
+      break;
+    }
 
     for (const posting of postings) {
       all.push(normalizeWorkdayJob(companyName, cfg, posting));
     }
 
     offset += postings.length;
-
     if (postings.length < WORKDAY_PAGE_SIZE) {
       break;
     }
   }
 
-  return all;
+  return {
+    ok: true,
+    layerUsed,
+    jobs: all,
+  };
+}
+
+/**
+ * Layer-aware Workday scan entrypoint. This keeps Layer 1 transport details in
+ * one place so the higher-level scan pipeline can respond to typed outcomes
+ * instead of guessing from free-form error messages.
+ */
+export async function scanWorkdayJobs(
+  companyName: string,
+  cfg: {
+    sampleUrl?: string;
+    workdayBaseUrl?: string;
+    host?: string;
+    tenant?: string;
+    site?: string;
+  },
+  includeKeywords: string[] = [],
+  layerUsed: WorkdayScanLayer = "layer1"
+): Promise<WorkdayScanResult> {
+  const searchTerms = uniqueNonEmpty(includeKeywords);
+  const collected: JobPosting[] = [];
+
+  if (searchTerms.length === 0) {
+    const result = await fetchWorkdayJobsForSearchText(companyName, cfg, "", layerUsed);
+    if (!result.ok) return result;
+    collected.push(...result.jobs);
+  } else {
+    for (let index = 0; index < searchTerms.length; index += 1) {
+      const term = searchTerms[index];
+      if (index > 0) {
+        await sleep(WORKDAY_QUERY_DELAY_MS);
+      }
+
+      const result = await fetchWorkdayJobsForSearchText(companyName, cfg, toWorkdaySearchText(term), layerUsed);
+      if (!result.ok) return result;
+      collected.push(...result.jobs);
+    }
+  }
+
+  const deduped = new Map<string, JobPosting>();
+  for (const job of collected) {
+    const key = `${job.company}::${job.id}::${job.url}`;
+    if (!deduped.has(key)) {
+      deduped.set(key, job);
+    }
+  }
+
+  return {
+    ok: true,
+    layerUsed,
+    jobs: [...deduped.values()],
+  };
 }
 
 export async function fetchWorkdayJobs(
@@ -335,31 +715,11 @@ export async function fetchWorkdayJobs(
   },
   includeKeywords: string[] = []
 ): Promise<JobPosting[]> {
-  const searchTerms = uniqueNonEmpty(includeKeywords);
-  const collected: JobPosting[] = [];
-
-  if (searchTerms.length === 0) {
-    collected.push(...(await fetchWorkdayJobsForSearchText(companyName, cfg, "")));
-  } else {
-    for (let index = 0; index < searchTerms.length; index += 1) {
-      const term = searchTerms[index];
-      if (index > 0) {
-        await sleep(WORKDAY_QUERY_DELAY_MS);
-      }
-      collected.push(...(await fetchWorkdayJobsForSearchText(companyName, cfg, toWorkdaySearchText(term))));
-    }
+  const result = await scanWorkdayJobs(companyName, cfg, includeKeywords, "layer1");
+  if (!result.ok) {
+    throw new WorkdayScanFailureError(result);
   }
-
-  const deduped = new Map<string, JobPosting>();
-
-  for (const job of collected) {
-    const key = `${job.company}::${job.id}::${job.url}`;
-    if (!deduped.has(key)) {
-      deduped.set(key, job);
-    }
-  }
-
-  return [...deduped.values()];
+  return result.jobs;
 }
 
 export async function validateWorkdayConfig(
@@ -373,8 +733,9 @@ export async function validateWorkdayConfig(
 ): Promise<DetectedConfig | null> {
   try {
     const fields = ensureWorkdayFields(cfg);
-    const page = await fetchWorkdayPage(fields, 0, 1, "");
-    const hasShape = Array.isArray(page.jobPostings) || typeof page.total === "number";
+    const page = await fetchWorkdayPage(fields, 0, 1, "", "layer1");
+    if (!page.ok) return null;
+    const hasShape = Array.isArray(page.response.jobPostings) || typeof page.response.total === "number";
 
     return hasShape
       ? {

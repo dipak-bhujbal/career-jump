@@ -10,8 +10,8 @@ function namesMatch(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
 }
 
-async function getConfiguredCompany(env: Env, companyName: string): Promise<CompanyInput | null> {
-  const config = await loadRuntimeConfig(env);
+async function getConfiguredCompany(env: Env, companyName: string, tenantId?: string): Promise<CompanyInput | null> {
+  const config = await loadRuntimeConfig(env, tenantId);
   return config.companies.find((item) => namesMatch(item.company, companyName)) ?? null;
 }
 
@@ -19,8 +19,8 @@ async function getConfiguredCompany(env: Env, companyName: string): Promise<Comp
  * Explicit-config mode only.
  * No discovery, no AI, no fallback probing.
  */
-export async function getDetectedConfig(env: Env, company: CompanyInput): Promise<DetectedConfig | null> {
-  const configured = company.source ? company : await getConfiguredCompany(env, company.company);
+export async function getDetectedConfig(env: Env, company: CompanyInput, tenantId?: string): Promise<DetectedConfig | null> {
+  const configured = company.source ? company : await getConfiguredCompany(env, company.company, tenantId);
   return configured ? companyToDetectedConfig(configured) : null;
 }
 
@@ -74,8 +74,8 @@ export async function fetchJobsForDetectedConfig(
   }
 }
 
-export async function resolveWorkdayForCompany(env: Env, companyName: string): Promise<DetectedConfig | null> {
-  const detected = await getDetectedConfig(env, { company: companyName, enabled: true });
+export async function resolveWorkdayForCompany(env: Env, companyName: string, tenantId?: string): Promise<DetectedConfig | null> {
+  const detected = await getDetectedConfig(env, { company: companyName, enabled: true }, tenantId);
   return detected?.source === "workday" ? detected : null;
 }
 

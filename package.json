@@ -1,6 +1,6 @@
 {
   "name": "career-jump",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "type": "module",
   "workspaces": [
@@ -18,5 +18,8 @@
     "aws:sync-frontend": "npm --prefix services/api run aws:sync-frontend",
     "registry:restore": "node scripts/restore-registry-backup.mjs",
     "validate": "npm run build:web && npm run check:api && npm run test:api"
+  },
+  "dependencies": {
+    "wrangler": "^4.85.0"
   }
 }

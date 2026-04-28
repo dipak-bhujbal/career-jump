@@ -35,6 +35,7 @@ import { companyKey, formatAtsLabel } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { Select } from "@/components/ui/select";
+import { parseConfiguredAts } from "@/lib/job-filters";
 
 export const Route = createFileRoute("/configuration")({ component: ConfigurationRoute });
 
@@ -64,6 +65,7 @@ function ConfigurationRoute() {
   const [companySearch, setCompanySearch] = useState("");
   const [atsFilter, setAtsFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | "enabled" | "paused">();
+  const [editingKeywords, setEditingKeywords] = useState(false);
 
   // Reset draft when server config arrives, but only when the draft is
   // still in sync with the server (no unsaved local additions/edits).
@@ -80,11 +82,9 @@ function ConfigurationRoute() {
         // almost certainly added via the registry picker — infer the display label.
         return serverCompanies.map((c) => ({
           ...c,
-          // Backfill: infer registry status from any available signal because
-          // career-jump-aws doesn't persist isRegistry/registryAts/registryTier.
-          // Using OR across all three signals covers old entries where source or
-          // sampleUrl may be null (e.g. companies added before source was normalised).
-          isRegistry: Boolean(c.registryAts || c.source || c.sampleUrl),
+          // Respect persisted registry provenance first so custom rows remain
+          // editable after a save/refresh round-trip.
+          isRegistry: c.isRegistry === true || Boolean(c.registryAts || c.registryTier),
           registryAts: c.registryAts || (c.source ? formatAtsLabel(c.source) : ""),
         }));
       }
@@ -95,6 +95,10 @@ function ConfigurationRoute() {
 
   const baseline = useMemo(() => config.data?.config?.companies ?? [], [config.data]);
   const baselineKeywords = useMemo(() => config.data?.config?.jobtitles ?? { includeKeywords: [], excludeKeywords: [] }, [config.data]);
+  const keywordsDirty = useMemo(
+    () => JSON.stringify(baselineKeywords) !== JSON.stringify(draftKeywords),
+    [baselineKeywords, draftKeywords],
+  );
 
   const isDirty = useMemo(
     () =>
@@ -145,6 +149,9 @@ function ConfigurationRoute() {
       toast(`${entry.company} is already tracked`, "info");
       return;
     }
+    const normalizedSource = normalizeRegistryAts(entry.ats) || String(entry.ats ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    const canonicalBoardUrl = entry.board_url || entry.sample_url || "";
+    const parsedAts = parseConfiguredAts(normalizedSource as never, canonicalBoardUrl || undefined);
     setDraftCompanies((prev) => [
       ...prev,
       {
@@ -152,11 +159,18 @@ function ConfigurationRoute() {
         enabled: true,
         // normalizeRegistryAts returns "" for unknown ATS types; fall back to
         // the raw lowercased ID so source is never saved as empty for registry entries.
-        source: normalizeRegistryAts(entry.ats) || String(entry.ats ?? "").toLowerCase().replace(/[^a-z0-9]+/g, ""),
-        sampleUrl: entry.sample_url || entry.board_url || "",
+        source: normalizedSource,
+        boardUrl: canonicalBoardUrl,
+        // Registry-backed companies should scan from the canonical board/base
+        // URL, not from a fragile sample posting URL.
+        sampleUrl: normalizedSource === "workday" ? canonicalBoardUrl : (entry.sample_url || canonicalBoardUrl),
         isRegistry: true,
         registryAts: entry.ats ?? "",
         registryTier: entry.tier ?? "",
+        workdayBaseUrl: "workdayBaseUrl" in parsedAts ? parsedAts.workdayBaseUrl : undefined,
+        host: "host" in parsedAts ? parsedAts.host : undefined,
+        tenant: "tenant" in parsedAts ? parsedAts.tenant : undefined,
+        site: "site" in parsedAts ? parsedAts.site : undefined,
       },
     ]);
     toast(`Added ${entry.company}`);
@@ -166,6 +180,7 @@ function ConfigurationRoute() {
    *  in name + ATS + sampleUrl directly in the table. */
   function handleAddCustom() {
     setPickerOpen(false);
+    setTab("custom");
     setDraftCompanies((prev) => [
       ...prev,
       { company: "", enabled: true, source: "", sampleUrl: "", isRegistry: false },
@@ -191,7 +206,7 @@ function ConfigurationRoute() {
     );
   }
 
-  function handleSave() {
+  function handleSave(options?: { onSuccess?: () => void }) {
     // Validation: registry rows skip sampleUrl/source checks since registry
     // resolves them; custom rows must supply both.
     for (const row of draftCompanies) {
@@ -210,7 +225,16 @@ function ConfigurationRoute() {
         jobtitles: draftKeywords,
       },
       {
-        onSuccess: () => toast("Companies saved"),
+        onSuccess: (result) => {
+          setDraftCompanies(result.config.companies.map((company) => ({
+            ...company,
+            isRegistry: company.isRegistry === true || Boolean(company.registryAts || company.registryTier),
+            registryAts: company.registryAts || (company.source ? formatAtsLabel(company.source) : ""),
+          })));
+          setDraftKeywords(result.config.jobtitles);
+          toast("Companies saved");
+          options?.onSuccess?.();
+        },
         onError: (err) => toast(err instanceof Error ? err.message : "Save failed", "error"),
       },
     );
@@ -219,6 +243,16 @@ function ConfigurationRoute() {
   function handleCancel() {
     setDraftCompanies(baseline.map((c) => ({ ...c })));
     setDraftKeywords({ ...baselineKeywords });
+    setEditingKeywords(false);
+  }
+
+  function handleCancelKeywordEdits() {
+    setDraftKeywords({ ...baselineKeywords });
+    setEditingKeywords(false);
+  }
+
+  function handleSaveKeywordEdits() {
+    handleSave({ onSuccess: () => setEditingKeywords(false) });
   }
 
   return (
@@ -232,7 +266,7 @@ function ConfigurationRoute() {
               <Button variant="warning" size="sm" onClick={handleCancel} disabled={saveConfig.isPending}>
                 <X size={14} /> Cancel
               </Button>
-              <Button variant="success" size="sm" onClick={handleSave} disabled={saveConfig.isPending}>
+              <Button variant="success" size="sm" onClick={() => handleSave()} disabled={saveConfig.isPending}>
                 <Save size={14} /> {saveConfig.isPending ? "Saving…" : "Save changes"}
               </Button>
             </>
@@ -352,9 +386,28 @@ function ConfigurationRoute() {
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Job title filters</CardTitle>
-            <CardDescription>Filter jobs by keywords in the job title</CardDescription>
+          <CardHeader className="flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle>Job title filters</CardTitle>
+              <CardDescription>Filter jobs by keywords in the job title</CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              {editingKeywords && keywordsDirty && (
+                <>
+                  <Button variant="outline" size="sm" onClick={handleCancelKeywordEdits} disabled={saveConfig.isPending}>
+                    <X size={14} /> Cancel
+                  </Button>
+                  <Button variant="success" size="sm" onClick={handleSaveKeywordEdits} disabled={saveConfig.isPending}>
+                    <Save size={14} /> {saveConfig.isPending ? "Saving…" : "Save changes"}
+                  </Button>
+                </>
+              )}
+              {!editingKeywords && (
+                <Button variant="outline" size="sm" onClick={() => setEditingKeywords(true)}>
+                  <PencilLine size={14} /> Edit filters
+                </Button>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="space-y-1.5">
@@ -363,6 +416,7 @@ function ConfigurationRoute() {
                 className="w-full min-h-[100px] rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
                 placeholder={"e.g. engineer\nplatform\ninfra"}
                 value={draftKeywords.includeKeywords.join("\n")}
+                readOnly={!editingKeywords}
                 onChange={(e) =>
                   setDraftKeywords((prev) => ({
                     ...prev,
@@ -378,6 +432,7 @@ function ConfigurationRoute() {
                 className="w-full min-h-[100px] rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring resize-y"
                 placeholder={"e.g. intern\nrecruiter\ncontract"}
                 value={draftKeywords.excludeKeywords.join("\n")}
+                readOnly={!editingKeywords}
                 onChange={(e) =>
                   setDraftKeywords((prev) => ({
                     ...prev,
@@ -411,7 +466,7 @@ function ConfigurationRoute() {
 /** Infer registry status the same way the display hydration does, so raw
  *  backend rows and enriched draft rows compare equal after load/save. */
 function inferredRegistryStatus(row: CompanyConfig): boolean {
-  return Boolean(row.isRegistry || row.registryAts || row.source || row.sampleUrl);
+  return row.isRegistry === true || Boolean(row.registryAts || row.registryTier);
 }
 
 /** Drop registry-only metadata before equality checks so display backfills

@@ -28,6 +28,8 @@ import { clearSessionId } from "./session";
 const REGION = envValue("VITE_AWS_REGION") || "us-east-1";
 const POOL_ID = runtimeValue("cognitoUserPoolId") || envValue("VITE_COGNITO_USER_POOL_ID");
 const CLIENT_ID = runtimeValue("cognitoClientId") || envValue("VITE_COGNITO_APP_CLIENT_ID");
+const ADMIN_POOL_ID = runtimeValue("adminCognitoUserPoolId");
+const ADMIN_CLIENT_ID = runtimeValue("adminCognitoClientId");
 // Only local/dev hosts can enable mocks, even if a prod build accidentally
 // carries VITE_USE_MOCKS=true.
 const USE_MOCKS = isLocalDevHost() && (envValue("VITE_USE_MOCKS") === "true") && !POOL_ID;
@@ -45,6 +47,7 @@ interface TokenBundle {
   sub: string;
   email: string;
   username: string;
+  scope: AuthScope;
   expiresAt: number; // epoch ms
 }
 
@@ -68,6 +71,21 @@ function clearTokens(): void {
   localStorage.removeItem(TOKEN_KEY);
 }
 
+async function authPost<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const apiBaseUrl = runtimeValue("apiBaseUrl") || envValue("VITE_API_BASE_URL") || "";
+  const response = await fetch(`${String(apiBaseUrl).replace(/\/$/, "")}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const text = await response.text();
+  const data = text ? JSON.parse(text) as Record<string, unknown> : {};
+  if (!response.ok) {
+    throw toAuthError({ code: "unknown", message: String(data.error ?? data.message ?? "Request failed") });
+  }
+  return data as T;
+}
+
 // ---------------------------------------------------------------------------
 // Public types
 // ---------------------------------------------------------------------------
@@ -78,6 +96,7 @@ export interface AuthUser {
   username: string;
   idToken: string;
   accessToken: string;
+  scope: AuthScope;
 }
 
 export type AuthErrorCode =
@@ -108,18 +127,28 @@ function toAuthError(err: unknown): AuthError {
 // Cognito helpers
 // ---------------------------------------------------------------------------
 
-let _pool: CognitoUserPool | null = null;
+export type AuthScope = "user" | "admin";
 
-function pool(): CognitoUserPool {
+let _pool: CognitoUserPool | null = null;
+let _adminPool: CognitoUserPool | null = null;
+
+function poolForScope(scope: AuthScope): CognitoUserPool {
+  if (scope === "admin") {
+    if (!ADMIN_POOL_ID || !ADMIN_CLIENT_ID) {
+      throw toAuthError({ code: "unknown", message: "Admin sign-in is not configured yet." });
+    }
+    if (!_adminPool) _adminPool = new CognitoUserPool({ UserPoolId: ADMIN_POOL_ID, ClientId: ADMIN_CLIENT_ID });
+    return _adminPool;
+  }
   if (!_pool) _pool = new CognitoUserPool({ UserPoolId: POOL_ID, ClientId: CLIENT_ID });
   return _pool;
 }
 
-function cognitoUser(email: string): CognitoUser {
-  return new CognitoUser({ Username: email.toLowerCase(), Pool: pool() });
+function cognitoUser(email: string, scope: AuthScope = "user"): CognitoUser {
+  return new CognitoUser({ Username: email.toLowerCase(), Pool: poolForScope(scope) });
 }
 
-function sessionToBundle(session: CognitoUserSession, email: string, username: string): TokenBundle {
+function sessionToBundle(session: CognitoUserSession, email: string, username: string, scope: AuthScope): TokenBundle {
   const idToken = session.getIdToken();
   return {
     idToken: idToken.getJwtToken(),
@@ -128,6 +157,7 @@ function sessionToBundle(session: CognitoUserSession, email: string, username: s
     sub: idToken.payload.sub as string,
     email,
     username: username || (idToken.payload["custom:username"] as string) || email,
+    scope,
     expiresAt: idToken.getExpiration() * 1000,
   };
 }
@@ -176,6 +206,7 @@ function mockBundle(user: MockUser): TokenBundle {
     sub: user.sub,
     email: user.email,
     username: user.username,
+    scope: "user",
     expiresAt: now + 3600_000,
   };
 }
@@ -194,7 +225,7 @@ export const auth = {
       if (t) clearTokens();
       return null;
     }
-    return { sub: t.sub, email: t.email, username: t.username, idToken: t.idToken, accessToken: t.accessToken };
+    return { sub: t.sub, email: t.email, username: t.username, idToken: t.idToken, accessToken: t.accessToken, scope: t.scope ?? "user" };
   },
 
   getIdToken(): string {
@@ -211,19 +242,19 @@ export const auth = {
     return new Promise((resolve) => {
       const t = loadTokens();
       if (!t) { resolve(null); return; }
-      const cu = cognitoUser(t.email);
+      const cu = cognitoUser(t.email, t.scope ?? "user");
       const session = cu.getSignInUserSession();
       if (!session) { clearTokens(); resolve(null); return; }
       cu.refreshSession(session.getRefreshToken(), (err, newSession: CognitoUserSession) => {
         if (err) { clearTokens(); resolve(null); return; }
-        const bundle = sessionToBundle(newSession, t.email, t.username);
+        const bundle = sessionToBundle(newSession, t.email, t.username, t.scope ?? "user");
         saveTokens(bundle, !!localStorage.getItem(TOKEN_KEY));
         resolve(auth.currentUser());
       });
     });
   },
 
-  async signIn(email: string, password: string, rememberMe = false): Promise<AuthUser> {
+  async signIn(email: string, password: string, rememberMe = false, scope: AuthScope = "user"): Promise<AuthUser> {
     if (USE_MOCKS) {
       const users = mockUsers();
       const user = users[email.toLowerCase()];
@@ -235,11 +266,11 @@ export const auth = {
       return auth.currentUser()!;
     }
     return new Promise((resolve, reject) => {
-      const cu = cognitoUser(email);
+      const cu = cognitoUser(email, scope);
       cu.authenticateUser(new AuthenticationDetails({ Username: email.toLowerCase(), Password: password }), {
         onSuccess: (session) => {
           const payload = session.getIdToken().payload;
-          const bundle = sessionToBundle(session, email, (payload["custom:username"] as string) || (payload.name as string) || email);
+          const bundle = sessionToBundle(session, email, (payload["custom:username"] as string) || (payload.name as string) || email, scope);
           saveTokens(bundle, rememberMe);
           resolve(auth.currentUser()!);
         },
@@ -261,7 +292,7 @@ export const auth = {
       return { sub };
     }
     return new Promise((resolve, reject) => {
-      pool().signUp(
+      poolForScope("user").signUp(
         email.toLowerCase(),
         password,
         [
@@ -289,7 +320,7 @@ export const auth = {
       return;
     }
     return new Promise((resolve, reject) => {
-      cognitoUser(email).confirmRegistration(code, true, (err) => {
+      cognitoUser(email, "user").confirmRegistration(code, true, (err) => {
         if (err) { reject(toAuthError(err)); return; }
         resolve();
       });
@@ -302,27 +333,24 @@ export const auth = {
       return;
     }
     return new Promise((resolve, reject) => {
-      cognitoUser(email).resendConfirmationCode((err) => {
+      cognitoUser(email, "user").resendConfirmationCode((err) => {
         if (err) { reject(toAuthError(err)); return; }
         resolve();
       });
     });
   },
 
-  async forgotPassword(email: string): Promise<void> {
+  async forgotPassword(email: string, scope: AuthScope = "user"): Promise<void> {
     if (USE_MOCKS) {
       sessionStorage.setItem(`cj:mock-reset:${email.toLowerCase()}`, "654321");
       return;
     }
-    return new Promise((resolve, reject) => {
-      cognitoUser(email).forgotPassword({
-        onSuccess: () => resolve(),
-        onFailure: (err) => reject(toAuthError(err)),
-      });
-    });
+    // Route production resets through our own API so we are not blocked by
+    // Cognito's flaky email delivery path in this account.
+    await authPost("/api/auth/reset/request", { email: email.toLowerCase(), scope });
   },
 
-  async confirmForgotPassword(email: string, code: string, newPassword: string): Promise<void> {
+  async confirmForgotPassword(email: string, code: string, newPassword: string, scope: AuthScope = "user"): Promise<void> {
     if (USE_MOCKS) {
       const key = email.toLowerCase();
       const expected = sessionStorage.getItem(`cj:mock-reset:${key}`);
@@ -332,18 +360,18 @@ export const auth = {
       sessionStorage.removeItem(`cj:mock-reset:${key}`);
       return;
     }
-    return new Promise((resolve, reject) => {
-      cognitoUser(email).confirmPassword(code, newPassword, {
-        onSuccess: () => resolve(),
-        onFailure: (err) => reject(toAuthError(err)),
-      });
+    await authPost("/api/auth/reset/confirm", {
+      email: email.toLowerCase(),
+      code,
+      newPassword,
+      scope,
     });
   },
 
   signOut(): void {
     if (!USE_MOCKS) {
       const t = loadTokens();
-      if (t) { try { cognitoUser(t.email).signOut(); } catch { /* best-effort */ } }
+      if (t) { try { cognitoUser(t.email, t.scope ?? "user").signOut(); } catch { /* best-effort */ } }
     }
     clearTokens();
     clearSessionId();
@@ -360,7 +388,7 @@ export const auth = {
     return new Promise((resolve, reject) => {
       const t = loadTokens();
       if (!t) { clearTokens(); resolve(); return; }
-      cognitoUser(t.email).deleteUser((err) => {
+      cognitoUser(t.email, t.scope ?? "user").deleteUser((err) => {
         clearTokens();
         clearSessionId();
         if (err) { reject(toAuthError(err)); return; }

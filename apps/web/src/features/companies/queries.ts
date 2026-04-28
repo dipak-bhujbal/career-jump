@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, registryApi, type ConfigEnvelope, type RegistryEntry, type RegistryMeta, type CompanyConfig } from "@/lib/api";
 import { REGISTRY_META } from "@/data/companies-registry";
+import { isLocalDevHost } from "@/lib/runtime-config";
 
 function localRegistryMeta(): RegistryMeta {
   return {
@@ -45,7 +46,10 @@ export function useRegistryMeta() {
     queryFn: async () => {
       try {
         const result = await registryApi.get<RegistryMeta>("/api/registry/meta");
-        if ((result.counts?.total ?? 0) < 100) return localRegistryMeta();
+        // Only fake the large catalog count for local/demo environments. In
+        // production we need the UI to reflect the real registry table state
+        // so an empty or un-restored catalog is visible instead of misleading.
+        if ((result.counts?.total ?? 0) < 100 && isLocalDevHost()) return localRegistryMeta();
         return result;
       } catch {
         return localRegistryMeta();
@@ -80,8 +84,18 @@ export function useSaveConfig() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: { companies: CompanyConfig[]; jobtitles: { includeKeywords: string[]; excludeKeywords: string[] } }) =>
-      api.post<{ ok: boolean; config: unknown }>("/api/config/save", payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: configKey }),
+      api.post<ConfigEnvelope>("/api/config/save", payload),
+    onSuccess: async (result) => {
+      // Update the local cache immediately so Save/Cancel controls disappear as
+      // soon as the backend accepts the draft instead of waiting for a later
+      // refetch or a manual browser refresh.
+      qc.setQueryData<ConfigEnvelope | undefined>(configKey, (current) => ({
+        ok: true,
+        config: result.config,
+        companyScanOverrides: current?.companyScanOverrides ?? {},
+      }));
+      await qc.invalidateQueries({ queryKey: configKey });
+    },
   });
 }
 

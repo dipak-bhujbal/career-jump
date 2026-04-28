@@ -60,7 +60,11 @@ export function authHeaders(origin?: string | null): HeadersInit {
 }
 
 export function isPublicPath(pathname: string): boolean {
-  return pathname === "/health" || pathname === "/docs" || pathname === "/api/openapi.json";
+  return pathname === "/health"
+    || pathname === "/docs"
+    || pathname === "/api/openapi.json"
+    || pathname === "/api/auth/reset/request"
+    || pathname === "/api/auth/reset/confirm";
 }
 
 function forbidden(message: string, request: Request, status = 403): Response {

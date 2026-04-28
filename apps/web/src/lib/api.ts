@@ -1,4 +1,4 @@
-import { getValidIdToken, isAuthEnabled } from "./auth";
+import { auth, getValidIdToken, isAuthEnabled } from "./auth";
 import { envValue, runtimeValue, trimTrailingSlash } from "./runtime-config";
 import { getDeviceFingerprint, getSessionId } from "./session";
 
@@ -48,6 +48,13 @@ async function apiFetch<T>(path: string, init: RequestInit = {}, base = baseUrl)
   return data as T;
 }
 
+function registryRequestBase(): string {
+  // Older dedicated registry Lambdas only trust the standard user pool, so
+  // admin sessions should prefer the main API where both pools are verified.
+  const current = auth.currentUser();
+  return current?.scope === "admin" ? baseUrl : registryBaseUrl;
+}
+
 function safeJson(text: string): unknown {
   try { return JSON.parse(text); } catch { return { message: text }; }
 }
@@ -63,7 +70,23 @@ export const api = {
 // calls can be routed to the dedicated career-jump-web-poc-registry Lambda
 // without changing the main apiBaseUrl or redeploying CloudFront.
 export const registryApi = {
-  get: <T,>(path: string) => apiFetch<T>(path, {}, registryBaseUrl),
+  get: async <T,>(path: string) => {
+    const primaryBase = registryRequestBase();
+    try {
+      return await apiFetch<T>(path, {}, primaryBase);
+    } catch (error) {
+      // Retry registry reads against the main API when an older dedicated
+      // registry endpoint rejects admin tokens or is otherwise unavailable.
+      if (
+        error instanceof ApiError
+        && (error.status === 401 || error.status === 403 || error.status === 404)
+        && primaryBase !== baseUrl
+      ) {
+        return apiFetch<T>(path, {}, baseUrl);
+      }
+      throw error;
+    }
+  },
 };
 
 export type RegistryEntry = {
@@ -91,10 +114,15 @@ export type CompanyConfig = {
   company: string;
   enabled: boolean;
   source: string;
+  boardUrl?: string;
   sampleUrl?: string;
   isRegistry?: boolean;
   registryAts?: string;
   registryTier?: string;
+  workdayBaseUrl?: string;
+  host?: string;
+  tenant?: string;
+  site?: string;
 };
 
 export type RuntimeConfig = {
@@ -311,7 +339,7 @@ export type SupportTicket = {
   subject: string;
   status: "open" | "in_progress" | "resolved" | "closed";
   priority: "low" | "normal" | "high" | "urgent";
-  tags: Array<"billing" | "scan" | "account" | "bug">;
+  tags: Array<"bug" | "enhancement" | "subscription_assistance" | "other" | "billing" | "scan" | "account">;
   assignedTo?: string | null;
   createdAt: string;
   updatedAt: string;

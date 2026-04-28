@@ -27,6 +27,10 @@ export function usersTableName(): string {
   return requiredEnv("AWS_USERS_TABLE");
 }
 
+export function stateTableName(): string {
+  return requiredEnv("AWS_STATE_TABLE");
+}
+
 export function jobsTableName(): string {
   return requiredEnv("AWS_JOBS_TABLE");
 }
@@ -45,6 +49,10 @@ export function billingTableName(): string {
 
 export function rawScansTableName(): string {
   return requiredEnv("AWS_RAW_SCANS_TABLE");
+}
+
+export function registryTableName(): string {
+  return requiredEnv("AWS_REGISTRY_TABLE");
 }
 
 /**

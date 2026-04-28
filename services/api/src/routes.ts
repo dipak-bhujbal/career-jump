@@ -13,6 +13,7 @@ import { applyCompanyScanOverrides, companyToDetectedConfig, loadRuntimeConfig, 
 import { registeredAdapterIds } from "./ats/registry";
 import { getByCompany, listAll, listByAts, loadRegistryCache } from "./storage/registry-cache";
 import { scrapeOne } from "./services/registry-scraper";
+import { confirmPasswordReset, requestPasswordReset } from "./services/password-reset";
 import { writeAnalytics } from "./lib/analytics";
 import { jsonResponse, withSecurity } from "./lib/http";
 import { jobStateKv, atsCacheKv } from "./lib/bindings";
@@ -55,6 +56,7 @@ import {
   loadJobNotes,
   loadUserProfile,
   loadUserSettings,
+  promoteCustomCompaniesToRegistry,
   recordAppLog,
   recordEvent,
   recordErrorLog,
@@ -522,7 +524,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         subject: String(body.subject),
         body: String(body.body),
         priority: body.priority as "low" | "normal" | "high" | "urgent" | undefined,
-        tags: Array.isArray(body.tags) ? body.tags as Array<"billing" | "scan" | "account" | "bug"> : undefined,
+        tags: Array.isArray(body.tags)
+          ? body.tags as Array<"bug" | "enhancement" | "subscription_assistance" | "other" | "billing" | "scan" | "account">
+          : undefined,
       });
       return jsonResponse({ ok: true, ticket }, 201);
     }
@@ -736,6 +740,33 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return jsonResponse({ ok: true, config, companyScanOverrides });
     }
 
+    if (url.pathname === "/api/auth/reset/request" && request.method === "POST") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const scope = body.scope === "admin" ? "admin" : body.scope === "user" ? "user" : undefined;
+      if (!email) return jsonResponse({ ok: false, error: "Email is required" }, 400);
+      await requestPasswordReset(env, email, scope);
+      return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/api/auth/reset/confirm" && request.method === "POST") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const email = String(body.email ?? "").trim().toLowerCase();
+      const code = String(body.code ?? "").trim();
+      const newPassword = String(body.newPassword ?? "");
+      const scope = body.scope === "admin" ? "admin" : body.scope === "user" ? "user" : undefined;
+      if (!email || !code || !newPassword) {
+        return jsonResponse({ ok: false, error: "Email, code, and new password are required" }, 400);
+      }
+      try {
+        await confirmPasswordReset(env, email, code, newPassword, scope);
+        return jsonResponse({ ok: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Password reset failed";
+        return jsonResponse({ ok: false, error: message }, 400);
+      }
+    }
+
     if (url.pathname === "/api/config/save" && request.method === "POST") {
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
@@ -754,6 +785,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         updatedAt: nowISO(),
       };
       await saveRuntimeConfig(env, next, tenantContext.tenantId, tenantContext.userId);
+      // Promote validated custom companies into the shared registry so later
+      // users can select them from the picker instead of manually re-entering
+      // sample URLs. A promotion failure should not block saving the user's
+      // own config draft, so we log and continue on errors.
+      try {
+        await promoteCustomCompaniesToRegistry(companies);
+      } catch (error) {
+        await recordErrorLog(env, {
+          event: "registry_promotion_failed",
+          message: error instanceof Error ? error.message : String(error),
+          tenantId: tenantContext.tenantId,
+          route: "/api/config/save",
+          details: {
+            companies: companies.filter((company) => company.isRegistry !== true).map((company) => company.company),
+          },
+        });
+      }
       return jsonResponse({ ok: true, config: next });
     }
 
@@ -1052,6 +1100,19 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const activeRun = await loadActiveRunLock(env);
       return jsonResponse({
         ok: true,
+        active: Boolean(activeRun),
+        runId: activeRun?.runId,
+        triggerType: activeRun?.triggerType,
+        startedAt: activeRun?.startedAt,
+        expiresAt: activeRun?.expiresAt,
+        totalCompanies: activeRun?.totalCompanies,
+        fetchedCompanies: activeRun?.fetchedCompanies,
+        currentCompany: activeRun?.currentCompany,
+        detail: activeRun?.currentStage ? `${activeRun.currentStage.replace(/_/g, " ")}` : undefined,
+        message: activeRun?.lastEvent ? activeRun.lastEvent.replace(/_/g, " ") : undefined,
+        percent: activeRun?.totalCompanies
+          ? (activeRun.fetchedCompanies ?? 0) / Math.max(activeRun.totalCompanies, 1)
+          : undefined,
         activeRun,
       });
     }
@@ -1684,7 +1745,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (url.pathname === "/api/debug/discovery" && request.method === "GET") {
       const companyName = url.searchParams.get("company")?.trim();
       if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
-      const detected = await getDetectedConfig(env, { company: companyName, enabled: true });
+      const tenantContext = await getTenantContext();
+      const detected = await getDetectedConfig(env, { company: companyName, enabled: true }, tenantContext.tenantId);
       const protectedRecord = await getProtectedDiscoveryRecord(env, companyName);
       return jsonResponse({ ok: true, detected, protectedRecord });
     }
@@ -1692,9 +1754,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (url.pathname === "/api/debug/workday" && request.method === "GET") {
       const companyName = url.searchParams.get("company")?.trim();
       if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
-      const detected = await resolveWorkdayForCompany(env, companyName);
-      if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
       const tenantContext = await getTenantContext();
+      const detected = await resolveWorkdayForCompany(env, companyName, tenantContext.tenantId);
+      if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
       const jobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
       return jsonResponse({ ok: true, detected, includeKeywords: config.jobtitles.includeKeywords, count: jobs.length, firstFive: jobs.slice(0, 5) });
@@ -1705,7 +1767,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
       const tenantContext = await getTenantContext();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
-      const detected = await resolveWorkdayForCompany(env, companyName);
+      const detected = await resolveWorkdayForCompany(env, companyName, tenantContext.tenantId);
       if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
       const rawJobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
       const enriched = rawJobs.map((job) => enrichJob(job, config.jobtitles));

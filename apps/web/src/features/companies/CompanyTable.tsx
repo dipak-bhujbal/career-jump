@@ -118,11 +118,11 @@ function CompanyRow({
           <div className="flex items-center gap-2 text-xs text-[hsl(var(--muted-foreground))]">
             <span>Auto-discovered</span>
             {company.registryTier && <TierTag tier={company.registryTier} />}
-            {company.sampleUrl && (
-              <a href={company.sampleUrl} target="_blank" rel="noreferrer"
+            {(company.boardUrl || company.sampleUrl) && (
+              <a href={company.boardUrl || company.sampleUrl} target="_blank" rel="noreferrer"
                  className="inline-flex items-center gap-1 hover:text-[hsl(var(--foreground))] truncate">
                 <ExternalLink size={11} />
-                <span className="truncate">{company.sampleUrl}</span>
+                <span className="truncate">{company.boardUrl || company.sampleUrl}</span>
               </a>
             )}
           </div>

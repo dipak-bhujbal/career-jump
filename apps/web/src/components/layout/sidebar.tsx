@@ -12,7 +12,8 @@ const userItems = [
   { to: "/jobs", label: "Available Jobs", icon: Briefcase },
   { to: "/applied", label: "Applied Jobs", icon: CheckSquare },
   { to: "/plan", label: "Action Plan", icon: Target },
-  { to: "/support", label: "Support", icon: LifeBuoy },
+  // Support now lives inside Profile so the primary nav stays focused on the
+  // daily job-tracking workflow.
   { to: "/configuration", label: "Configuration", icon: Settings },
 ];
 

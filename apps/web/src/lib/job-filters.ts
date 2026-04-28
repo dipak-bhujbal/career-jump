@@ -481,9 +481,15 @@ export function parseGreenhouseSampleUrl(sampleUrl: string): Pick<CompanyInput, 
     const url = new URL(sampleUrl);
     const parts = url.pathname.split("/").filter(Boolean);
     const host = url.hostname.toLowerCase();
-    if (host !== "boards.greenhouse.io" && host !== "job-boards.greenhouse.io") return {};
+    // Many companies keep Greenhouse on their own domain and link to jobs with
+    // `gh_jid`, while the real board slug still lives in the first path segment.
+    // Accept both the native Greenhouse hosts and custom company domains.
+    const nativeGreenhouseHost = host === "boards.greenhouse.io" || host === "job-boards.greenhouse.io";
     const queryBoardToken = url.searchParams.get("for")?.trim();
     if (queryBoardToken) return { boardToken: queryBoardToken };
+    const hostedGreenhouseJob = url.searchParams.get("gh_jid")?.trim();
+    if (hostedGreenhouseJob && parts[0]) return { boardToken: parts[0] };
+    if (!nativeGreenhouseHost) return {};
     const isEmbedPath =
       parts.length >= 2 && parts[0] === "embed" &&
       (parts[1] === "job_board" || parts[1] === "job_board_widget");

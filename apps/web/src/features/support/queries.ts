@@ -32,7 +32,12 @@ export function useSupportTicket(ticketId: string | null) {
 export function useCreateSupportTicket() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (body: { subject: string; body: string; priority?: string; tags?: string[] }) =>
+    mutationFn: (body: {
+      subject: string;
+      body: string;
+      priority?: "low" | "normal" | "high" | "urgent";
+      tags?: Array<"bug" | "enhancement" | "subscription_assistance" | "other" | "billing" | "scan" | "account">;
+    }) =>
       api.post("/api/support/tickets", body),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: supportTicketsKey });

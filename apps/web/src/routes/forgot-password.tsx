@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, Link, useLocation } from "@tanstack/react-router";
 import { KeyRound, Eye, EyeOff, CheckCircle2, XCircle } from "lucide-react";
 import { AuthShell } from "@/components/auth/AuthShell";
 import { Button } from "@/components/ui/button";
@@ -23,7 +23,7 @@ function PasswordRule({ met, label }: { met: boolean; label: string }) {
 
 function ForgotPasswordRoute() {
   const { forgotPassword, confirmForgotPassword } = useAuth();
-  const navigate = useNavigate();
+  const location = useLocation();
   const [step, setStep] = useState<Step>("email");
   const [email, setEmail] = useState("");
   const [code, setCode] = useState("");
@@ -32,6 +32,9 @@ function ForgotPasswordRoute() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const codeRef = useRef<HTMLInputElement>(null);
+  // Route the reset flow through the correct Cognito pool so admin users do
+  // not silently request codes from the standard user pool.
+  const isAdminMode = new URLSearchParams(location.searchStr).get("admin") === "1";
 
   const rules = {
     length: newPwd.length >= 8,
@@ -48,7 +51,7 @@ function ForgotPasswordRoute() {
     setError("");
     setLoading(true);
     try {
-      await forgotPassword(email.trim());
+      await forgotPassword(email.trim(), isAdminMode ? "admin" : "user");
       setStep("code");
       setTimeout(() => codeRef.current?.focus(), 100);
     } catch (err) {
@@ -66,7 +69,7 @@ function ForgotPasswordRoute() {
     setError("");
     setLoading(true);
     try {
-      await confirmForgotPassword(email.trim(), code.trim(), newPwd);
+      await confirmForgotPassword(email.trim(), code.trim(), newPwd, isAdminMode ? "admin" : "user");
       setStep("done");
     } catch (err) {
       const ae = err as { message?: string };
@@ -86,7 +89,7 @@ function ForgotPasswordRoute() {
           <p className="text-sm text-[hsl(var(--muted-foreground))]">
             You can now sign in with your new password.
           </p>
-          <Button onClick={() => navigate({ to: "/login" })} className="w-full">
+          <Button onClick={() => { window.location.assign(isAdminMode ? "/login?admin=1" : "/login"); }} className="w-full">
             Sign in
           </Button>
         </div>
@@ -96,18 +99,23 @@ function ForgotPasswordRoute() {
 
   return (
     <AuthShell
-      title={step === "email" ? "Reset your password" : "Enter your reset code"}
+      title={step === "email" ? (isAdminMode ? "Reset admin password" : "Reset your password") : "Enter your reset code"}
       description={step === "email"
-        ? "We'll send a 6-digit code to your email"
+        ? (isAdminMode ? "We'll send a 6-digit code to your admin email" : "We'll send a 6-digit code to your email")
         : `Code sent to ${email} — enter it below`}
       footer={
-        <Link to="/login" className="text-blue-500 hover:text-blue-400 font-medium">
-          Back to sign in
-        </Link>
+        isAdminMode
+          ? <a href="/login?admin=1" className="text-blue-500 hover:text-blue-400 font-medium">Back to sign in</a>
+          : <Link to="/login" className="text-blue-500 hover:text-blue-400 font-medium">Back to sign in</Link>
       }
     >
       {step === "email" ? (
         <form onSubmit={handleRequestCode} className="space-y-4">
+          {isAdminMode && (
+            <div className="rounded-lg bg-amber-500/10 border border-amber-500/30 px-3 py-2 text-xs text-amber-300">
+              This reset flow targets the admin account pool.
+            </div>
+          )}
           {error && (
             <div className="rounded-lg bg-rose-500/10 border border-rose-500/30 px-3 py-2 text-sm text-rose-400">
               {error}
