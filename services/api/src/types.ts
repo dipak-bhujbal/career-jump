@@ -508,6 +508,36 @@ export type WorkdayScanState = {
   updatedAt: string;
 };
 
+export type RegistryScanPool = "hot" | "warm" | "low";
+
+export type RegistryScanPriority = "low" | "normal" | "high";
+
+export type RegistryScanStatus =
+  | "pending"
+  | "healthy"
+  | "stale"
+  | "failing"
+  | "paused"
+  | "misconfigured";
+
+export type RegistryCompanyScanState = {
+  company: string;
+  companySlug: string;
+  adapterId?: string | null;
+  scanPool: RegistryScanPool;
+  priority: RegistryScanPriority;
+  status: RegistryScanStatus;
+  nextScanAt?: string | null;
+  staleAfterAt?: string | null;
+  lastScanAt?: string | null;
+  lastSuccessAt?: string | null;
+  lastFailureAt?: string | null;
+  lastFailureReason?: string | null;
+  failureCount: number;
+  lastFetchedCount: number;
+  updatedAt: string;
+};
+
 export type WorkdayScanFailure = {
   ok: false;
   layerUsed: WorkdayScanLayer;

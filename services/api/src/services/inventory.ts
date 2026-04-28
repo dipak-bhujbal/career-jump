@@ -19,8 +19,12 @@ import {
   heartbeatActiveRun,
   legacySeenJobKeys,
   loadAppliedJobs,
+  loadBillingSubscription,
   loadJobNotes,
   loadLatestRawScan,
+  markRegistryCompanyScanFailure,
+  markRegistryCompanyScanMisconfigured,
+  markRegistryCompanyScanSuccess,
   loadSystemWorkdayLayerFlags,
   loadWorkdayScanState,
   markWorkdayLayerPromotion,
@@ -46,6 +50,7 @@ import type {
   TrendPoint,
   UpdatedEmailJob,
   UpdatedJobChange,
+  UserPlan,
   WorkdayScanLayer,
   WorkdayScanResult,
   WorkdayScanState,
@@ -84,6 +89,12 @@ function describeDetectedSource(config: Awaited<ReturnType<typeof getDetectedCon
     workdayBaseUrl: config.workdayBaseUrl ?? null,
     workdaySampleUrl: config.sampleUrl ?? null,
   };
+}
+
+function registryScanAdapterId(config: DetectedConfig | null, configuredSource?: string | null): string | null {
+  if (config?.source === "registry-adapter") return config.adapterId ?? configuredSource ?? null;
+  if (config?.source) return config.source;
+  return configuredSource ?? null;
 }
 
 export type InventoryState = {
@@ -430,14 +441,36 @@ function buildWorkdayLayerAttemptOrder(
   return [...new Set(order)];
 }
 
+const PLAN_CACHE_AGE_MS: Record<UserPlan, number> = {
+  free: Infinity,
+  pro: 8 * 60 * 60 * 1000,
+  power: 4 * 60 * 60 * 1000,
+};
+
 async function fetchCompanyJobsWithSharedCache(
   env: Env,
   companyName: string,
   detected: DetectedConfig,
   includeKeywords: string[],
-  tenantId?: string
+  tenantId?: string,
+  userPlan: UserPlan | null = null,
 ): Promise<CompanyFetchOutcome> {
-  const freshRawScan = await loadLatestRawScan(companyName, detected);
+  // Free tier: always serve from cache — never trigger a live fetch.
+  if (userPlan === "free") {
+    const cachedScan = await loadLatestRawScan(companyName, detected, { allowStale: true });
+    return {
+      fetchedJobs: cachedScan?.jobs ?? [],
+      rawScanCache: {
+        hit: Boolean(cachedScan),
+        stale: true,
+        scannedAt: cachedScan?.scannedAt,
+        reason: cachedScan ? undefined : "no_cache",
+      },
+    };
+  }
+
+  const planMaxAgeMs = userPlan !== null ? PLAN_CACHE_AGE_MS[userPlan] : undefined;
+  const freshRawScan = await loadLatestRawScan(companyName, detected, { maxAgeMs: planMaxAgeMs });
   if (freshRawScan) {
     return {
       fetchedJobs: freshRawScan.jobs,
@@ -615,8 +648,22 @@ export async function buildInventory(
   let totalFetched = 0;
   let totalCompaniesDetected = 0;
 
+  // Plan tier only applies to user-triggered scans (tenantId present).
+  // System/background scans (no tenantId) run live with no cache restrictions.
+  let userPlan: UserPlan | null = null;
+  if (tenantId) {
+    userPlan = "free";
+    try {
+      const subscription = await loadBillingSubscription(tenantId);
+      userPlan = subscription.plan;
+    } catch {
+      // Default to free on billing lookup failure — safe degradation
+    }
+  }
+
   for (let index = 0; index < enabledCompanies.length; index += 1) {
     const company = enabledCompanies[index];
+    let registryAdapterId: string | null = company.source ?? null;
     let fetchStartedAt = Date.now();
     if (runId && !options.disableActiveRunHeartbeat) {
       await ensureActiveRunOwnership(env, runId);
@@ -634,7 +681,12 @@ export async function buildInventory(
 
     try {
       const detected = await getDetectedConfig(env, company, tenantId);
+      registryAdapterId = registryScanAdapterId(detected, company.source ?? null);
       if (!detected) {
+        await markRegistryCompanyScanMisconfigured(company.company, {
+          adapterId: registryAdapterId,
+          failureReason: "No ATS mapping was resolved for this company.",
+        });
         byCompany[company.company] = 0;
         byCompanyFetched[company.company] = 0;
         const skippedDiscardedJobs = (previousInventory?.jobs ?? []).filter((job) => job.company === company.company).map((job) => ({
@@ -696,12 +748,23 @@ export async function buildInventory(
         company.company,
         detected,
         config.jobtitles.includeKeywords,
-        tenantId
+        tenantId,
+        userPlan,
       );
       const fetchedJobs = companyFetch.fetchedJobs;
       totalCompaniesDetected += 1;
       totalFetched += fetchedJobs.length;
       byCompanyFetched[company.company] = fetchedJobs.length;
+      // Only advance scan-state when a real live fetch happened.
+      // Cache-hit reads (free/pro/power tier serving cached data) must not
+      // update nextScanAt / lastScanAt — that would corrupt the scheduler's
+      // source of truth and make Step 6 ops reporting lie.
+      if (!companyFetch.rawScanCache.hit) {
+        await markRegistryCompanyScanSuccess(company.company, {
+          adapterId: registryAdapterId,
+          fetchedCount: fetchedJobs.length,
+        });
+      }
       await maybePromoteCustomCompanyAfterSuccessfulScan(env, company, tenantId);
 
       const enrichedJobs = fetchedJobs.map((job: JobPosting) => enrichJob(job, config.jobtitles));
@@ -858,6 +921,12 @@ export async function buildInventory(
       byCompanyFetched[company.company] = 0;
       const message = error instanceof Error ? error.message : String(error);
       const isOwnershipLost = error instanceof ActiveRunOwnershipError;
+      if (!isOwnershipLost) {
+        await markRegistryCompanyScanFailure(company.company, {
+          adapterId: registryAdapterId,
+          failureReason: message,
+        });
+      }
       const failedDiscardedJobs = (previousInventory?.jobs ?? []).filter((job) => job.company === company.company).map((job) => ({
         title: job.title,
         jobKey: jobKey(job),

@@ -4,6 +4,9 @@ import type { Env, RuntimeConfig } from "../../src/types";
 const loadLatestRawScanMock = vi.fn();
 const loadSystemWorkdayLayerFlagsMock = vi.fn();
 const loadWorkdayScanStateMock = vi.fn();
+const markRegistryCompanyScanFailureMock = vi.fn();
+const markRegistryCompanyScanMisconfiguredMock = vi.fn();
+const markRegistryCompanyScanSuccessMock = vi.fn();
 const markWorkdayLayerPromotionMock = vi.fn();
 const markWorkdayScanFailureMock = vi.fn();
 const markWorkdayScanSuccessMock = vi.fn();
@@ -25,6 +28,9 @@ vi.mock("../../src/storage", async () => {
     loadAppliedJobs: vi.fn(async () => ({})),
     loadJobNotes: vi.fn(async () => ({})),
     loadLatestRawScan: loadLatestRawScanMock,
+    markRegistryCompanyScanFailure: markRegistryCompanyScanFailureMock,
+    markRegistryCompanyScanMisconfigured: markRegistryCompanyScanMisconfiguredMock,
+    markRegistryCompanyScanSuccess: markRegistryCompanyScanSuccessMock,
     loadSystemWorkdayLayerFlags: loadSystemWorkdayLayerFlagsMock,
     loadWorkdayScanState: loadWorkdayScanStateMock,
     markWorkdayLayerPromotion: markWorkdayLayerPromotionMock,
@@ -121,6 +127,9 @@ describe("integration workday layer promotion", () => {
       updatedAt: "2026-04-27T00:00:00.000Z",
     });
     loadSystemWorkdayLayerFlagsMock.mockResolvedValue({ layer2: true, layer3: false });
+    markRegistryCompanyScanFailureMock.mockResolvedValue(undefined);
+    markRegistryCompanyScanMisconfiguredMock.mockResolvedValue(undefined);
+    markRegistryCompanyScanSuccessMock.mockResolvedValue(undefined);
     markWorkdayLayerPromotionMock.mockResolvedValue(undefined);
     markWorkdayScanFailureMock.mockResolvedValue(undefined);
     markWorkdayScanSuccessMock.mockResolvedValue(undefined);

@@ -12,4 +12,5 @@ export * from "./storage/password-reset";
 export * from "./storage/raw-scans";
 export * from "./storage/admin-analytics";
 export * from "./storage/registry-admin";
+export * from "./storage/registry-scan-state";
 export * from "./storage/workday-scan-state";

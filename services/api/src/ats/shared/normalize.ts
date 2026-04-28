@@ -53,12 +53,18 @@ export function inferAtsIdFromUrl(rawUrl: string | null | undefined): string {
     const path = url.pathname.toLowerCase();
 
     if (host.includes("myworkdayjobs.com")) return "workday";
-    if (host === "boards.greenhouse.io" || host === "job-boards.greenhouse.io" || host === "boards-api.greenhouse.io") {
+    if (
+      host === "boards.greenhouse.io" ||
+      host === "job-boards.greenhouse.io" ||
+      host === "job-boards.eu.greenhouse.io" ||
+      host === "boards-api.greenhouse.io" ||
+      host === "api.greenhouse.io"
+    ) {
       return "greenhouse";
     }
     if (url.searchParams.has("gh_jid")) return "greenhouse";
     if (host.endsWith("ashbyhq.com")) return "ashby";
-    if (host === "jobs.lever.co") return "lever";
+    if (host === "jobs.lever.co" || host === "api.lever.co") return "lever";
     if (host === "jobs.smartrecruiters.com" || host === "careers.smartrecruiters.com" || host === "api.smartrecruiters.com") {
       return "smartrecruiters";
     }

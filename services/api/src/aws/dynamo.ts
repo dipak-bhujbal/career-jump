@@ -1,4 +1,6 @@
 import {
+  AttributeValue,
+  ConditionalCheckFailedException,
   DeleteItemCommand,
   DynamoDBClient,
   GetItemCommand,
@@ -13,6 +15,12 @@ type QueryOptions = {
   limit?: number;
   scanIndexForward?: boolean;
   consistentRead?: boolean;
+};
+
+type PutRowOptions = {
+  conditionExpression?: string;
+  expressionAttributeNames?: Record<string, string>;
+  expressionAttributeValues?: Record<string, unknown>;
 };
 
 const client = new DynamoDBClient({});
@@ -59,12 +67,23 @@ export function registryTableName(): string {
  * Small DynamoDB helpers keep the higher-level storage modules readable and
  * avoid repeating marshalling/query boilerplate across admin and support flows.
  */
-export async function putRow(tableName: string, row: Record<string, unknown>): Promise<void> {
+export async function putRow(
+  tableName: string,
+  row: Record<string, unknown>,
+  options: PutRowOptions = {},
+): Promise<void> {
   await client.send(new PutItemCommand({
     TableName: tableName,
     Item: marshall(row, { removeUndefinedValues: true }),
+    ConditionExpression: options.conditionExpression,
+    ExpressionAttributeNames: options.expressionAttributeNames,
+    ExpressionAttributeValues: options.expressionAttributeValues
+      ? marshall(options.expressionAttributeValues, { removeUndefinedValues: true })
+      : undefined,
   }));
 }
+
+export { ConditionalCheckFailedException };
 
 export async function getRow<T>(
   tableName: string,
@@ -121,4 +140,32 @@ export async function scanRows<T>(
     Limit: limit,
   }));
   return (response.Items ?? []).map((item) => unmarshall(item) as T);
+}
+
+export async function scanAllRows<T>(
+  tableName: string,
+  options: {
+    filterExpression?: string;
+    expressionAttributeValues?: Record<string, unknown>;
+    expressionAttributeNames?: Record<string, string>;
+  } = {},
+): Promise<T[]> {
+  const results: T[] = [];
+  let lastKey: Record<string, AttributeValue> | undefined;
+  do {
+    const response = await client.send(new ScanCommand({
+      TableName: tableName,
+      FilterExpression: options.filterExpression,
+      ExpressionAttributeValues: options.expressionAttributeValues
+        ? marshall(options.expressionAttributeValues, { removeUndefinedValues: true })
+        : undefined,
+      ExpressionAttributeNames: options.expressionAttributeNames,
+      ExclusiveStartKey: lastKey,
+    }));
+    for (const item of response.Items ?? []) {
+      results.push(unmarshall(item) as T);
+    }
+    lastKey = response.LastEvaluatedKey;
+  } while (lastKey);
+  return results;
 }

@@ -44,6 +44,7 @@ vi.mock("../../src/storage", async () => {
     heartbeatActiveRun: vi.fn(async () => undefined),
     legacySeenJobKeys: vi.fn(async () => new Set()),
     loadAppliedJobs: vi.fn(async () => ({})),
+    loadBillingSubscription: vi.fn(async () => ({ plan: "power" })),
     loadJobNotes: vi.fn(async () => ({})),
     loadLatestRawScan: vi.fn(async () => null),
     loadSystemWorkdayLayerFlags: vi.fn(async () => ({ layer2: false, layer3: false })),

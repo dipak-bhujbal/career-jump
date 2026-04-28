@@ -145,11 +145,17 @@ function parseGreenhouseSampleUrl(sampleUrl: string): Pick<CompanyInput, "boardT
     if (hostedGreenhouseJob && parts[0]) {
       return { boardToken: parts[0] };
     }
-    // Boards API URLs carry the token in /v1/boards/<token>/jobs.
+    // Boards API URLs: boards-api.greenhouse.io/v1/boards/<token>/...
     if (host === "boards-api.greenhouse.io" && parts[0] === "v1" && parts[1] === "boards" && parts[2]) {
       return { boardToken: parts[2] };
     }
-    if (!nativeGreenhouseHost) {
+    // REST API URLs: api.greenhouse.io/v1/boards/<token>/...
+    if (host === "api.greenhouse.io" && parts[0] === "v1" && parts[1] === "boards" && parts[2]) {
+      return { boardToken: parts[2] };
+    }
+    // EU Greenhouse board host: job-boards.eu.greenhouse.io/<token>
+    const euGreenhouseHost = host === "job-boards.eu.greenhouse.io";
+    if (!nativeGreenhouseHost && !euGreenhouseHost) {
       return {};
     }
 
@@ -194,6 +200,11 @@ function parseSmartRecruitersSampleUrl(sampleUrl: string): Pick<CompanyInput, "s
       return smartRecruitersCompanyId ? { smartRecruitersCompanyId } : {};
     }
 
+    // api.smartrecruiters.com/v1/companies/<id>/postings
+    if (host === "api.smartrecruiters.com" && parts[0] === "v1" && parts[1] === "companies" && parts[2]) {
+      return { smartRecruitersCompanyId: parts[2] };
+    }
+
     return {};
   } catch {
     return {};
@@ -206,9 +217,16 @@ function parseLeverSampleUrl(sampleUrl: string): Pick<CompanyInput, "leverSite">
     const host = url.hostname.toLowerCase();
     const parts = url.pathname.split("/").filter(Boolean);
 
-    if (host !== "jobs.lever.co") return {};
-    const leverSite = String(parts[0] ?? "").trim().toLowerCase();
-    return leverSite ? { leverSite } : {};
+    // Standard hosted board: jobs.lever.co/<site>
+    if (host === "jobs.lever.co") {
+      const leverSite = String(parts[0] ?? "").trim().toLowerCase();
+      return leverSite ? { leverSite } : {};
+    }
+    // Public API: api.lever.co/v0/postings/<site>
+    if (host === "api.lever.co" && parts[0] === "v0" && parts[1] === "postings" && parts[2]) {
+      return { leverSite: parts[2].toLowerCase() };
+    }
+    return {};
   } catch {
     return {};
   }
@@ -313,6 +331,8 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
         : null;
 
     case "greenhouse":
+      // boardToken must come from the canonical board URL or an explicit stored value.
+      // If it cannot be derived, fail closed — never guess from company name or fall back silently.
       return company.boardToken
         ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.boardUrl || company.sampleUrl }
         : null;
@@ -325,10 +345,17 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
         ? { source: "smartrecruiters", smartRecruitersCompanyId: company.smartRecruitersCompanyId }
         : null;
 
-    case "lever":
-      return company.leverSite
-        ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.boardUrl || company.sampleUrl }
+    case "lever": {
+      if (company.leverSite) {
+        return { source: "lever", leverSite: company.leverSite, sampleUrl: company.boardUrl || company.sampleUrl };
+      }
+      // leverSite could not be extracted (e.g. custom domain or marketing page) —
+      // fall back to registry-adapter with the boardUrl.
+      const lvrBoardUrl = company.boardUrl || company.sampleUrl;
+      return lvrBoardUrl
+        ? { source: "registry-adapter", adapterId: "lever", boardUrl: lvrBoardUrl, companyName: company.company }
         : null;
+    }
 
     case "bamboohr":
     case "breezy":
@@ -375,9 +402,9 @@ function normalizeCompany(input: Record<string, unknown>): CompanyInput {
   const canonicalBoardUrl = canonicalBoardUrlForCompany(
     buildCanonicalCompanyInput(companyName, source, rawBoardUrl, rawSampleUrl, parsed),
   ) ?? rawBoardUrl ?? rawSampleUrl;
-  const inferredGreenhouseBoardToken = source === "greenhouse"
-    ? (parsed.boardToken || slugify(companyName) || hyphenSlug(companyName))
-    : undefined;
+  // Greenhouse boardToken must come from parsing the canonical board URL.
+  // Never synthesize from company name — a guessed token scans the wrong board silently.
+  const inferredGreenhouseBoardToken = source === "greenhouse" ? (parsed.boardToken || undefined) : undefined;
 
   // Registry-backed rows should carry only the canonical board URL so scans
   // never depend on a single posting URL saved in seed data.

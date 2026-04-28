@@ -58,7 +58,7 @@ function rawScanPk(detected: DetectedConfig): string {
 export async function loadLatestRawScan(
   _company: string,
   detected: DetectedConfig,
-  options: { allowStale?: boolean } = {}
+  options: { allowStale?: boolean; maxAgeMs?: number } = {}
 ): Promise<{ jobs: JobPosting[]; scannedAt: string } | null> {
   const rows = await queryRows<RawScanRow>(
     rawScansTableName(),
@@ -70,7 +70,7 @@ export async function loadLatestRawScan(
   if (!latest?.scannedAt || !Array.isArray(latest.jobs)) return null;
 
   const scannedAtMs = Date.parse(latest.scannedAt);
-  const maxAgeMs = RAW_SCAN_CACHE_HOURS * 60 * 60 * 1000;
+  const maxAgeMs = options.maxAgeMs ?? RAW_SCAN_CACHE_HOURS * 60 * 60 * 1000;
   if (!options.allowStale && (!Number.isFinite(scannedAtMs) || (Date.now() - scannedAtMs) > maxAgeMs)) {
     return null;
   }

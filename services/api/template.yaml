@@ -919,6 +919,177 @@ Resources:
         Loader:
           - .json=json
 
+  # ── Background registry scanner queues ────────────────────────────────────
+  WorkdayQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-${Stage}-queue-workday"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  EnterpriseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-${Stage}-queue-enterprise"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  PublicApiQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-${Stage}-queue-public-api"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  RegistryScanWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-registry-scan-worker"
+      Handler: src/aws/registry-scan-worker.handler
+      Timeout: 300
+      MemorySize: 512
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RawScansTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource:
+                - !GetAtt WorkdayQueue.Arn
+                - !GetAtt EnterpriseQueue.Arn
+                - !GetAtt PublicApiQueue.Arn
+      Events:
+        WorkdayQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WorkdayQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+        EnterpriseQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt EnterpriseQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+        PublicApiQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PublicApiQueue.Arn
+            BatchSize: 10
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        External:
+          - "@sparticuz/chromium"
+          - "playwright-core"
+          - "chromium-bidi/*"
+        Loader:
+          - .json=json
+
+  RegistrySchedulerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-registry-scheduler"
+      Handler: src/aws/registry-scheduler.handler
+      Timeout: 60
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt WorkdayQueue.Arn
+                - !GetAtt EnterpriseQueue.Arn
+                - !GetAtt PublicApiQueue.Arn
+      Environment:
+        Variables:
+          WORKDAY_QUEUE_URL: !Ref WorkdayQueue
+          ENTERPRISE_QUEUE_URL: !Ref EnterpriseQueue
+          PUBLIC_API_QUEUE_URL: !Ref PublicApiQueue
+      Events:
+        RegistryScanCron:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub "${AppName}-${Stage}-registry-scan-cron"
+            ScheduleExpression: "rate(15 minutes)"
+            State: ENABLED
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  RegistryOpsDashboardFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-registry-ops-dashboard"
+      Handler: src/aws/registry-ops-dashboard.handler
+      Timeout: 60
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+      Events:
+        RegistryOpsDashboardCron:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub "${AppName}-${Stage}-registry-ops-dashboard-cron"
+            ScheduleExpression: "rate(15 minutes)"
+            State: ENABLED
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
   ApiLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -941,6 +1112,24 @@ Resources:
     Type: AWS::Logs::LogGroup
     Properties:
       LogGroupName: !Sub "/aws/lambda/${FinalizeRunFunction}"
+      RetentionInDays: 1
+
+  RegistryScanWorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RegistryScanWorkerFunction}"
+      RetentionInDays: 1
+
+  RegistrySchedulerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RegistrySchedulerFunction}"
+      RetentionInDays: 1
+
+  RegistryOpsDashboardLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/${RegistryOpsDashboardFunction}"
       RetentionInDays: 1
 
   # Error metric filters and alarms keep Lambda runtime failures visible without adding paid APM services.
@@ -1001,6 +1190,36 @@ Resources:
           MetricName: FinalizeErrors
           MetricValue: "1"
 
+  RegistryScanWorkerErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref RegistryScanWorkerLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: RegistryScanWorkerErrors
+          MetricValue: "1"
+
+  RegistrySchedulerErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref RegistrySchedulerLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: RegistrySchedulerErrors
+          MetricValue: "1"
+
+  RegistryOpsDashboardErrorMetricFilter:
+    Type: AWS::Logs::MetricFilter
+    Properties:
+      LogGroupName: !Ref RegistryOpsDashboardLogGroup
+      FilterPattern: '{ $.level = "ERROR" }'
+      MetricTransformations:
+        - MetricNamespace: CareerJump/Lambda
+          MetricName: RegistryOpsDashboardErrors
+          MetricValue: "1"
+
   ApiErrorAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
@@ -1059,6 +1278,57 @@ Resources:
       AlarmDescription: Finalize run Lambda emitted at least one ERROR log in 5 minutes.
       Namespace: CareerJump/Lambda
       MetricName: FinalizeErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  RegistryScanWorkerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-registry-scan-worker-errors"
+      AlarmDescription: Registry scan worker Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: RegistryScanWorkerErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  RegistrySchedulerErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-registry-scheduler-errors"
+      AlarmDescription: Registry scheduler Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: RegistrySchedulerErrors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      DatapointsToAlarm: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      AlarmActions:
+        - !Ref LambdaErrorTopic
+
+  RegistryOpsDashboardErrorAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "${AppName}-${Stage}-registry-ops-dashboard-errors"
+      AlarmDescription: Registry ops dashboard Lambda emitted at least one ERROR log in 5 minutes.
+      Namespace: CareerJump/Lambda
+      MetricName: RegistryOpsDashboardErrors
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
@@ -1152,3 +1422,12 @@ Outputs:
   BillingTableName:
     Description: DynamoDB billing table.
     Value: !Ref BillingTable
+  WorkdayQueueUrl:
+    Description: SQS queue for Workday background scans.
+    Value: !Ref WorkdayQueue
+  EnterpriseQueueUrl:
+    Description: SQS queue for enterprise ATS background scans.
+    Value: !Ref EnterpriseQueue
+  PublicApiQueueUrl:
+    Description: SQS queue for public-API ATS background scans.
+    Value: !Ref PublicApiQueue

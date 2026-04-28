@@ -734,6 +734,7 @@ function ProfileRoute() {
   const profileData = useProfile();
   const { user } = useAuth();
   const [activeSection, setActiveSection] = useState<Section>("account");
+  const releaseVersion = import.meta.env.VITE_APP_VERSION || "0.0.0";
 
   // Mirror the account form fallback so the profile header never gets stuck
   // on placeholder identity values while auth has the real user info.
@@ -756,6 +757,11 @@ function ProfileRoute() {
             </div>
             <div className="font-semibold text-base leading-tight">{displayName}</div>
             <div className="text-xs text-[hsl(var(--muted-foreground))] mt-1 truncate w-full">{displayEmail || "No email set"}</div>
+            {/* Surface the shipped version in the account shell so support and
+                product checks can verify the exact deployed release quickly. */}
+            <div className="mt-3 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/40 px-3 py-1 text-[11px] font-medium text-[hsl(var(--muted-foreground))]">
+              Release v{releaseVersion}
+            </div>
           </div>
 
           {NAV.map((item) => (
