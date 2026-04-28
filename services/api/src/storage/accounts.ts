@@ -21,6 +21,7 @@ import type {
 } from "../types";
 import {
   billingTableName,
+  deleteRow,
   eventsTableName,
   getRow,
   putRow,
@@ -192,6 +193,16 @@ function defaultFeatureFlags(updatedBy: string): FeatureFlagRecord[] {
       enabledForUsers: [],
       rolloutPercent: 100,
       description: "Weekly digest and run email notifications.",
+      updatedAt,
+      updatedBy,
+    },
+    {
+      flagName: "registry_scans_enabled",
+      enabled: true,
+      enabledForPlans: [],
+      enabledForUsers: [],
+      rolloutPercent: 100,
+      description: "Master switch for all scheduled registry company scans. Disable to pause every background scan immediately.",
       updatedAt,
       updatedBy,
     },
@@ -446,13 +457,31 @@ export async function findUserProfiles(search?: string): Promise<UserProfileReco
   return profile ? [profile] : [];
 }
 
-export async function loadAnnouncements(): Promise<AnnouncementRecord[]> {
+export async function listAnnouncements(): Promise<AnnouncementRecord[]> {
   return queryRows<SupportAnnouncementRow>(
     supportTableName(),
     "pk = :pk",
     { ":pk": "ANNOUNCEMENT" },
-    { limit: 50, scanIndexForward: false }
+    { limit: 100, scanIndexForward: false }
   );
+}
+
+export async function loadAnnouncementsForUser(plan: UserPlan, tenantId: string): Promise<AnnouncementRecord[]> {
+  const now = new Date().toISOString();
+  const all = await listAnnouncements();
+  return all.filter((a) => {
+    if (!a.active) return false;
+    if (a.activeFrom > now) return false;
+    if (a.activeTo && a.activeTo < now) return false;
+    if (a.targetPlans.length > 0 && !a.targetPlans.includes("all") && !a.targetPlans.includes(plan)) return false;
+    if (a.targetTenantIds && a.targetTenantIds.length > 0 && !a.targetTenantIds.includes(tenantId)) return false;
+    return true;
+  });
+}
+
+/** @deprecated use listAnnouncements or loadAnnouncementsForUser */
+export async function loadAnnouncements(): Promise<AnnouncementRecord[]> {
+  return listAnnouncements();
 }
 
 export async function loadFeatureFlags(actor: RequestActor): Promise<FeatureFlagRecord[]> {
@@ -497,6 +526,23 @@ export async function loadSystemWorkdayLayerFlags(): Promise<{ layer2: boolean; 
   }
 }
 
+export async function loadSystemRegistryScanFlag(): Promise<boolean> {
+  try {
+    const existing = await queryRows<SupportFeatureFlagRow>(
+      supportTableName(),
+      "pk = :pk",
+      { ":pk": "FEATURE" },
+      { limit: 50 }
+    );
+    const flag = existing.find((f) => f.flagName === "registry_scans_enabled");
+    // Flag absent = not yet seeded; treat as enabled so existing deploys keep scanning.
+    return flag === undefined ? true : flag.enabled === true;
+  } catch (error) {
+    console.warn("[feature-flags] failed to load registry scan flag, defaulting to enabled", error);
+    return true;
+  }
+}
+
 export async function saveFeatureFlag(actor: RequestActor, input: FeatureFlagRecord): Promise<FeatureFlagRecord> {
   const next: FeatureFlagRecord = {
     ...input,
@@ -529,6 +575,35 @@ export async function createAnnouncement(actor: RequestActor, input: Announcemen
   });
   await recordEvent(actor, "ADMIN_ACTION", { action: "save_announcement", announcementId: next.id });
   return next;
+}
+
+export async function updateAnnouncement(actor: RequestActor, id: string, patch: Partial<AnnouncementRecord>): Promise<AnnouncementRecord | null> {
+  const existing = await getRow<AnnouncementRecord & { pk: string; sk: string }>(
+    supportTableName(),
+    { pk: "ANNOUNCEMENT", sk: `CONFIG#${id}` },
+  );
+  if (!existing) return null;
+  const next: AnnouncementRecord = {
+    ...existing,
+    ...patch,
+    id,
+    updatedAt: nowISO(),
+    updatedBy: actor.userId,
+  };
+  await putRow(supportTableName(), { pk: "ANNOUNCEMENT", sk: `CONFIG#${id}`, ...next });
+  await recordEvent(actor, "ADMIN_ACTION", { action: "update_announcement", announcementId: id });
+  return next;
+}
+
+export async function deleteAnnouncement(actor: RequestActor, id: string): Promise<boolean> {
+  const existing = await getRow<{ pk: string }>(
+    supportTableName(),
+    { pk: "ANNOUNCEMENT", sk: `CONFIG#${id}` },
+  );
+  if (!existing) return false;
+  await deleteRow(supportTableName(), { pk: "ANNOUNCEMENT", sk: `CONFIG#${id}` });
+  await recordEvent(actor, "ADMIN_ACTION", { action: "delete_announcement", announcementId: id });
+  return true;
 }
 
 export async function createSupportTicket(

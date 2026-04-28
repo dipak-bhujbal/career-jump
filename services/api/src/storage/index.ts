@@ -15,3 +15,4 @@ export * from "./registry-scan-state";
 export * from "./workday-scan-state";
 export * from "./plan-config";
 export * from "./stripe-config";
+export * from "./data-lake";

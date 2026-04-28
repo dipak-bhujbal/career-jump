@@ -42,7 +42,6 @@ function DashboardRoute() {
   const { data: me } = useMe();
   const { layout, customizing, setLayout, toggleCustomizing, reset } = useWidgetStore();
   const [addOpen, setAddOpen] = useState(false);
-  const [showUpgradeNudge, setShowUpgradeNudge] = useState(false);
   const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
 
   const sensors = useSensors(
@@ -59,15 +58,16 @@ function DashboardRoute() {
     setLayout(arrayMove(layout, oldIdx, newIdx));
   }
 
+  const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const isEntryTier = currentPlan === "free" || currentPlan === "starter";
+
   useEffect(() => {
     const shouldNudge = sessionStorage.getItem("cj_upgrade_nudge_after_login") === "1";
-    const isEntryTier = (me?.billing?.plan ?? me?.profile?.plan ?? "free") === "free"
-      || (me?.billing?.plan ?? me?.profile?.plan ?? "free") === "starter";
     if (shouldNudge && isEntryTier) {
-      setShowUpgradeNudge(true);
+      setUpgradePromptOpen(true);
       sessionStorage.removeItem("cj_upgrade_nudge_after_login");
     }
-  }, [me?.billing?.plan, me?.profile?.plan]);
+  }, [isEntryTier]);
 
   return (
     <>
@@ -93,10 +93,10 @@ function DashboardRoute() {
         }
       />
       <div className="p-6">
-        {showUpgradeNudge ? (
+        {isEntryTier && me ? (
           <div className="mb-4">
             <UpgradeBanner
-              message="You’re on an entry-tier plan. Upgrade now to unlock more visible jobs, more tracked applications, and richer scan coverage."
+              message="You’re on the free tier. Upgrade to unlock more visible jobs, more tracked applications, and richer scan coverage."
               cta={() => setUpgradePromptOpen(true)}
             />
           </div>
@@ -123,7 +123,7 @@ function DashboardRoute() {
       <UpgradePrompt
         open={upgradePromptOpen}
         onClose={() => setUpgradePromptOpen(false)}
-        currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+        currentPlan={currentPlan}
         title="Upgrade to unlock more of Career Jump"
         body="Move beyond the entry tier to raise company, job, and applied-job limits with Stripe Checkout."
       />

@@ -1,5 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type AppliedJob, type AppliedJobsEnvelope, type AppliedStatus, type Job } from "@/lib/api";
+import {
+  api,
+  type AppliedJob,
+  type AppliedJobsEnvelope,
+  type AppliedKanbanColumn,
+  type AppliedKanbanEnvelope,
+  type AppliedStatus,
+  type CompanyAppliedJobsEnvelope,
+  type Job,
+} from "@/lib/api";
 
 export type AppliedFilter = {
   companies?: string[];
@@ -13,6 +22,8 @@ export type AppliedFilter = {
 };
 
 export const appliedKey = (f: AppliedFilter) => ["applied", f] as const;
+export const appliedKanbanKey = () => ["applied", "kanban"] as const;
+export const companyAppliedKey = (companySlug: string) => ["applied", "company", companySlug] as const;
 
 type RawAppliedJob = Partial<AppliedJob> & {
   company?: string;
@@ -56,15 +67,35 @@ function normalizeAppliedJob(row: RawAppliedJob): AppliedJob {
   };
 }
 
+function normalizeAppliedJobs(rows: RawAppliedJob[] | undefined): AppliedJob[] {
+  return (rows ?? []).map((row) => normalizeAppliedJob(row));
+}
+
 function normalizeAppliedEnvelope(data: AppliedJobsEnvelope): AppliedJobsEnvelope {
   // The AWS API currently returns flattened application rows; the React UI
   // consumes a nested `job` object. Normalize once at the query boundary so all
   // pages/widgets share the same applied-jobs source of truth.
-  const jobs = (data.jobs ?? []).map((row) => normalizeAppliedJob(row as RawAppliedJob));
+  const jobs = normalizeAppliedJobs(data.jobs as RawAppliedJob[] | undefined);
   const companyOptions = data.companyOptions?.length
     ? data.companyOptions
     : Array.from(new Set(jobs.map((job) => job.job.company))).sort();
   return { ...data, jobs, companyOptions };
+}
+
+function normalizeAppliedKanbanEnvelope(data: AppliedKanbanEnvelope): AppliedKanbanEnvelope {
+  // Normalize each column once so the dedicated kanban endpoint can share the
+  // same nested job shape as the rest of the applied-jobs UI.
+  const columns: AppliedKanbanColumn[] = (data.columns ?? []).map((column) => ({
+    ...column,
+    jobs: normalizeAppliedJobs(column.jobs as RawAppliedJob[] | undefined),
+    count: column.count ?? column.jobs?.length ?? 0,
+  }));
+  const total = data.total ?? columns.reduce((sum, column) => sum + column.jobs.length, 0);
+  return { ...data, total, columns };
+}
+
+function normalizeCompanyAppliedEnvelope(data: CompanyAppliedJobsEnvelope): CompanyAppliedJobsEnvelope {
+  return { ...data, jobs: normalizeAppliedJobs(data.jobs as RawAppliedJob[] | undefined) };
 }
 
 export function useApplied(filter: AppliedFilter) {
@@ -82,6 +113,24 @@ export function useApplied(filter: AppliedFilter) {
   });
 }
 
+export function useAppliedKanban(options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: appliedKanbanKey(),
+    queryFn: () => api.get<AppliedKanbanEnvelope>("/api/applied-jobs/kanban").then(normalizeAppliedKanbanEnvelope),
+    staleTime: 15_000,
+    enabled: options?.enabled ?? true,
+  });
+}
+
+export function useCompanyAppliedJobs(companySlug: string, options?: { enabled?: boolean }) {
+  return useQuery({
+    queryKey: companyAppliedKey(companySlug),
+    queryFn: () => api.get<CompanyAppliedJobsEnvelope>(`/api/companies/${encodeURIComponent(companySlug)}/applied`).then(normalizeCompanyAppliedEnvelope),
+    staleTime: 15_000,
+    enabled: options?.enabled ?? Boolean(companySlug),
+  });
+}
+
 export function useUpdateStatus() {
   const qc = useQueryClient();
   return useMutation({
@@ -90,6 +139,7 @@ export function useUpdateStatus() {
       qc.invalidateQueries({ queryKey: ["applied"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
       qc.invalidateQueries({ queryKey: ["actionPlan"] });
+      qc.invalidateQueries({ queryKey: appliedKanbanKey() });
     },
   });
 }

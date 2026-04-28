@@ -106,12 +106,63 @@ const appliedJobSchema = {
   },
 };
 
+const planConfigSchema = {
+  type: "object",
+  required: ["plan", "displayName", "scanCacheAgeHours", "canTriggerLiveScan", "maxSessions", "maxEmailsPerWeek", "enabledFeatures", "updatedAt", "updatedBy"],
+  properties: {
+    plan: { type: "string", enum: ["free", "starter", "pro", "power"] },
+    displayName: { type: "string" },
+    scanCacheAgeHours: { type: "number" },
+    canTriggerLiveScan: { type: "boolean" },
+    maxCompanies: { type: "integer", nullable: true },
+    maxSessions: { type: "integer" },
+    maxVisibleJobs: { type: "integer", nullable: true },
+    maxAppliedJobs: { type: "integer", nullable: true },
+    emailNotificationsEnabled: { type: "boolean" },
+    weeklyDigestEnabled: { type: "boolean" },
+    maxEmailsPerWeek: { type: "integer" },
+    enabledFeatures: { type: "array", items: { type: "string" } },
+    updatedAt: { type: "string", format: "date-time" },
+    updatedBy: { type: "string" },
+  },
+};
+
+const stripeConfigPublicSchema = {
+  type: "object",
+  properties: {
+    publishableKey: { type: "string" },
+    webhookConfigured: { type: "boolean" },
+    priceIds: {
+      type: "object",
+      properties: {
+        starter: { type: "string", nullable: true },
+        pro: { type: "string", nullable: true },
+        power: { type: "string", nullable: true },
+      },
+    },
+    updatedAt: { type: "string", format: "date-time", nullable: true },
+  },
+};
+
+const billingSubscriptionSchema = {
+  type: "object",
+  properties: {
+    plan: { type: "string", enum: ["free", "starter", "pro", "power"] },
+    status: { type: "string", enum: ["active", "trialing", "canceled"] },
+    provider: { type: "string" },
+    stripeCustomerId: { type: "string", nullable: true },
+    stripeSubscriptionId: { type: "string", nullable: true },
+    currentPeriodEnd: { type: "string", format: "date-time", nullable: true },
+    updatedAt: { type: "string", format: "date-time" },
+  },
+};
+
 export function buildOpenApiDocument(baseUrl: string) {
   return {
     openapi: "3.0.3",
     info: {
       title: "Career Jump API",
-      version: "2.2.4",
+      version: "3.0.0",
       description: [
         "Operational API for Career Jump AWS, a low-cost AWS serverless application that scans ATS providers, filters target roles, tracks application pipeline state, and stores runtime state in DynamoDB.",
         "",
@@ -134,6 +185,8 @@ export function buildOpenApiDocument(baseUrl: string) {
       { name: "jobs", description: "Available inventory, applied jobs, and workflow actions" },
       { name: "filters", description: "Tenant-scoped saved filter management" },
       { name: "logs", description: "Operational logs and audit visibility" },
+      { name: "billing", description: "Stripe billing, subscription, and checkout flows" },
+      { name: "admin", description: "Super-admin routes — require admin authentication" },
       { name: "debugging", description: "Decision and connector troubleshooting endpoints" },
       { name: "docs", description: "Swagger/OpenAPI assets" },
     ],
@@ -249,6 +302,27 @@ export function buildOpenApiDocument(baseUrl: string) {
             ok: { type: "boolean" },
             total: { type: "integer" },
             filters: { type: "array", items: { $ref: "#/components/schemas/SavedFilterRecord" } },
+          },
+        },
+        PlanConfig: planConfigSchema,
+        StripeConfigPublic: stripeConfigPublicSchema,
+        BillingSubscription: billingSubscriptionSchema,
+        AnnouncementRecord: {
+          type: "object",
+          required: ["id", "title", "body", "severity", "active", "dismissible", "activeFrom", "targetPlans", "updatedAt", "updatedBy"],
+          properties: {
+            id: { type: "string" },
+            title: { type: "string" },
+            body: { type: "string" },
+            severity: { type: "string", enum: ["info", "warning", "critical"] },
+            active: { type: "boolean" },
+            dismissible: { type: "boolean" },
+            activeFrom: { type: "string", format: "date-time" },
+            activeTo: { type: "string", format: "date-time", nullable: true },
+            targetPlans: { type: "array", items: { type: "string", enum: ["all", "free", "starter", "pro", "power"] } },
+            targetTenantIds: { type: "array", items: { type: "string" }, nullable: true },
+            updatedAt: { type: "string", format: "date-time" },
+            updatedBy: { type: "string" },
           },
         },
         ErrorResponse: {
@@ -641,6 +715,413 @@ export function buildOpenApiDocument(baseUrl: string) {
           tags: ["debugging"],
           summary: "Send a debug email payload",
           responses: { "200": { description: "Debug email sent" } },
+        },
+      },
+      "/api/me": {
+        get: {
+          tags: ["services"],
+          summary: "Get current user session",
+          description: "Returns the authenticated user's profile, billing subscription, and filtered announcements. Used to bootstrap the frontend session.",
+          responses: {
+            "200": {
+              description: "Session payload",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      profile: { type: "object", additionalProperties: true },
+                      billing: { $ref: "#/components/schemas/BillingSubscription" },
+                      announcements: { type: "array", items: { type: "object", additionalProperties: true } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/billing/checkout": {
+        post: {
+          tags: ["billing"],
+          summary: "Create Stripe Checkout session",
+          description: "Creates a Stripe Checkout session for upgrading to a paid plan. Returns a redirect URL to the Stripe-hosted checkout page.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["plan", "successUrl", "cancelUrl"],
+                  properties: {
+                    plan: { type: "string", enum: ["starter", "pro", "power"] },
+                    successUrl: { type: "string", format: "uri" },
+                    cancelUrl: { type: "string", format: "uri" },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": {
+              description: "Checkout session created",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      url: { type: "string", format: "uri" },
+                      sessionId: { type: "string" },
+                    },
+                  },
+                },
+              },
+            },
+            "400": { description: "Stripe not configured or invalid plan" },
+          },
+        },
+      },
+      "/api/billing/subscription": {
+        get: {
+          tags: ["billing"],
+          summary: "Get current billing subscription",
+          description: "Returns the authenticated user's current billing subscription and plan config — used by the Profile > Subscriptions tab.",
+          responses: {
+            "200": {
+              description: "Subscription and plan config",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      subscription: { $ref: "#/components/schemas/BillingSubscription" },
+                      planConfig: { $ref: "#/components/schemas/PlanConfig" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/stripe/webhook": {
+        post: {
+          tags: ["billing"],
+          summary: "Stripe webhook receiver",
+          description: "Receives and verifies signed Stripe webhook events. Handles `checkout.session.completed`, `customer.subscription.updated`, and `customer.subscription.deleted` to update DynamoDB subscription state.",
+          parameters: [
+            { name: "Stripe-Signature", in: "header", required: true, schema: { type: "string" } },
+          ],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+          },
+          responses: {
+            "200": { description: "Event handled" },
+            "400": { description: "Signature verification failed" },
+          },
+        },
+      },
+      "/api/admin/summary": {
+        get: {
+          tags: ["admin"],
+          summary: "Admin summary dashboard",
+          description: "Returns high-level platform stats: total users, active scans, plan distribution, and recent activity.",
+          responses: { "200": { description: "Admin summary payload" } },
+        },
+      },
+      "/api/admin/users": {
+        get: {
+          tags: ["admin"],
+          summary: "List all users",
+          description: "Returns all tenant accounts with profile, billing subscription, and plan info.",
+          parameters: [
+            { name: "plan", in: "query", schema: { type: "string", enum: ["free", "starter", "pro", "power"] } },
+            { name: "limit", in: "query", schema: { type: "integer", default: 50 } },
+          ],
+          responses: { "200": { description: "User list" } },
+        },
+      },
+      "/api/admin/feature-flags": {
+        get: {
+          tags: ["admin"],
+          summary: "Get feature flags",
+          responses: { "200": { description: "Current feature flag values" } },
+        },
+        put: {
+          tags: ["admin"],
+          summary: "Update feature flags",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+          },
+          responses: { "200": { description: "Feature flags updated" } },
+        },
+      },
+      "/api/admin/plan-config": {
+        get: {
+          tags: ["admin"],
+          summary: "Get all plan configs",
+          description: "Returns the current admin-editable config for all 4 plans (free, starter, pro, power). Falls back to hardcoded defaults if not yet saved.",
+          responses: {
+            "200": {
+              description: "All plan configs",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      plans: { type: "array", items: { $ref: "#/components/schemas/PlanConfig" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/admin/plan-config/{plan}": {
+        put: {
+          tags: ["admin"],
+          summary: "Update a single plan config",
+          description: "Saves admin-editable settings for a single tier. Immediately invalidates the 5-minute in-memory cache.",
+          parameters: [
+            { name: "plan", in: "path", required: true, schema: { type: "string", enum: ["free", "starter", "pro", "power"] } },
+          ],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { $ref: "#/components/schemas/PlanConfig" } } },
+          },
+          responses: {
+            "200": { description: "Plan config saved" },
+            "400": { description: "Invalid plan or body" },
+          },
+        },
+      },
+      "/api/admin/stripe-config": {
+        get: {
+          tags: ["admin"],
+          summary: "Get Stripe config (public fields only)",
+          description: "Returns publishable key, webhook status, and per-plan price IDs. Secret key and webhook secret are never returned.",
+          responses: {
+            "200": {
+              description: "Public Stripe config",
+              content: { "application/json": { schema: { $ref: "#/components/schemas/StripeConfigPublic" } } },
+            },
+          },
+        },
+        put: {
+          tags: ["admin"],
+          summary: "Save Stripe config",
+          description: "Saves full Stripe configuration including secret key and webhook secret to DynamoDB. These fields are write-only and never returned by GET.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["publishableKey", "secretKey", "webhookSecret"],
+                  properties: {
+                    publishableKey: { type: "string" },
+                    secretKey: { type: "string", description: "Write-only — never returned by GET" },
+                    webhookSecret: { type: "string", description: "Write-only — never returned by GET" },
+                    priceIds: {
+                      type: "object",
+                      properties: {
+                        starter: { type: "string" },
+                        pro: { type: "string" },
+                        power: { type: "string" },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "200": { description: "Stripe config saved" } },
+        },
+      },
+      "/api/admin/announcements": {
+        get: {
+          tags: ["admin"],
+          summary: "List all announcements (admin)",
+          description: "Returns all announcements regardless of active status or targeting — unfiltered admin view.",
+          responses: {
+            "200": {
+              description: "All announcements",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      total: { type: "integer" },
+                      announcements: { type: "array", items: { $ref: "#/components/schemas/AnnouncementRecord" } },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+        post: {
+          tags: ["admin"],
+          summary: "Create announcement banner",
+          description: "Creates a persistent banner targeted at specific users or plan cohorts. Non-dismissible by default.",
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["title", "body"],
+                  properties: {
+                    title: { type: "string" },
+                    body: { type: "string" },
+                    severity: { type: "string", enum: ["info", "warning", "critical"], default: "info" },
+                    active: { type: "boolean", default: true },
+                    dismissible: { type: "boolean", default: false },
+                    targetPlans: { type: "array", items: { type: "string", enum: ["all", "free", "starter", "pro", "power"] }, nullable: true },
+                    targetTenantIds: { type: "array", items: { type: "string" }, nullable: true },
+                    activeFrom: { type: "string", format: "date-time" },
+                    activeTo: { type: "string", format: "date-time", nullable: true },
+                  },
+                },
+              },
+            },
+          },
+          responses: { "201": { description: "Announcement created" } },
+        },
+      },
+      "/api/admin/announcements/{id}": {
+        put: {
+          tags: ["admin"],
+          summary: "Update announcement",
+          description: "Patches any fields on an existing announcement. Use active=false to deactivate without deleting.",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", additionalProperties: true } } },
+          },
+          responses: {
+            "200": { description: "Announcement updated" },
+            "404": { description: "Announcement not found" },
+          },
+        },
+        delete: {
+          tags: ["admin"],
+          summary: "Delete announcement",
+          parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }],
+          responses: {
+            "200": { description: "Announcement deleted" },
+            "404": { description: "Announcement not found" },
+          },
+        },
+      },
+      "/api/admin/analytics/growth": {
+        get: {
+          tags: ["admin"],
+          summary: "User growth analytics",
+          description: "Returns new user signups and plan conversion trends over time.",
+          responses: { "200": { description: "Growth analytics payload" } },
+        },
+      },
+      "/api/admin/analytics/market-intel": {
+        get: {
+          tags: ["admin"],
+          summary: "Market intelligence analytics",
+          description: "Returns aggregate job market signals: top companies by new postings, keyword frequency, and location distribution.",
+          responses: { "200": { description: "Market intel payload" } },
+        },
+      },
+      "/api/admin/analytics/feature-usage": {
+        get: {
+          tags: ["admin"],
+          summary: "Feature usage analytics",
+          description: "Returns per-feature engagement metrics across the platform.",
+          responses: { "200": { description: "Feature usage payload" } },
+        },
+      },
+      "/api/admin/analytics/system-health": {
+        get: {
+          tags: ["admin"],
+          summary: "System health analytics",
+          description: "Returns Lambda execution metrics, scan success/failure rates, and DynamoDB operation counts.",
+          responses: { "200": { description: "System health payload" } },
+        },
+      },
+      "/api/admin/support/tickets": {
+        get: {
+          tags: ["admin"],
+          summary: "List support tickets",
+          responses: { "200": { description: "Support tickets list" } },
+        },
+      },
+      "/api/admin/export/jobs": {
+        get: {
+          tags: ["admin"],
+          summary: "Export applied jobs (NDJSON)",
+          description: "Streams all applied job records for the tenant as newline-delimited JSON. Suitable for data lake ingestion.",
+          responses: {
+            "200": { description: "NDJSON stream of AppliedJobRecord objects", content: { "application/x-ndjson": { schema: { type: "string" } } } },
+          },
+        },
+      },
+      "/api/admin/export/scan-state": {
+        get: {
+          tags: ["admin"],
+          summary: "Export registry scan state (NDJSON)",
+          description: "Streams all RegistryCompanyScanState records ordered by scan pool priority and time-of-day bias.",
+          responses: {
+            "200": { description: "NDJSON stream of RegistryCompanyScanState objects", content: { "application/x-ndjson": { schema: { type: "string" } } } },
+          },
+        },
+      },
+      "/api/applied-jobs/kanban": {
+        get: {
+          tags: ["jobs"],
+          summary: "Kanban board view of applied jobs",
+          description: "Returns applied jobs grouped into kanban columns by status: Applied, Interview, Negotiations, Offered, Rejected.",
+          responses: {
+            "200": {
+              description: "Kanban board",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      total: { type: "integer" },
+                      columns: {
+                        type: "array",
+                        items: {
+                          type: "object",
+                          properties: {
+                            status: { type: "string", enum: ["Applied", "Interview", "Negotiations", "Offered", "Rejected"] },
+                            count: { type: "integer" },
+                            jobs: { type: "array", items: { type: "object" } },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+      "/api/companies/{company}/applied": {
+        get: {
+          tags: ["jobs"],
+          summary: "Applied jobs for a specific company",
+          description: "Returns all applied job records filtered to a single company slug.",
+          parameters: [{ name: "company", in: "path", required: true, schema: { type: "string" } }],
+          responses: { "200": { description: "List of applied job records for the company" } },
         },
       },
     },

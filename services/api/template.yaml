@@ -744,7 +744,10 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
-        - DynamoDBReadPolicy:
+        # Admin analytics caches and a few registry-backed admin flows persist
+        # lightweight state into the shared registry table, so the API needs
+        # write access here rather than read-only access.
+        - DynamoDBCrudPolicy:
             TableName: !Ref RegistryTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable

@@ -14,7 +14,9 @@ import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
 import { useActionPlan } from "@/features/plan/queries";
+import { useMe } from "@/features/session/queries";
 import { formatShortDate, relativeTime } from "@/lib/format";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { MultiSelect } from "@/components/ui/multi-select";
@@ -37,6 +39,7 @@ export const Route = createFileRoute("/plan")({ component: ActionPlanRoute });
 
 function ActionPlanRoute() {
   const { data, isLoading } = useActionPlan();
+  const { data: me } = useMe();
   // Stabilize the empty fallback so memoized filters/sorts do not see a new
   // array on every render before the action-plan query resolves.
   const rows = useMemo(() => data?.jobs ?? [], [data?.jobs]);
@@ -47,6 +50,7 @@ function ActionPlanRoute() {
   const [location, setLocation] = useState("");
   const [dateRange, setDateRange] = useState<DateRangeValue>({ from: null, to: null });
   const [selectedOutcomes, setSelectedOutcomes] = useState<string[]>([]);
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
   // Drawer holds just the jobKey; the actual ActionPlanRow is looked
   // up from the live list each render so when rounds are added/edited/
   // deleted the drawer re-renders with the latest data.
@@ -58,6 +62,8 @@ function ActionPlanRoute() {
       })()
     : null;
   const [sortBy, setSortBy] = useState<"interview" | "applied" | "company">("interview");
+  const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const showUpgradeBanner = currentPlan === "free";
 
   const companyOptions = useMemo(() => {
     const set = new Set<string>();
@@ -114,6 +120,13 @@ function ActionPlanRoute() {
         subtitle={`${rows.length} active opportunit${rows.length === 1 ? "y" : "ies"} to prep for`}
       />
       <div className="p-6 space-y-4">
+        {showUpgradeBanner ? (
+          <UpgradeBanner
+            title="Upgrade for a deeper job-search workflow"
+            message="Keep your search moving past the free tier to unlock more tracked inventory, more applications, and a larger working pipeline."
+            cta={() => setUpgradePromptOpen(true)}
+          />
+        ) : null}
         <FilterToolbar
           label={
             <span className="inline-flex items-center gap-2">
@@ -228,6 +241,13 @@ function ActionPlanRoute() {
         </Card>
       </div>
       <JobDetailsDrawer source={drawer} onClose={() => setDrawerJobKey(null)} />
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+        currentPlan={currentPlan}
+        title="Upgrade to expand your action-plan workflow"
+        body="Move beyond the free tier to track more jobs, more applications, and a broader pipeline without hitting entry-tier limits."
+      />
     </>
   );
 }

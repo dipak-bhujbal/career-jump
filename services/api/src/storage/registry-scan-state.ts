@@ -14,6 +14,12 @@ type RegistryScanStateRow = RegistryCompanyScanState & {
 
 const DEFAULT_SCAN_POOL: RegistryScanPool = "low";
 const DEFAULT_PRIORITY: RegistryScanPriority = "normal";
+
+function poolFromTrackers(activeTrackers: number): RegistryScanPool {
+  if (activeTrackers >= 3) return "hot";
+  if (activeTrackers >= 1) return "warm";
+  return "low";
+}
 const FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PAUSED_FAILURE_THRESHOLD = 5;
 const SCAN_POOL_INTERVAL_MS: Record<RegistryScanPool, number> = {
@@ -62,6 +68,14 @@ function deriveStatus(state: RegistryCompanyScanState): RegistryScanStatus {
   return "healthy";
 }
 
+function defaultScanHourWeights(): number[] {
+  return Array(24).fill(0) as number[];
+}
+
+function currentUtcHour(): number {
+  return new Date().getUTCHours();
+}
+
 function defaultState(company: string, adapterId?: string | null): RegistryCompanyScanState {
   const nextScanAt = nowISO();
   return {
@@ -71,6 +85,8 @@ function defaultState(company: string, adapterId?: string | null): RegistryCompa
     scanPool: DEFAULT_SCAN_POOL,
     priority: DEFAULT_PRIORITY,
     status: "pending",
+    activeTrackers: 0,
+    scanHourWeights: defaultScanHourWeights(),
     nextScanAt,
     staleAfterAt: nextScanAt,
     lastScanAt: null,
@@ -81,6 +97,20 @@ function defaultState(company: string, adapterId?: string | null): RegistryCompa
     lastFetchedCount: 0,
     updatedAt: nowISO(),
   };
+}
+
+export function biasQueryByCurrentHour(
+  rows: RegistryCompanyScanState[],
+  utcHour: number = currentUtcHour(),
+): RegistryCompanyScanState[] {
+  const poolOrder: Record<RegistryScanPool, number> = { hot: 0, warm: 1, low: 2 };
+  return [...rows].sort((a, b) => {
+    const poolDiff = poolOrder[a.scanPool] - poolOrder[b.scanPool];
+    if (poolDiff !== 0) return poolDiff;
+    const aWeight = (a.scanHourWeights ?? defaultScanHourWeights())[utcHour] ?? 0;
+    const bWeight = (b.scanHourWeights ?? defaultScanHourWeights())[utcHour] ?? 0;
+    return bWeight - aWeight;
+  });
 }
 
 function normalizeState(
@@ -163,6 +193,9 @@ export async function markRegistryCompanyScanSuccess(
   const scannedAt = nowISO();
   const nextScanAt = futureIso(intervalForPool(scanPool));
   const staleAfterAt = futureIso(staleWindowForPool(scanPool));
+  const hour = currentUtcHour();
+  const weights = [...(previous.scanHourWeights ?? defaultScanHourWeights())];
+  weights[hour] = (weights[hour] ?? 0) + 1;
 
   return saveState({
     ...previous,
@@ -170,6 +203,7 @@ export async function markRegistryCompanyScanSuccess(
     scanPool,
     priority,
     status: "healthy",
+    scanHourWeights: weights,
     nextScanAt,
     staleAfterAt,
     lastScanAt: scannedAt,
@@ -256,5 +290,25 @@ export async function markRegistryCompanyScanMisconfigured(
     lastFailureAt: nowISO(),
     lastFailureReason: input.failureReason,
     failureCount: previous.failureCount + 1,
+  });
+}
+
+export async function updateActiveTrackers(
+  company: string,
+  delta: 1 | -1,
+): Promise<RegistryCompanyScanState> {
+  const previous = await loadRegistryCompanyScanState(company);
+  const activeTrackers = Math.max(0, (previous.activeTrackers ?? 0) + delta);
+  const scanPool = poolFromTrackers(activeTrackers);
+  const poolChanged = scanPool !== previous.scanPool;
+  const nextScanAt = poolChanged ? nowISO() : previous.nextScanAt;
+  const staleAfterAt = poolChanged ? futureIso(staleWindowForPool(scanPool)) : previous.staleAfterAt;
+
+  return saveState({
+    ...previous,
+    activeTrackers,
+    scanPool,
+    nextScanAt,
+    staleAfterAt,
   });
 }

@@ -9,6 +9,7 @@
  */
 import { Outlet, createRootRoute, useNavigate, useLocation } from "@tanstack/react-router";
 import { useEffect } from "react";
+import { AnnouncementStack } from "@/components/layout/announcement-stack";
 import { Sidebar } from "@/components/layout/sidebar";
 import { ToastViewport } from "@/components/ui/toast";
 import { CommandPalette } from "@/components/command-palette";
@@ -17,6 +18,7 @@ import { MeteorBackground } from "@/components/meteor-background";
 import { RunProgress } from "@/components/run-progress";
 import { useHotkey } from "@/lib/hotkeys";
 import { AuthProvider, useAuth } from "@/features/auth/AuthContext";
+import { useMe } from "@/features/session/queries";
 import { Sparkles } from "lucide-react";
 
 const PUBLIC_PATHS = ["/login", "/signup", "/verify-email", "/forgot-password", "/privacy"];
@@ -27,6 +29,7 @@ function isPublicPath(pathname: string): boolean {
 
 function AppShell() {
   const navigate = useNavigate();
+  const { data: me } = useMe();
   useHotkey({ id: "go-dashboard", description: "Go to Dashboard", category: "Navigate", sequence: ["g", "d"] }, () => navigate({ to: "/" }));
   useHotkey({ id: "go-jobs", description: "Go to Available Jobs", category: "Navigate", sequence: ["g", "j"] }, () => navigate({ to: "/jobs" }));
   useHotkey({ id: "go-applied", description: "Go to Applied Jobs", category: "Navigate", sequence: ["g", "a"] }, () => navigate({ to: "/applied" }));
@@ -38,6 +41,9 @@ function AppShell() {
       <MeteorBackground />
       <Sidebar />
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden">
+        {/* Keep admin-targeted and plan-targeted messages visible above page
+            content so every route sees the same announcement contract. */}
+        <AnnouncementStack announcements={me?.announcements ?? []} />
         <RunProgress />
         <div className="flex-1 min-h-0 overflow-y-auto">
           <Outlet />

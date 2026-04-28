@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useMemo, useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { AlertTriangle, Save, SlidersHorizontal } from "lucide-react";
+import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -270,8 +271,17 @@ function PlanEditorCard({
 
 export function AdminPlanConfigRoute() {
   const { data: me } = useMe();
+  const location = useLocation();
   const { data, isLoading, error } = usePlanConfigs();
   const savePlan = useSavePlanConfig();
+  const [activePlan, setActivePlan] = useState<PlanConfig["plan"]>("free");
+
+  useEffect(() => {
+    if (!data?.configs?.length) return;
+    if (!data.configs.some((config) => config.plan === activePlan)) {
+      setActivePlan(data.configs[0].plan);
+    }
+  }, [activePlan, data?.configs]);
 
   if (!me?.actor?.isAdmin) {
     return (
@@ -285,27 +295,63 @@ export function AdminPlanConfigRoute() {
   return (
     <>
       <Topbar title="Plan Config" subtitle="Admin-controlled pricing, scan freshness, and entitlement policy." />
-      <div className="p-6 space-y-4">
-        {isLoading ? (
-          <Card><CardContent className="py-6 text-sm text-[hsl(var(--muted-foreground))]">Loading plan policy…</CardContent></Card>
-        ) : null}
-        {error ? (
-          <Card><CardContent className="py-6 text-sm text-rose-600">Failed to load plan policy: {error.message}</CardContent></Card>
-        ) : null}
-        {(data?.configs ?? []).map((config) => (
-          <PlanEditorCard
-            key={config.plan}
-            config={config}
-            savingPlan={savePlan.variables?.plan ?? null}
-            onSave={(payload) => {
-              savePlan.mutate(payload, {
-                onSuccess: () => toast(`${payload.displayName} plan saved`),
-                onError: (mutationError) => toast(mutationError instanceof Error ? mutationError.message : "Save failed", "error"),
-              });
-            }}
-          />
-        ))}
-      </div>
+      <AdminPageFrame
+        currentLabel="Plan Config"
+        currentPath={location.pathname}
+        eyebrow="Pricing Control"
+        title="Edit plan policy without redeploying code"
+        description="Keep plan policy admin-owned. This screen centralizes pricing labels, scan freshness, usage caps, and feature entitlements under the live PlanConfig contract."
+      >
+        <div className="space-y-4">
+          {isLoading ? (
+            <Card><CardContent className="py-6 text-sm text-[hsl(var(--muted-foreground))]">Loading plan policy…</CardContent></Card>
+          ) : null}
+          {error ? (
+            <Card><CardContent className="py-6 text-sm text-rose-600">Failed to load plan policy: {error.message}</CardContent></Card>
+          ) : null}
+          {(data?.configs?.length ?? 0) > 0 ? (
+            <Card>
+              <CardHeader>
+                <CardTitle>Plans</CardTitle>
+                <CardDescription>
+                  Switch plans here instead of scrolling through one long stacked admin form.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="flex flex-wrap gap-2">
+                {(data?.configs ?? []).map((config) => (
+                  <button
+                    key={config.plan}
+                    type="button"
+                    className={`rounded-full border px-4 py-2 text-sm font-medium uppercase tracking-[0.16em] transition-colors ${
+                      activePlan === config.plan
+                        ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70 text-[hsl(var(--foreground))]"
+                        : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/35"
+                    }`}
+                    onClick={() => setActivePlan(config.plan)}
+                  >
+                    {config.displayName}
+                  </button>
+                ))}
+              </CardContent>
+            </Card>
+          ) : null}
+          {(data?.configs ?? [])
+            .filter((config) => config.plan === activePlan)
+            .map((config) => (
+              <PlanEditorCard
+                key={config.plan}
+                config={config}
+                savingPlan={savePlan.variables?.plan ?? null}
+                onSave={(payload) => {
+                  savePlan.mutate(payload, {
+                    onSuccess: () => toast(`${payload.displayName} plan saved`),
+                    onError: (mutationError) => toast(mutationError instanceof Error ? mutationError.message : "Save failed", "error"),
+                  });
+                }}
+              />
+            ))}
+        </div>
+      </AdminPageFrame>
     </>
   );
 }

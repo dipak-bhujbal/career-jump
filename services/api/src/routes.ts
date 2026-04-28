@@ -12,6 +12,7 @@ import {
 import { applyCompanyScanOverrides, companyToDetectedConfig, loadRuntimeConfig, sanitizeCompanies, sanitizeJobtitles, saveRuntimeConfig } from "./config";
 import { registeredAdapterIds } from "./ats/registry";
 import { getByCompany, listAll, listByAts, loadRegistryCache } from "./storage/registry-cache";
+import { updateActiveTrackers } from "./storage/registry-scan-state";
 import { scrapeOne } from "./services/registry-scraper";
 import { confirmPasswordReset, requestPasswordReset } from "./services/password-reset";
 import { writeAnalytics } from "./lib/analytics";
@@ -36,6 +37,7 @@ import {
   clearActiveRunLock,
   createAnnouncement,
   createSupportTicket,
+  deleteAnnouncement,
   deleteSavedFilter,
   deleteKvPrefix,
   ensureActiveRunOwnership,
@@ -45,12 +47,14 @@ import {
   getMarketIntelAnalytics,
   getSystemHealthAnalytics,
   getSupportTicket,
-  loadAnnouncements,
+  listAnnouncements,
+  loadAnnouncementsForUser,
   listSavedFilters,
   listAdminTickets,
   listAppLogs,
   listSupportTicketMessages,
   listUserTickets,
+  updateAnnouncement,
   loadAllPlanConfigs,
   loadBillingSubscription,
   loadPlanConfig,
@@ -79,7 +83,11 @@ import {
   setCompanyScanOverride,
   setCompanyScanOverrides,
   updateEmailSendAttempt,
+  exportAppliedJobRecords,
+  exportScanStateRecords,
+  toNdjson,
 } from "./storage";
+import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
 import { buildDashboardPayload } from "./services/dashboard";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
@@ -107,6 +115,7 @@ import type {
   SavedFilterScope,
   TimelineEvent,
   UpdatedEmailJob,
+  UserPlan,
 } from "./types";
 
 async function readJsonBody<T extends Record<string, unknown>>(request: Request): Promise<T> {
@@ -552,7 +561,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/me" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const [profile, settings, billing, featureFlags, announcements] = await Promise.all([
+      const [profile, settings, billing, featureFlags] = await Promise.all([
         loadUserProfile(tenantContext.userId),
         loadUserSettings(tenantContext.userId),
         loadBillingSubscription(tenantContext.userId),
@@ -564,8 +573,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           scope: tenantContext.scope,
           isAdmin: tenantContext.isAdmin,
         }),
-        loadAnnouncements(),
       ]);
+      const userPlan: UserPlan = billing?.plan ?? "free";
+      const announcements = await loadAnnouncementsForUser(userPlan, tenantContext.tenantId);
       return jsonResponse({
         ok: true,
         actor: tenantContext,
@@ -774,6 +784,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return jsonResponse({ ok: true, flag });
     }
 
+    if (url.pathname === "/api/admin/announcements" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const announcements = await listAnnouncements();
+      return jsonResponse({ ok: true, total: announcements.length, announcements });
+    }
+
     if (url.pathname === "/api/admin/announcements" && request.method === "POST") {
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
@@ -782,25 +800,54 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!String(body.title ?? "").trim() || !String(body.body ?? "").trim()) {
         return jsonResponse({ ok: false, error: "title and body are required" }, 400);
       }
-      const announcement = await createAnnouncement({
-        userId: tenantContext.userId,
-        tenantId: tenantContext.tenantId,
-        email: tenantContext.email,
-        displayName: tenantContext.displayName,
-        scope: tenantContext.scope,
-        isAdmin: tenantContext.isAdmin,
-      }, {
+      const actor = { userId: tenantContext.userId, tenantId: tenantContext.tenantId, email: tenantContext.email, displayName: tenantContext.displayName, scope: tenantContext.scope, isAdmin: tenantContext.isAdmin };
+      const announcement = await createAnnouncement(actor, {
         id: String(body.id ?? ""),
         title: String(body.title),
         body: String(body.body),
         severity: body.severity === "warning" || body.severity === "critical" ? body.severity : "info",
+        active: body.active !== false,
+        dismissible: body.dismissible === true,
         activeFrom: String(body.activeFrom ?? nowISO()),
-        activeTo: String(body.activeTo ?? nowISO()),
-        targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | "free" | "pro" | "power"> : ["all"],
+        activeTo: body.activeTo ? String(body.activeTo) : null,
+        targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | UserPlan> : ["all"],
+        targetTenantIds: Array.isArray(body.targetTenantIds) ? body.targetTenantIds as string[] : null,
         updatedAt: nowISO(),
         updatedBy: tenantContext.userId,
       });
       return jsonResponse({ ok: true, announcement }, 201);
+    }
+
+    const announcementIdMatch = url.pathname.match(/^\/api\/admin\/announcements\/([^/]+)$/);
+    if (announcementIdMatch) {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const id = announcementIdMatch[1];
+      const actor = { userId: tenantContext.userId, tenantId: tenantContext.tenantId, email: tenantContext.email, displayName: tenantContext.displayName, scope: tenantContext.scope, isAdmin: tenantContext.isAdmin };
+
+      if (request.method === "PUT") {
+        const body = await readJsonBody<Record<string, unknown>>(request);
+        const updated = await updateAnnouncement(actor, id, {
+          ...(body.title !== undefined && { title: String(body.title) }),
+          ...(body.body !== undefined && { body: String(body.body) }),
+          ...(body.severity !== undefined && { severity: body.severity === "warning" || body.severity === "critical" ? body.severity : "info" }),
+          ...(body.active !== undefined && { active: Boolean(body.active) }),
+          ...(body.dismissible !== undefined && { dismissible: Boolean(body.dismissible) }),
+          ...(body.activeFrom !== undefined && { activeFrom: String(body.activeFrom) }),
+          ...(body.activeTo !== undefined && { activeTo: body.activeTo ? String(body.activeTo) : null }),
+          ...(body.targetPlans !== undefined && { targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | UserPlan> : ["all"] }),
+          ...(body.targetTenantIds !== undefined && { targetTenantIds: Array.isArray(body.targetTenantIds) ? body.targetTenantIds as string[] : null }),
+        });
+        if (!updated) return jsonResponse({ ok: false, error: "Announcement not found" }, 404);
+        return jsonResponse({ ok: true, announcement: updated });
+      }
+
+      if (request.method === "DELETE") {
+        const deleted = await deleteAnnouncement(actor, id);
+        if (!deleted) return jsonResponse({ ok: false, error: "Announcement not found" }, 404);
+        return jsonResponse({ ok: true, deleted: true });
+      }
     }
 
     if (url.pathname === "/api/admin/support/tickets" && request.method === "GET") {
@@ -864,6 +911,27 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       } catch (error) {
         return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
       }
+    }
+
+    if (url.pathname === "/api/admin/export/jobs" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const records = await exportAppliedJobRecords(env, tenantContext.tenantId);
+      return new Response(toNdjson(records), {
+        headers: { "Content-Type": "application/x-ndjson", "Content-Disposition": "attachment; filename=\"jobs.ndjson\"" },
+      });
+    }
+
+    if (url.pathname === "/api/admin/export/scan-state" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const records = await exportScanStateRecords();
+      const biased = biasQueryByCurrentHour(records);
+      return new Response(toNdjson(biased), {
+        headers: { "Content-Type": "application/x-ndjson", "Content-Disposition": "attachment; filename=\"scan-state.ndjson\"" },
+      });
     }
 
     if (url.pathname === "/api/admin/plan-config" && request.method === "GET") {
@@ -1112,6 +1180,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         updatedByUserId: tenantContext.userId,
       });
       const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
+
+      // Best-effort — update registry scan pool based on new active tracker count.
+      // Don't await; a registry write failure must never block a user toggle.
+      updateActiveTrackers(companyName, paused ? -1 : 1).catch(() => undefined);
 
       return jsonResponse({ ok: true, company: companyName, paused, enabled: !paused, override, companyScanOverrides });
     }
@@ -1657,6 +1729,31 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         sharedSecret: body.sharedSecret,
       });
       return jsonResponse({ ok: true });
+    }
+
+    if (url.pathname === "/api/applied-jobs/kanban" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const allRows = Object.values(appliedJobs).sort(
+        (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
+      );
+      const STATUSES: AppliedJobStatus[] = ["Applied", "Interview", "Negotiations", "Offered", "Rejected"];
+      const columns = STATUSES.map((status) => {
+        const jobs = allRows.filter((row) => row.status === status);
+        return { status, count: jobs.length, jobs };
+      });
+      return jsonResponse({ ok: true, total: allRows.length, columns });
+    }
+
+    if (url.pathname.startsWith("/api/companies/") && url.pathname.endsWith("/applied") && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const companySlug = url.pathname.slice("/api/companies/".length, -"/applied".length);
+      if (!companySlug) return jsonResponse({ ok: false, error: "company is required" }, 400);
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const rows = Object.values(appliedJobs)
+        .filter((row) => slugify(row.job.company) === companySlug || row.job.company.toLowerCase() === companySlug.toLowerCase())
+        .sort((a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime());
+      return jsonResponse({ ok: true, company: companySlug, total: rows.length, jobs: rows });
     }
 
     if (url.pathname === "/api/applied-jobs" && request.method === "GET") {

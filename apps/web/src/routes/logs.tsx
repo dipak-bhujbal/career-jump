@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { ChevronRight, ChevronDown, X } from "lucide-react";
+import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -127,6 +128,7 @@ function LogRow({ log, onFilterRunId, runIdFiltered }: {
 
 function LogsRoute() {
   const { data: me } = useMe();
+  const location = useLocation();
   const [filter, setFilter] = useState<LogsFilter>({
     q: "",
     tenantId: "",
@@ -165,8 +167,14 @@ function LogsRoute() {
 
   return (
     <>
-      <Topbar title="Scan Logs" />
-      <div className="p-6 space-y-4">
+      <Topbar title="Scan Logs" subtitle="Break-glass operational log access for admins." />
+      <AdminPageFrame
+        currentLabel="Logs"
+        currentPath={location.pathname}
+        eyebrow="Operational Diagnostics"
+        title="Inspect scan logs with explicit customer scoping"
+        description="This page keeps the break-glass customer log workflow inside the shared admin shell so operators can pivot between flags, support, analytics, and logs without losing context."
+      >
         <Card>
           <CardHeader>
             <CardTitle>Break-Glass Customer Logs</CardTitle>
@@ -396,7 +404,7 @@ function LogsRoute() {
             )}
           </CardContent>
         </Card>
-      </div>
+      </AdminPageFrame>
     </>
   );
 }

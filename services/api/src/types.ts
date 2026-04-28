@@ -415,9 +415,12 @@ export type AnnouncementRecord = {
   title: string;
   body: string;
   severity: "info" | "warning" | "critical";
+  active: boolean;
+  dismissible: boolean;
   activeFrom: string;
-  activeTo: string;
+  activeTo: string | null;
   targetPlans: Array<UserPlan | "all">;
+  targetTenantIds: string[] | null;
   updatedAt: string;
   updatedBy: string;
 };
@@ -537,6 +540,17 @@ export type RegistryScanStatus =
   | "paused"
   | "misconfigured";
 
+export type KanbanColumn = {
+  status: AppliedJobStatus;
+  count: number;
+  jobs: AppliedJobRecord[];
+};
+
+export type KanbanBoard = {
+  columns: KanbanColumn[];
+  total: number;
+};
+
 export type RegistryCompanyScanState = {
   company: string;
   companySlug: string;
@@ -544,6 +558,8 @@ export type RegistryCompanyScanState = {
   scanPool: RegistryScanPool;
   priority: RegistryScanPriority;
   status: RegistryScanStatus;
+  activeTrackers: number;
+  scanHourWeights: number[];
   nextScanAt?: string | null;
   staleAfterAt?: string | null;
   lastScanAt?: string | null;

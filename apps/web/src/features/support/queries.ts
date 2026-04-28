@@ -1,6 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  type AnnouncementEnvelope,
+  type AnnouncementsEnvelope,
   type AdminAnalyticsEnvelope,
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
@@ -12,9 +14,11 @@ import {
   type AdminUsersEnvelope,
   type FeatureFlagsEnvelope,
   type MarketIntelAnalytics,
+  type CreateAnnouncementRequest,
   type SupportTicketEnvelope,
   type SupportTicketsEnvelope,
   type SystemHealthAnalytics,
+  type UpdateAnnouncementRequest,
 } from "@/lib/api";
 import { meKey } from "@/features/session/queries";
 
@@ -118,6 +122,49 @@ export function useFeatureFlags() {
     queryKey: ["admin-feature-flags"],
     queryFn: () => api.get<FeatureFlagsEnvelope>("/api/admin/feature-flags"),
     staleTime: 10_000,
+  });
+}
+
+export function useAnnouncements() {
+  return useQuery({
+    queryKey: ["admin-announcements"],
+    queryFn: () => api.get<AnnouncementsEnvelope>("/api/admin/announcements"),
+    staleTime: 10_000,
+  });
+}
+
+export function useCreateAnnouncement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreateAnnouncementRequest) =>
+      api.post<AnnouncementEnvelope>("/api/admin/announcements", body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-announcements"] });
+      await queryClient.invalidateQueries({ queryKey: meKey });
+    },
+  });
+}
+
+export function useUpdateAnnouncement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, body }: { id: string; body: UpdateAnnouncementRequest }) =>
+      api.put<AnnouncementEnvelope>(`/api/admin/announcements/${id}`, body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-announcements"] });
+      await queryClient.invalidateQueries({ queryKey: meKey });
+    },
+  });
+}
+
+export function useDeleteAnnouncement() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.del<{ ok: boolean; deleted: true }>(`/api/admin/announcements/${id}`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-announcements"] });
+      await queryClient.invalidateQueries({ queryKey: meKey });
+    },
   });
 }
 

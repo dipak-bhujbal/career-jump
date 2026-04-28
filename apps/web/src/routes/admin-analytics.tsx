@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { BarChart3 } from "lucide-react";
+import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -270,6 +271,7 @@ function SystemHealthPanel() {
 
 function AdminAnalyticsRoute() {
   const { data: me } = useMe();
+  const location = useLocation();
   const [activeTab, setActiveTab] = useState<AnalyticsTab>("growth");
 
   if (!me?.actor?.isAdmin) {
@@ -284,27 +286,35 @@ function AdminAnalyticsRoute() {
   return (
     <>
       <Topbar title="Admin Analytics" subtitle="Operational trends and scan health for the rolling 30-day window." />
-      <div className="p-6 space-y-4">
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><BarChart3 size={16} /> Analytics</CardTitle>
-            <CardDescription>
-              Each tab reads its own cached admin analytics endpoint so the page stays simple and debuggable.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            <TabButton active={activeTab === "growth"} label="Growth" onClick={() => setActiveTab("growth")} />
-            <TabButton active={activeTab === "market-intel"} label="Market Intel" onClick={() => setActiveTab("market-intel")} />
-            <TabButton active={activeTab === "feature-usage"} label="Feature Usage" onClick={() => setActiveTab("feature-usage")} />
-            <TabButton active={activeTab === "system-health"} label="System Health" onClick={() => setActiveTab("system-health")} />
-          </CardContent>
-        </Card>
+      <AdminPageFrame
+        currentLabel="Analytics"
+        currentPath={location.pathname}
+        eyebrow="Ops Reporting"
+        title="Read product, growth, and scan-health signals together"
+        description="Each panel stays on its own cached endpoint so operators can inspect demand, feature usage, and failure clusters without losing the shared admin navigation context."
+      >
+        <div className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><BarChart3 size={16} /> Analytics</CardTitle>
+              <CardDescription>
+                Each tab reads its own cached admin analytics endpoint so the page stays simple and debuggable.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <TabButton active={activeTab === "growth"} label="Growth" onClick={() => setActiveTab("growth")} />
+              <TabButton active={activeTab === "market-intel"} label="Market Intel" onClick={() => setActiveTab("market-intel")} />
+              <TabButton active={activeTab === "feature-usage"} label="Feature Usage" onClick={() => setActiveTab("feature-usage")} />
+              <TabButton active={activeTab === "system-health"} label="System Health" onClick={() => setActiveTab("system-health")} />
+            </CardContent>
+          </Card>
 
-        {activeTab === "growth" ? <GrowthPanel /> : null}
-        {activeTab === "market-intel" ? <MarketIntelPanel /> : null}
-        {activeTab === "feature-usage" ? <FeatureUsagePanel /> : null}
-        {activeTab === "system-health" ? <SystemHealthPanel /> : null}
-      </div>
+          {activeTab === "growth" ? <GrowthPanel /> : null}
+          {activeTab === "market-intel" ? <MarketIntelPanel /> : null}
+          {activeTab === "feature-usage" ? <FeatureUsagePanel /> : null}
+          {activeTab === "system-health" ? <SystemHealthPanel /> : null}
+        </div>
+      </AdminPageFrame>
     </>
   );
 }

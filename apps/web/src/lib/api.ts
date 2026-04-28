@@ -207,8 +207,59 @@ export type MeEnvelope = {
     title: string;
     body: string;
     severity: "info" | "warning" | "critical";
+    active: boolean;
+    dismissible: boolean;
+    activeFrom: string;
+    activeTo: string | null;
+    targetPlans: Array<"all" | "free" | "starter" | "pro" | "power">;
+    targetTenantIds: string[] | null;
+    updatedAt: string;
+    updatedBy: string;
   }>;
 };
+
+export type AnnouncementSeverity = "info" | "warning" | "critical";
+export type AnnouncementTargetPlan = "all" | "free" | "starter" | "pro" | "power";
+
+export type AnnouncementRecord = {
+  id: string;
+  title: string;
+  body: string;
+  severity: AnnouncementSeverity;
+  active: boolean;
+  dismissible: boolean;
+  activeFrom: string;
+  activeTo: string | null;
+  targetPlans: AnnouncementTargetPlan[];
+  targetTenantIds: string[] | null;
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type AnnouncementsEnvelope = {
+  ok: boolean;
+  total: number;
+  announcements: AnnouncementRecord[];
+};
+
+export type AnnouncementEnvelope = {
+  ok: boolean;
+  announcement: AnnouncementRecord;
+};
+
+export type CreateAnnouncementRequest = {
+  title: string;
+  body: string;
+  severity: AnnouncementSeverity;
+  active: boolean;
+  dismissible: boolean;
+  activeFrom: string;
+  activeTo: string | null;
+  targetPlans: AnnouncementTargetPlan[];
+  targetTenantIds: string[] | null;
+};
+
+export type UpdateAnnouncementRequest = Partial<CreateAnnouncementRequest>;
 
 // ---------- Notes ----------
 export type NoteRecord = {
@@ -289,6 +340,25 @@ export type AppliedJobsEnvelope = {
   ok: boolean;
   jobs: AppliedJob[];
   companyOptions: string[];
+};
+
+export type AppliedKanbanColumn = {
+  status: AppliedStatus;
+  count: number;
+  jobs: AppliedJob[];
+};
+
+export type AppliedKanbanEnvelope = {
+  ok: boolean;
+  total: number;
+  columns: AppliedKanbanColumn[];
+};
+
+export type CompanyAppliedJobsEnvelope = {
+  ok: boolean;
+  company: string;
+  total: number;
+  jobs: AppliedJob[];
 };
 
 // ---------- Action plan ----------

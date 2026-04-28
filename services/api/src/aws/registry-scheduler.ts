@@ -1,4 +1,5 @@
 import { queryDueRegistryCompanies } from "../storage/registry-scan-state";
+import { loadSystemRegistryScanFlag } from "../storage/accounts";
 import { sendSqsBatch } from "./sqs";
 import type { RegistryCompanyScanState, RegistryScanPool, RegistryScanPriority } from "../types";
 
@@ -63,6 +64,12 @@ type SchedulerResult = {
 };
 
 export async function handler(): Promise<SchedulerResult> {
+  const scansEnabled = await loadSystemRegistryScanFlag();
+  if (!scansEnabled) {
+    console.log("[registry-scheduler] registry_scans_enabled=false — all scans paused by admin");
+    return { dispatched: 0, skipped: 0, byQueue: { workday: 0, enterprise: 0, publicApi: 0 } };
+  }
+
   const now = new Date().toISOString();
   const due = await queryDueRegistryCompanies(now);
 

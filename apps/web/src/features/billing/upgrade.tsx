@@ -66,20 +66,27 @@ export function UpgradePrompt({
 }
 
 export function UpgradeBanner({
+  title = "Upgrade available",
   message,
   cta,
 }: {
+  title?: string;
   message: string;
   cta: () => void;
 }) {
   return (
-    <div className="rounded-xl border border-amber-500/30 bg-amber-500/8 px-4 py-3 text-sm text-amber-100">
+    <div className="rounded-2xl border border-amber-500/45 bg-[linear-gradient(135deg,rgba(251,191,36,0.22),rgba(255,255,255,0.92))] px-4 py-4 text-sm text-amber-950 shadow-sm dark:bg-[linear-gradient(135deg,rgba(245,158,11,0.18),rgba(17,24,39,0.94))] dark:text-amber-50">
       <div className="flex items-center justify-between gap-4">
-        <div className="flex items-start gap-2">
-          <Sparkles size={16} className="mt-0.5 text-amber-400" />
-          <span>{message}</span>
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 rounded-full bg-amber-500/18 p-2 text-amber-700 dark:text-amber-300">
+            <Sparkles size={16} />
+          </div>
+          <div className="space-y-1">
+            <div className="text-sm font-semibold">{title}</div>
+            <div className="text-sm leading-6 text-amber-900/90 dark:text-amber-100/90">{message}</div>
+          </div>
         </div>
-        <Button size="sm" onClick={cta}>Upgrade now</Button>
+        <Button size="sm" className="shrink-0" onClick={cta}>Upgrade now</Button>
       </div>
     </div>
   );

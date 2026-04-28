@@ -35,7 +35,9 @@ import { companyKey, formatAtsLabel } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { Select } from "@/components/ui/select";
+import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
 import { parseConfiguredAts } from "@/lib/job-filters";
+import { useMe } from "@/features/session/queries";
 
 export const Route = createFileRoute("/configuration")({ component: ConfigurationRoute });
 
@@ -80,6 +82,7 @@ function canonicalBoardUrlForRegistryEntry(
 }
 
 function ConfigurationRoute() {
+  const { data: me } = useMe();
   const config = useConfig();
   const registryMeta = useRegistryMeta();
   const saveConfig = useSaveConfig();
@@ -95,6 +98,7 @@ function ConfigurationRoute() {
   const [atsFilter, setAtsFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | "enabled" | "paused">();
   const [editingKeywords, setEditingKeywords] = useState(false);
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
 
   // Reset draft when server config arrives, but only when the draft is
   // still in sync with the server (no unsaved local additions/edits).
@@ -144,6 +148,8 @@ function ConfigurationRoute() {
     !!(c.isRegistry || c.registryAts || c.registryTier);
   const trackedFromCatalog = draftCompanies.filter(isFromRegistry).length;
   const trackedCustom = draftCompanies.filter((c) => !isFromRegistry(c) && c.company).length;
+  const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const showUpgradeBanner = currentPlan === "free";
   void registryMeta;
 
   const visibleCompanies = useMemo(() => {
@@ -303,6 +309,13 @@ function ConfigurationRoute() {
         }
       />
       <div className="p-6 space-y-4">
+        {showUpgradeBanner ? (
+          <UpgradeBanner
+            title="Upgrade for broader company tracking"
+            message="Free accounts can configure the basics, but upgrading gives you more room to track companies and expand the search surface behind your scans."
+            cta={() => setUpgradePromptOpen(true)}
+          />
+        ) : null}
         <FilterToolbar
           tabs={[
             { label: "All companies", icon: <Building2 size={16} />, count: draftCompanies.length },
@@ -487,6 +500,13 @@ function ConfigurationRoute() {
         trackedCompanies={draftCompanies}
         onAddRegistry={handleAddRegistry}
         onAddCustom={handleAddCustom}
+      />
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+        currentPlan={currentPlan}
+        title="Upgrade to track more companies"
+        body="Move beyond the free tier to raise company limits and unlock a broader search footprint across your saved configuration."
       />
     </>
   );

@@ -27,9 +27,12 @@ import { Route as AdminSupportRouteImport } from './routes/admin-support'
 import { Route as AdminStripeConfigRouteImport } from './routes/admin-stripe-config'
 import { Route as AdminPlanConfigRouteImport } from './routes/admin-plan-config'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
+import { Route as AdminDocsRouteImport } from './routes/admin-docs'
+import { Route as AdminAnnouncementsRouteImport } from './routes/admin-announcements'
 import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as CompaniesCompanyAppliedRouteImport } from './routes/companies.$company.applied'
 
 const VerifyEmailRoute = VerifyEmailRouteImport.update({
   id: '/verify-email',
@@ -121,6 +124,16 @@ const AdminFlagsRoute = AdminFlagsRouteImport.update({
   path: '/admin-flags',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminDocsRoute = AdminDocsRouteImport.update({
+  id: '/admin-docs',
+  path: '/admin-docs',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminAnnouncementsRoute = AdminAnnouncementsRouteImport.update({
+  id: '/admin-announcements',
+  path: '/admin-announcements',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminAnalyticsRoute = AdminAnalyticsRouteImport.update({
   id: '/admin-analytics',
   path: '/admin-analytics',
@@ -136,11 +149,18 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const CompaniesCompanyAppliedRoute = CompaniesCompanyAppliedRouteImport.update({
+  id: '/companies/$company/applied',
+  path: '/companies/$company/applied',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
+  '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
@@ -159,11 +179,14 @@ export interface FileRoutesByFullPath {
   '/signup': typeof SignupRoute
   '/support': typeof SupportRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/companies/$company/applied': typeof CompaniesCompanyAppliedRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
+  '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
@@ -182,12 +205,15 @@ export interface FileRoutesByTo {
   '/signup': typeof SignupRoute
   '/support': typeof SupportRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/companies/$company/applied': typeof CompaniesCompanyAppliedRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
+  '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
@@ -206,6 +232,7 @@ export interface FileRoutesById {
   '/signup': typeof SignupRoute
   '/support': typeof SupportRoute
   '/verify-email': typeof VerifyEmailRoute
+  '/companies/$company/applied': typeof CompaniesCompanyAppliedRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -213,6 +240,8 @@ export interface FileRouteTypes {
     | '/'
     | '/admin'
     | '/admin-analytics'
+    | '/admin-announcements'
+    | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
     | '/admin-stripe-config'
@@ -231,11 +260,14 @@ export interface FileRouteTypes {
     | '/signup'
     | '/support'
     | '/verify-email'
+    | '/companies/$company/applied'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
     | '/admin'
     | '/admin-analytics'
+    | '/admin-announcements'
+    | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
     | '/admin-stripe-config'
@@ -254,11 +286,14 @@ export interface FileRouteTypes {
     | '/signup'
     | '/support'
     | '/verify-email'
+    | '/companies/$company/applied'
   id:
     | '__root__'
     | '/'
     | '/admin'
     | '/admin-analytics'
+    | '/admin-announcements'
+    | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
     | '/admin-stripe-config'
@@ -277,12 +312,15 @@ export interface FileRouteTypes {
     | '/signup'
     | '/support'
     | '/verify-email'
+    | '/companies/$company/applied'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
   AdminAnalyticsRoute: typeof AdminAnalyticsRoute
+  AdminAnnouncementsRoute: typeof AdminAnnouncementsRoute
+  AdminDocsRoute: typeof AdminDocsRoute
   AdminFlagsRoute: typeof AdminFlagsRoute
   AdminPlanConfigRoute: typeof AdminPlanConfigRoute
   AdminStripeConfigRoute: typeof AdminStripeConfigRoute
@@ -301,6 +339,7 @@ export interface RootRouteChildren {
   SignupRoute: typeof SignupRoute
   SupportRoute: typeof SupportRoute
   VerifyEmailRoute: typeof VerifyEmailRoute
+  CompaniesCompanyAppliedRoute: typeof CompaniesCompanyAppliedRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -431,6 +470,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminFlagsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin-docs': {
+      id: '/admin-docs'
+      path: '/admin-docs'
+      fullPath: '/admin-docs'
+      preLoaderRoute: typeof AdminDocsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin-announcements': {
+      id: '/admin-announcements'
+      path: '/admin-announcements'
+      fullPath: '/admin-announcements'
+      preLoaderRoute: typeof AdminAnnouncementsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin-analytics': {
       id: '/admin-analytics'
       path: '/admin-analytics'
@@ -452,6 +505,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/companies/$company/applied': {
+      id: '/companies/$company/applied'
+      path: '/companies/$company/applied'
+      fullPath: '/companies/$company/applied'
+      preLoaderRoute: typeof CompaniesCompanyAppliedRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
@@ -459,6 +519,8 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
   AdminAnalyticsRoute: AdminAnalyticsRoute,
+  AdminAnnouncementsRoute: AdminAnnouncementsRoute,
+  AdminDocsRoute: AdminDocsRoute,
   AdminFlagsRoute: AdminFlagsRoute,
   AdminPlanConfigRoute: AdminPlanConfigRoute,
   AdminStripeConfigRoute: AdminStripeConfigRoute,
@@ -477,6 +539,7 @@ const rootRouteChildren: RootRouteChildren = {
   SignupRoute: SignupRoute,
   SupportRoute: SupportRoute,
   VerifyEmailRoute: VerifyEmailRoute,
+  CompaniesCompanyAppliedRoute: CompaniesCompanyAppliedRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

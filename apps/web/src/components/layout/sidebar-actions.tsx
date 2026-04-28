@@ -26,8 +26,8 @@ export function SidebarActions() {
   const qc = useQueryClient();
   const prevActive = useRef(false);
 
-  const active = status.data?.active === true;
-  const busy = startRun.isPending || abortRun.isPending || clearCache.isPending || removeBroken.isPending;
+  const active = status.data?.active === true || startRun.isPending;
+  const busy = abortRun.isPending || clearCache.isPending || removeBroken.isPending;
 
   useEffect(() => {
     if (prevActive.current && !active) {
@@ -48,10 +48,10 @@ export function SidebarActions() {
             onSuccess: () => toast("Scan aborted", "info"),
             onError: (e) => toast(e instanceof Error ? e.message : "Abort failed", "error"),
           })}
-          disabled={busy}
+          disabled={busy || startRun.isPending}
         >
-          {abortRun.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
-          Stop scan
+          {abortRun.isPending || startRun.isPending ? <Loader2 size={14} className="animate-spin" /> : <AlertTriangle size={14} />}
+          {startRun.isPending ? "Starting…" : "Stop scan"}
         </Button>
       ) : (
         <Button

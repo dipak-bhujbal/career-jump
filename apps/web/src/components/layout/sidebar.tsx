@@ -1,5 +1,5 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { LayoutDashboard, Briefcase, CheckSquare, Target, Settings, Sparkles, ScrollText, User, LogOut, Shield, LifeBuoy, Users } from "lucide-react";
+import { LayoutDashboard, Briefcase, CheckSquare, Target, Settings, Sparkles, ScrollText, User, LogOut, Shield, LifeBuoy, Users, BellRing, BookOpen } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarActions } from "./sidebar-actions";
 import { useAuth } from "@/features/auth/AuthContext";
@@ -19,6 +19,8 @@ const userItems = [
 
 const adminItems = [
   { to: "/admin", label: "Admin", icon: Shield },
+  { to: "/admin-announcements", label: "Announcements", icon: BellRing },
+  { to: "/admin-docs", label: "Docs", icon: BookOpen },
   { to: "/admin-users", label: "Users", icon: Users },
   { to: "/admin-support", label: "Support Queue", icon: LifeBuoy },
   { to: "/logs", label: "Logs", icon: ScrollText },

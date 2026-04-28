@@ -23,6 +23,7 @@ import { CompanyHoverCard } from "@/features/companies/CompanyHoverCard";
 import { type AppliedJob, type AppliedStatus } from "@/lib/api";
 import { useUpdateStatus } from "./queries";
 import { formatShortDate } from "@/lib/format";
+import { slugify } from "@/lib/job-filters";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/toast";
 
@@ -176,7 +177,14 @@ function KanbanCard({ job, dragging, onSelect }: { job: AppliedJob; dragging?: b
           <div className="min-w-0 flex-1">
             <div className="text-xs text-[hsl(var(--muted-foreground))] truncate">
               <CompanyHoverCard company={job.job.company}>
-                <span className="hover:underline">{job.job.company}</span>
+                <a
+                  href={`/companies/${slugify(job.job.company)}/applied`}
+                  onClick={(e) => e.stopPropagation()}
+                  onPointerDown={(e) => e.stopPropagation()}
+                  className="hover:underline"
+                >
+                  {job.job.company}
+                </a>
               </CompanyHoverCard>
             </div>
             <div className="font-medium text-sm leading-snug">{job.job.jobTitle}</div>

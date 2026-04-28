@@ -9,7 +9,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { ExternalLink, CheckSquare, LayoutList, LayoutGrid, Bookmark, BookmarkCheck, Trash2 } from "lucide-react";
+import { ExternalLink, CheckSquare, LayoutList, LayoutGrid, Bookmark, BookmarkCheck, Trash2, ArrowUpRight } from "lucide-react";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { MultiSelect } from "@/components/ui/multi-select";
 import { DateRangePicker, type DateRangeValue } from "@/components/ui/date-range-picker";
@@ -22,9 +22,12 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
-import { useApplied, useUpdateStatus, type AppliedFilter } from "@/features/applied/queries";
+import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
+import { useApplied, useAppliedKanban, useUpdateStatus, type AppliedFilter } from "@/features/applied/queries";
+import { useMe } from "@/features/session/queries";
 import { type AppliedStatus, type AppliedJob } from "@/lib/api";
 import { formatShortDate } from "@/lib/format";
+import { slugify } from "@/lib/job-filters";
 import { toast } from "@/components/ui/toast";
 import { useSavedFilters, useSaveFilter, useDeleteFilter, type SavedFilter } from "@/features/filters/queries";
 
@@ -50,6 +53,7 @@ export const Route = createFileRoute("/applied")({
 
 function AppliedRoute() {
   const search = Route.useSearch();
+  const { data: me } = useMe();
   // Hydrate the multi-select status filter from a `?status=Rejected`
   // URL param so dashboard tiles can deep-link into specific stages.
   const initialStatuses = search.status && STATUSES.includes(search.status as AppliedStatus)
@@ -61,6 +65,7 @@ function AppliedRoute() {
   const [advancedOpen, setAdvancedOpen] = useState(initialStatuses.length > 0);
   const [view, setView] = useState<"list" | "board">("board");
   const [drawerJobKey, setDrawerJobKey] = useState<string | null>(search.jobKey ?? null);
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
 
   // React to URL changes — status filter deep-link from dashboard tiles,
   // jobKey deep-link from Recent Activity widget.
@@ -78,6 +83,7 @@ function AppliedRoute() {
   const [saveFilterOpen, setSaveFilterOpen] = useState(false);
 
   const { data, isLoading } = useApplied(filter);
+  const kanbanQuery = useAppliedKanban({ enabled: view === "board" });
   const updateStatus = useUpdateStatus();
   const savedFiltersQuery = useSavedFilters("applied_jobs");
   const saveFilterMutation = useSaveFilter();
@@ -179,7 +185,17 @@ function AppliedRoute() {
   const advancedFiltersActive = Boolean(
     (filter.companies?.length ?? 0) || filter.keyword || selectedStatuses.length || dateRange.from || dateRange.to || location,
   );
+  const serverBoardJobs = useMemo(
+    () => (kanbanQuery.data?.columns ?? []).flatMap((column) => column.jobs),
+    [kanbanQuery.data?.columns],
+  );
+  // Use the dedicated kanban endpoint for the default board so the UI follows
+  // the new backend ordering/count contract, but fall back to the richer local
+  // filtered dataset whenever the user turns on advanced filters.
+  const boardJobs = advancedFiltersActive ? filteredJobs : (serverBoardJobs.length > 0 ? serverBoardJobs : filteredJobs);
   const totalCount = appliedJobs.length;
+  const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const showUpgradeBanner = currentPlan === "free";
 
   function handleStatusChange(jobKey: string, status: AppliedStatus) {
     updateStatus.mutate({ jobKey, status }, {
@@ -195,6 +211,13 @@ function AppliedRoute() {
         subtitle={`${totalCount} application${totalCount === 1 ? "" : "s"} across the pipeline`}
       />
       <div className="p-6 space-y-4">
+        {showUpgradeBanner ? (
+          <UpgradeBanner
+            title="Upgrade for more application tracking headroom"
+            message="Free accounts can track the essentials, but upgrading gives you more room for applications, richer search coverage, and a bigger active pipeline."
+            cta={() => setUpgradePromptOpen(true)}
+          />
+        ) : null}
         <FilterToolbar
           label={
             <span className="inline-flex items-center gap-2">
@@ -346,8 +369,26 @@ function AppliedRoute() {
         )}
 
         {/* Board view = drag-and-drop kanban. List view = grouped lists. */}
-        {!isLoading && filteredJobs.length > 0 && view === "board" && (
-          <AppliedKanban jobs={filteredJobs} onSelect={(appl) => setDrawerJobKey(appl.jobKey)} />
+        {!isLoading && filter.companies?.length === 1 && (
+          <Card>
+            <CardContent className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-sm font-medium">Focused company pipeline</div>
+                <div className="text-sm text-[hsl(var(--muted-foreground))]">
+                  Open a company-only board and list view for {filter.companies[0]}.
+                </div>
+              </div>
+              <a
+                href={`/companies/${slugify(filter.companies[0])}/applied`}
+                className="inline-flex h-9 items-center justify-center gap-2 rounded-md border border-[hsl(var(--border))] px-4 text-sm font-medium transition-all duration-100 ease-out shadow-sm hover:-translate-y-px hover:bg-[hsl(var(--accent))] hover:shadow-md"
+              >
+                Open company view <ArrowUpRight size={14} />
+              </a>
+            </CardContent>
+          </Card>
+        )}
+        {!isLoading && boardJobs.length > 0 && view === "board" && (
+          <AppliedKanban jobs={boardJobs} onSelect={(appl) => setDrawerJobKey(appl.jobKey)} />
         )}
         {!isLoading && filteredJobs.length > 0 && view === "list" && STATUSES.map((status) => {
           const list = filteredJobs.filter((j) => j.status === status);
@@ -364,6 +405,13 @@ function AppliedRoute() {
         })}
       </div>
       <JobDetailsDrawer source={drawer} onClose={() => setDrawerJobKey(null)} />
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+        currentPlan={currentPlan}
+        title="Upgrade to track more of your search"
+        body="Move beyond the free tier to raise application and job limits so your pipeline can scale with the rest of your search."
+      />
     </>
   );
 }
@@ -395,7 +443,13 @@ function ApplicationList({ status, applications, onStatusChange, onSelect }: {
               <div className="col-span-3 min-w-0">
                 <div className="text-sm text-[hsl(var(--muted-foreground))]">
                   <CompanyHoverCard company={appl.job.company}>
-                    <span className="hover:underline cursor-default">{appl.job.company}</span>
+                    <a
+                      href={`/companies/${slugify(appl.job.company)}/applied`}
+                      onClick={(e) => e.stopPropagation()}
+                      className="hover:underline"
+                    >
+                      {appl.job.company}
+                    </a>
                   </CompanyHoverCard>
                 </div>
                 <div className="font-medium text-base truncate">{appl.job.jobTitle}</div>
