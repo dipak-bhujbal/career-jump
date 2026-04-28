@@ -37,14 +37,16 @@ function toPromotableRegistryEntry(company: CompanyInput): RegistryEntry | null 
     total_jobs: null,
     source: "user_verified",
     tier: preferredRegistryTier(company),
-    sample_url: company.sampleUrl ?? null,
+    // Custom promotions store the canonical board URL only. Scans should not
+    // depend on a single sample posting once the board itself is known.
+    sample_url: null,
     last_checked: nowISO(),
   };
 }
 
 /**
- * Promote validated custom companies into the shared registry so later users
- * can pick them from the catalog instead of manually re-entering sample URLs.
+ * Promote custom companies into the shared registry only after a successful
+ * scan so later users can pick a verified board URL from the catalog.
  */
 export async function promoteCustomCompaniesToRegistry(companies: CompanyInput[]): Promise<PromotionResult[]> {
   const promotions: PromotionResult[] = [];

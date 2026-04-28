@@ -30,6 +30,7 @@ vi.mock("../../src/storage", async () => {
     markWorkdayLayerPromotion: markWorkdayLayerPromotionMock,
     markWorkdayScanFailure: markWorkdayScanFailureMock,
     markWorkdayScanSuccess: markWorkdayScanSuccessMock,
+    promoteCustomCompaniesToRegistry: vi.fn(async () => []),
     recordAppLog: recordAppLogMock,
     recordEvent: recordEventMock,
     heartbeatActiveRun: heartbeatActiveRunMock,

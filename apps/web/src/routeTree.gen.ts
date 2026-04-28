@@ -22,10 +22,10 @@ import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as ConfigurationRouteImport } from './routes/configuration'
 import { Route as AppliedRouteImport } from './routes/applied'
-import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminUsersRouteImport } from './routes/admin-users'
 import { Route as AdminSupportRouteImport } from './routes/admin-support'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
+import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminRouteImport } from './routes/admin'
 import { Route as IndexRouteImport } from './routes/index'
 
@@ -94,11 +94,6 @@ const AppliedRoute = AppliedRouteImport.update({
   path: '/applied',
   getParentRoute: () => rootRouteImport,
 } as any)
-const AdminAnalyticsRoute = AdminAnalyticsRouteImport.update({
-  id: '/admin-analytics',
-  path: '/admin-analytics',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
   id: '/admin-users',
   path: '/admin-users',
@@ -112,6 +107,11 @@ const AdminSupportRoute = AdminSupportRouteImport.update({
 const AdminFlagsRoute = AdminFlagsRouteImport.update({
   id: '/admin-flags',
   path: '/admin-flags',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminAnalyticsRoute = AdminAnalyticsRouteImport.update({
+  id: '/admin-analytics',
+  path: '/admin-analytics',
   getParentRoute: () => rootRouteImport,
 } as any)
 const AdminRoute = AdminRouteImport.update({
@@ -391,18 +391,18 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminFlagsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/admin': {
-      id: '/admin'
-      path: '/admin'
-      fullPath: '/admin'
-      preLoaderRoute: typeof AdminRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/admin-analytics': {
       id: '/admin-analytics'
       path: '/admin-analytics'
       fullPath: '/admin-analytics'
       preLoaderRoute: typeof AdminAnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin': {
+      id: '/admin'
+      path: '/admin'
+      fullPath: '/admin'
+      preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {

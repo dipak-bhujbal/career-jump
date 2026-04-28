@@ -50,6 +50,35 @@ function normalizeRegistryAts(ats: string | null | undefined): string {
   return ALL_ATS_IDS.has(id as never) ? id : "";
 }
 
+function canonicalBoardUrlForRegistryEntry(
+  entry: RegistryEntry,
+  normalizedSource: string,
+  parsedAts: ReturnType<typeof parseConfiguredAts>,
+): string {
+  switch (normalizedSource) {
+    case "workday":
+      return ("workdayBaseUrl" in parsedAts && parsedAts.workdayBaseUrl) || entry.board_url || entry.sample_url || "";
+    case "greenhouse":
+      return ("boardToken" in parsedAts && parsedAts.boardToken)
+        ? `https://job-boards.greenhouse.io/${parsedAts.boardToken}`
+        : entry.board_url || entry.sample_url || "";
+    case "ashby":
+      return ("companySlug" in parsedAts && parsedAts.companySlug)
+        ? `https://jobs.ashbyhq.com/${parsedAts.companySlug}`
+        : entry.board_url || entry.sample_url || "";
+    case "lever":
+      return ("leverSite" in parsedAts && parsedAts.leverSite)
+        ? `https://jobs.lever.co/${parsedAts.leverSite}`
+        : entry.board_url || entry.sample_url || "";
+    case "smartrecruiters":
+      return ("smartRecruitersCompanyId" in parsedAts && parsedAts.smartRecruitersCompanyId)
+        ? `https://jobs.smartrecruiters.com/${parsedAts.smartRecruitersCompanyId}`
+        : entry.board_url || entry.sample_url || "";
+    default:
+      return entry.board_url || entry.sample_url || "";
+  }
+}
+
 function ConfigurationRoute() {
   const config = useConfig();
   const registryMeta = useRegistryMeta();
@@ -150,8 +179,8 @@ function ConfigurationRoute() {
       return;
     }
     const normalizedSource = normalizeRegistryAts(entry.ats) || String(entry.ats ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-    const canonicalBoardUrl = entry.board_url || entry.sample_url || "";
-    const parsedAts = parseConfiguredAts(normalizedSource as never, canonicalBoardUrl || undefined);
+    const parsedAts = parseConfiguredAts(normalizedSource as never, (entry.board_url || entry.sample_url || undefined));
+    const canonicalBoardUrl = canonicalBoardUrlForRegistryEntry(entry, normalizedSource, parsedAts);
     setDraftCompanies((prev) => [
       ...prev,
       {
@@ -161,9 +190,9 @@ function ConfigurationRoute() {
         // the raw lowercased ID so source is never saved as empty for registry entries.
         source: normalizedSource,
         boardUrl: canonicalBoardUrl,
-        // Registry-backed companies should scan from the canonical board/base
-        // URL, not from a fragile sample posting URL.
-        sampleUrl: normalizedSource === "workday" ? canonicalBoardUrl : (entry.sample_url || canonicalBoardUrl),
+        // Registry-backed companies keep the canonical board URL in both
+        // fields so older UI paths cannot fall back to a single posting URL.
+        sampleUrl: canonicalBoardUrl,
         isRegistry: true,
         registryAts: entry.ats ?? "",
         registryTier: entry.tier ?? "",
@@ -177,13 +206,13 @@ function ConfigurationRoute() {
   }
 
   /** Add a blank custom row. Closes the picker and lets the user fill
-   *  in name + ATS + sampleUrl directly in the table. */
+   *  in name + ATS + boardUrl directly in the table. */
   function handleAddCustom() {
     setPickerOpen(false);
     setTab("custom");
     setDraftCompanies((prev) => [
       ...prev,
-      { company: "", enabled: true, source: "", sampleUrl: "", isRegistry: false },
+      { company: "", enabled: true, source: "", boardUrl: "", sampleUrl: "", isRegistry: false },
     ]);
   }
 
@@ -207,7 +236,7 @@ function ConfigurationRoute() {
   }
 
   function handleSave(options?: { onSuccess?: () => void }) {
-    // Validation: registry rows skip sampleUrl/source checks since registry
+    // Validation: registry rows skip board-url/source checks since registry
     // resolves them; custom rows must supply both.
     for (const row of draftCompanies) {
       if (!row.company.trim()) {
@@ -216,7 +245,7 @@ function ConfigurationRoute() {
       }
       if (!row.isRegistry) {
         if (!row.source) return toast(`ATS is required for ${row.company}`, "error");
-        if (!row.sampleUrl) return toast(`Sample URL is required for ${row.company}`, "error");
+        if (!row.boardUrl) return toast(`Job board URL is required for ${row.company}`, "error");
       }
     }
     saveConfig.mutate(
@@ -476,7 +505,7 @@ function normalize(rows: CompanyConfig[]): Array<Partial<CompanyConfig>> {
     company: r.company.trim(),
     enabled: r.enabled !== false,
     source: r.source ?? "",
-    sampleUrl: r.sampleUrl ?? "",
+    boardUrl: r.boardUrl ?? r.sampleUrl ?? "",
     isRegistry: inferredRegistryStatus(r),
   }));
 }

@@ -26,6 +26,7 @@ import {
   markWorkdayLayerPromotion,
   markWorkdayScanFailure,
   markWorkdayScanSuccess,
+  promoteCustomCompaniesToRegistry,
   recordAppLog,
   recordEvent,
   saveRawScan,
@@ -564,6 +565,31 @@ async function fetchCompanyJobsWithSharedCache(
   throw new Error(`Workday scan failed for ${companyName} without a typed result.`);
 }
 
+async function maybePromoteCustomCompanyAfterSuccessfulScan(
+  env: Env,
+  company: RuntimeConfig["companies"][number],
+  tenantId?: string,
+): Promise<void> {
+  if (company.isRegistry === true || Boolean(company.registryAts || company.registryTier)) return;
+
+  try {
+    await promoteCustomCompaniesToRegistry([company]);
+  } catch (error) {
+    await recordAppLog(env, {
+      level: "warn",
+      event: "registry_promotion_failed",
+      message: error instanceof Error ? error.message : String(error),
+      tenantId,
+      company: company.company,
+      source: company.source,
+      route: "scan",
+      details: {
+        boardUrl: company.boardUrl ?? null,
+      },
+    });
+  }
+}
+
 export async function buildInventory(
   env: Env,
   config: RuntimeConfig,
@@ -676,6 +702,7 @@ export async function buildInventory(
       totalCompaniesDetected += 1;
       totalFetched += fetchedJobs.length;
       byCompanyFetched[company.company] = fetchedJobs.length;
+      await maybePromoteCustomCompanyAfterSuccessfulScan(env, company, tenantId);
 
       const enrichedJobs = fetchedJobs.map((job: JobPosting) => enrichJob(job, config.jobtitles));
       const matchedJobs: JobPosting[] = [];

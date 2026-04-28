@@ -51,6 +51,7 @@ vi.mock("../../src/storage", async () => {
     markWorkdayLayerPromotion: vi.fn(async () => undefined),
     markWorkdayScanFailure: markWorkdayScanFailureMock,
     markWorkdayScanSuccess: markWorkdayScanSuccessMock,
+    promoteCustomCompaniesToRegistry: vi.fn(async () => []),
     recordAppLog: recordAppLogMock,
     recordEvent: vi.fn(async () => undefined),
     saveRawScan: vi.fn(async () => undefined),

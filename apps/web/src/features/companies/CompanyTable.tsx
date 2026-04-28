@@ -6,9 +6,8 @@
  * Two row "modes":
  *   - registry-backed (`isRegistry: true`): ATS + URL came from the seed
  *     registry, both shown as read-only badges/text.
- *   - custom: editable ATS dropdown + sample-URL input. The user must
- *     supply a sample URL because the parser derives boardToken /
- *     companySlug / etc. from it (see backend src/config.ts).
+ *   - custom: editable ATS dropdown + board-URL input. The parser derives
+ *     boardToken / companySlug / etc. from the canonical board URL itself.
  *
  * The component is "controlled" — it never mutates the parent state.
  * It calls the supplied callbacks on edit / remove / toggle and lets
@@ -128,9 +127,9 @@ function CompanyRow({
           </div>
         ) : (
           <Input
-            value={company.sampleUrl ?? ""}
-            onChange={(e) => onChange(index, { sampleUrl: e.target.value })}
-            placeholder="https://… sample job URL"
+            value={company.boardUrl ?? company.sampleUrl ?? ""}
+            onChange={(e) => onChange(index, { boardUrl: e.target.value, sampleUrl: "" })}
+            placeholder="https://… job board URL"
             className="h-8 text-xs"
           />
         )}

@@ -305,6 +305,7 @@ export type CompanyInput = {
   aliases?: string[];
   enabled?: boolean;
   source?: AtsSource;
+  boardUrl?: string;
   sampleUrl?: string;
   boardToken?: string;
   companySlug?: string;
@@ -563,19 +564,26 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
   switch (company.source) {
     case "workday":
       if (company.host && company.tenant && company.site) {
-        return { source: "workday", sampleUrl: company.sampleUrl, workdayBaseUrl: company.workdayBaseUrl, host: company.host, tenant: company.tenant, site: company.site };
+        return {
+          source: "workday",
+          sampleUrl: company.boardUrl || company.sampleUrl,
+          workdayBaseUrl: company.workdayBaseUrl,
+          host: company.host,
+          tenant: company.tenant,
+          site: company.site,
+        };
       }
-      return company.sampleUrl || company.workdayBaseUrl
-        ? { source: "workday", sampleUrl: company.sampleUrl, workdayBaseUrl: company.workdayBaseUrl }
+      return company.boardUrl || company.sampleUrl || company.workdayBaseUrl
+        ? { source: "workday", sampleUrl: company.boardUrl || company.sampleUrl, workdayBaseUrl: company.workdayBaseUrl }
         : null;
     case "greenhouse":
-      return company.boardToken ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.sampleUrl } : null;
+      return company.boardToken ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.boardUrl || company.sampleUrl } : null;
     case "ashby":
       return company.companySlug ? { source: "ashby", companySlug: company.companySlug } : null;
     case "smartrecruiters":
       return company.smartRecruitersCompanyId ? { source: "smartrecruiters", smartRecruitersCompanyId: company.smartRecruitersCompanyId } : null;
     case "lever":
-      return company.leverSite ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.sampleUrl } : null;
+      return company.leverSite ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.boardUrl || company.sampleUrl } : null;
     default:
       return null;
   }

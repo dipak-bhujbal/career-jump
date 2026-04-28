@@ -264,30 +264,57 @@ export function canonicalBoardUrlForCompany(company: CompanyInput): string | und
   }
 }
 
+function buildCanonicalCompanyInput(
+  companyName: string,
+  source: Source | undefined,
+  boardUrl: string | undefined,
+  sampleUrl: string | undefined,
+  parsed: Pick<
+    CompanyInput,
+    "workdayBaseUrl" | "host" | "tenant" | "site" | "boardToken" | "companySlug" | "smartRecruitersCompanyId" | "leverSite"
+  >,
+): CompanyInput {
+  return {
+    company: companyName,
+    enabled: true,
+    source,
+    boardUrl,
+    sampleUrl,
+    boardToken: parsed.boardToken,
+    companySlug: parsed.companySlug,
+    smartRecruitersCompanyId: parsed.smartRecruitersCompanyId,
+    leverSite: parsed.leverSite,
+    workdayBaseUrl: parsed.workdayBaseUrl,
+    host: parsed.host,
+    tenant: parsed.tenant,
+    site: parsed.site,
+  };
+}
+
 export function companyToDetectedConfig(company: CompanyInput): DetectedConfig | null {
   switch (company.source) {
     case "workday":
       if (company.host && company.tenant && company.site) {
         return {
           source: "workday",
-          sampleUrl: company.sampleUrl,
+          sampleUrl: company.boardUrl || company.sampleUrl,
           workdayBaseUrl: company.workdayBaseUrl,
           host: company.host,
           tenant: company.tenant,
           site: company.site,
         };
       }
-      return company.sampleUrl || company.workdayBaseUrl
+      return company.boardUrl || company.sampleUrl || company.workdayBaseUrl
         ? {
             source: "workday",
-            sampleUrl: company.sampleUrl,
+            sampleUrl: company.boardUrl || company.sampleUrl,
             workdayBaseUrl: company.workdayBaseUrl,
           }
         : null;
 
     case "greenhouse":
       return company.boardToken
-        ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.sampleUrl }
+        ? { source: "greenhouse", boardToken: company.boardToken, sampleUrl: company.boardUrl || company.sampleUrl }
         : null;
 
     case "ashby":
@@ -300,7 +327,7 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
 
     case "lever":
       return company.leverSite
-        ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.sampleUrl }
+        ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.boardUrl || company.sampleUrl }
         : null;
 
     case "bamboohr":
@@ -322,7 +349,7 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
         source: "registry-adapter",
         adapterId: company.source,
         boardUrl,
-        sampleUrl: company.sampleUrl,
+        sampleUrl: company.boardUrl || company.sampleUrl,
         companyName: company.company,
       };
     }
@@ -335,18 +362,27 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
 function normalizeCompany(input: Record<string, unknown>): CompanyInput {
   const sourceFromInput = normalizeSource(input.source);
   const companyName = String(input.company).trim();
-  const sampleUrl = typeof input.sampleUrl === "string" && input.sampleUrl.trim() ? input.sampleUrl.trim() : undefined;
-  const boardUrl = typeof input.boardUrl === "string" && input.boardUrl.trim() ? input.boardUrl.trim() : undefined;
+  const rawSampleUrl = typeof input.sampleUrl === "string" && input.sampleUrl.trim() ? input.sampleUrl.trim() : undefined;
+  const rawBoardUrl = typeof input.boardUrl === "string" && input.boardUrl.trim() ? input.boardUrl.trim() : undefined;
+  const isRegistryBacked = input.isRegistry === true || Boolean(input.registryAts || input.registryTier);
   // Prefer explicit ATS labels, but heal older/missing rows from the URL when
   // the provider is obvious from the host/path.
   // Unknown-but-real registry boards should still be scannable through the
   // generic custom pipeline instead of becoming null runtime configs.
-  const source = sourceFromInput ?? inferSourceFromUrl(sampleUrl || boardUrl) ?? (boardUrl ? "custom-jsonld" : undefined);
-  const atsParsingSource = boardUrl || sampleUrl;
+  const source = sourceFromInput ?? inferSourceFromUrl(rawBoardUrl || rawSampleUrl) ?? (rawBoardUrl ? "custom-jsonld" : undefined);
+  const atsParsingSource = rawBoardUrl || rawSampleUrl;
   const parsed = parseConfiguredAts(source, atsParsingSource);
+  const canonicalBoardUrl = canonicalBoardUrlForCompany(
+    buildCanonicalCompanyInput(companyName, source, rawBoardUrl, rawSampleUrl, parsed),
+  ) ?? rawBoardUrl ?? rawSampleUrl;
   const inferredGreenhouseBoardToken = source === "greenhouse"
     ? (parsed.boardToken || slugify(companyName) || hyphenSlug(companyName))
     : undefined;
+
+  // Registry-backed rows should carry only the canonical board URL so scans
+  // never depend on a single posting URL saved in seed data.
+  const sampleUrl = isRegistryBacked ? canonicalBoardUrl : rawSampleUrl;
+  const boardUrl = canonicalBoardUrl;
 
   return {
     company: companyName,
@@ -356,7 +392,7 @@ function normalizeCompany(input: Record<string, unknown>): CompanyInput {
     boardUrl,
     sampleUrl,
     // Preserve registry provenance so custom rows stay editable after save and
-    // refresh instead of being reclassified from source/sampleUrl alone.
+    // refresh instead of being reclassified from source/boardUrl alone.
     isRegistry: input.isRegistry === true,
     registryAts:
       typeof input.registryAts === "string" && input.registryAts.trim()
@@ -453,31 +489,29 @@ async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promis
     const normalizedSource =
       company.source ??
       normalizeSource(entry.ats) ??
-      inferSourceFromUrl(entry.sample_url || entry.board_url || undefined) ??
+      inferSourceFromUrl(entry.board_url || entry.sample_url || undefined) ??
       "custom-jsonld";
     if (!normalizedSource) return company;
 
-    const parsingUrl = normalizedSource === "workday"
-      ? entry.board_url
-      : (entry.sample_url || entry.board_url);
+    const parsingUrl = entry.board_url || entry.sample_url || undefined;
     const parsed = parseConfiguredAts(normalizedSource, parsingUrl);
+    const canonicalBoardUrl = canonicalBoardUrlForCompany(
+      buildCanonicalCompanyInput(company.company, normalizedSource, entry.board_url || undefined, entry.sample_url || undefined, parsed),
+    ) ?? entry.board_url;
     return {
       ...company,
       source: normalizedSource ?? company.source,
-      boardUrl: entry.board_url,
-      // Workday scans should keep using the canonical board URL from the
-      // registry so older sample posting URLs do not reintroduce bad site IDs.
-      sampleUrl:
-        normalizedSource === "workday"
-          ? entry.board_url
-          : (company.sampleUrl || entry.sample_url || entry.board_url),
+      // Registry-backed rows are canonicalized to the board URL so the UI and
+      // adapters never drift back to a single job posting URL.
+      boardUrl: canonicalBoardUrl,
+      sampleUrl: canonicalBoardUrl,
       isRegistry: company.isRegistry === true ? true : undefined,
       registryAts: company.registryAts || entry.ats || undefined,
       registryTier: company.registryTier || entry.tier || undefined,
       workdayBaseUrl:
         typeof parsed.workdayBaseUrl === "string" && parsed.workdayBaseUrl.trim()
           ? parsed.workdayBaseUrl
-          : company.workdayBaseUrl || (normalizedSource === "workday" ? entry.board_url : undefined),
+          : company.workdayBaseUrl || (normalizedSource === "workday" ? canonicalBoardUrl : undefined),
       host: typeof parsed.host === "string" && parsed.host.trim() ? parsed.host : company.host,
       tenant: typeof parsed.tenant === "string" && parsed.tenant.trim() ? parsed.tenant : company.tenant,
       site: typeof parsed.site === "string" && parsed.site.trim() ? parsed.site : company.site,

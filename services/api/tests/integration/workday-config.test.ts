@@ -76,6 +76,23 @@ describe("workday config parsing", () => {
     expect(company.boardToken).toBe("tripactions");
   });
 
+  it("canonicalizes registry-backed Greenhouse posting URLs back to the board URL", () => {
+    const [company] = sanitizeCompanies([{
+      company: "Airtable",
+      enabled: true,
+      source: "greenhouse",
+      boardUrl: "https://job-boards.greenhouse.io/airtable/jobs/8403058002",
+      sampleUrl: "https://job-boards.greenhouse.io/airtable/jobs/8403058002",
+      isRegistry: true,
+      registryAts: "Greenhouse",
+      registryTier: "TIER1_VERIFIED",
+    }]);
+
+    expect(company.boardToken).toBe("airtable");
+    expect(company.boardUrl).toBe("https://job-boards.greenhouse.io/airtable");
+    expect(company.sampleUrl).toBe("https://job-boards.greenhouse.io/airtable");
+  });
+
   it("maps hosted ATS labels like Deel back into a safe generic custom fallback", () => {
     const detected = companyToDetectedConfig({
       company: "Klarna",
@@ -89,7 +106,7 @@ describe("workday config parsing", () => {
       source: "registry-adapter",
       adapterId: "custom-jsonld",
       boardUrl: "https://jobs.deel.com/klarna",
-      sampleUrl: undefined,
+      sampleUrl: "https://jobs.deel.com/klarna",
       companyName: "Klarna",
     });
   });
@@ -102,5 +119,21 @@ describe("workday config parsing", () => {
     }]);
 
     expect(company.source).toBe("custom-jsonld");
+  });
+
+  it("accepts custom board URLs without requiring a separate sample URL", () => {
+    const [company] = sanitizeCompanies([{
+      company: "Airtable",
+      enabled: true,
+      source: "greenhouse",
+      boardUrl: "https://job-boards.greenhouse.io/airtable",
+    }]);
+
+    expect(company.boardToken).toBe("airtable");
+    expect(companyToDetectedConfig(company)).toEqual({
+      source: "greenhouse",
+      boardToken: "airtable",
+      sampleUrl: "https://job-boards.greenhouse.io/airtable",
+    });
   });
 });

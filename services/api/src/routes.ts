@@ -60,7 +60,6 @@ import {
   loadJobNotes,
   loadUserProfile,
   loadUserSettings,
-  promoteCustomCompaniesToRegistry,
   recordAppLog,
   recordEvent,
   recordErrorLog,
@@ -825,12 +824,22 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
       const companies = sanitizeCompanies(body.companies ?? []);
+      await loadRegistryCache();
+      const duplicateRegistryCompany = companies.find((company) =>
+        company.isRegistry !== true && Boolean(getByCompany(company.company))
+      );
+      if (duplicateRegistryCompany) {
+        return jsonResponse({
+          ok: false,
+          error: `Company '${duplicateRegistryCompany.company}' already exists in the registry. Use Add company to pick it from the catalog instead of creating a custom entry.`,
+        }, 409);
+      }
       const invalidCompany = companies.find((company) => company.source && !companyToDetectedConfig(company));
       if (invalidCompany) {
         // Reject invalid ATS source/URL combinations before they become repeated zero-job scans.
         return jsonResponse({
           ok: false,
-          error: `Company '${invalidCompany.company}' has source '${invalidCompany.source}' but the sampleUrl or ATS identifiers could not be parsed. Check the URL and try again.`,
+          error: `Company '${invalidCompany.company}' has source '${invalidCompany.source}' but the board URL or ATS identifiers could not be parsed. Check the URL and try again.`,
         }, 422);
       }
       const next: RuntimeConfig = {
@@ -839,23 +848,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         updatedAt: nowISO(),
       };
       await saveRuntimeConfig(env, next, tenantContext.tenantId, tenantContext.userId);
-      // Promote validated custom companies into the shared registry so later
-      // users can select them from the picker instead of manually re-entering
-      // sample URLs. A promotion failure should not block saving the user's
-      // own config draft, so we log and continue on errors.
-      try {
-        await promoteCustomCompaniesToRegistry(companies);
-      } catch (error) {
-        await recordErrorLog(env, {
-          event: "registry_promotion_failed",
-          message: error instanceof Error ? error.message : String(error),
-          tenantId: tenantContext.tenantId,
-          route: "/api/config/save",
-          details: {
-            companies: companies.filter((company) => company.isRegistry !== true).map((company) => company.company),
-          },
-        });
-      }
       return jsonResponse({ ok: true, config: next });
     }
 
