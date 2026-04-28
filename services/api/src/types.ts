@@ -327,6 +327,7 @@ export type UserProfileRecord = {
   plan: UserPlan;
   joinedAt: string;
   lastLoginAt: string;
+  firstScanAt?: string;
   cognitoSub: string;
   scope: AuthScope;
 };

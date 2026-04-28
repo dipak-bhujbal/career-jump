@@ -432,3 +432,38 @@ export type FeatureFlagsEnvelope = {
     enabledForUsers: string[];
   }>;
 };
+
+// ---------- Admin analytics ----------
+export type AdminAnalyticsEnvelope<T> = {
+  ok: boolean;
+  data: T;
+  cachedAt: string;
+  cacheExpiresAt: string;
+};
+
+export type GrowthAnalytics = {
+  signupsPerDay: Array<{ date: string; count: number }>;
+  activationRate: number;
+  medianHoursToFirstScan: number | null;
+  churnSignalCount: number;
+};
+
+export type MarketIntelAnalytics = {
+  mostScannedCompanies: Array<{ company: string; scanCount: number }>;
+  scanVolumePerDay: Array<{ date: string; count: number }>;
+  scanFailureRate: number;
+};
+
+export type FeatureUsageAnalytics = {
+  totalRunsLast30d: number;
+  runDurationP50Ms: number | null;
+  runDurationP95Ms: number | null;
+  scanFailuresByLayer: Array<{ layer: string; count: number }>;
+  jobViewedCount: number;
+};
+
+export type SystemHealthAnalytics = {
+  scanFailuresByReason: Array<{ reason: string; count: number }>;
+  scanFailuresByAts: Array<{ atsType: string; count: number }>;
+  recentFailures: Array<{ company: string; reason: string; layer: string; at: string }>;
+};

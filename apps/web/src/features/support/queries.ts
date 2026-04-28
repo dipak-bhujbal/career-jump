@@ -1,12 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  type AdminAnalyticsEnvelope,
+  type FeatureUsageAnalytics,
+  type GrowthAnalytics,
   type AdminSummaryEnvelope,
   type AdminUserEnvelope,
   type AdminUsersEnvelope,
   type FeatureFlagsEnvelope,
+  type MarketIntelAnalytics,
   type SupportTicketEnvelope,
   type SupportTicketsEnvelope,
+  type SystemHealthAnalytics,
 } from "@/lib/api";
 import { meKey } from "@/features/session/queries";
 
@@ -110,6 +115,40 @@ export function useFeatureFlags() {
     queryKey: ["admin-feature-flags"],
     queryFn: () => api.get<FeatureFlagsEnvelope>("/api/admin/feature-flags"),
     staleTime: 10_000,
+  });
+}
+
+// Keep each analytics panel on its own cache key so tabs can refetch
+// independently without invalidating the whole admin analytics screen.
+export function useAdminAnalyticsGrowth() {
+  return useQuery({
+    queryKey: ["admin-analytics", "growth"],
+    queryFn: () => api.get<AdminAnalyticsEnvelope<GrowthAnalytics>>("/api/admin/analytics/growth"),
+    staleTime: 60_000,
+  });
+}
+
+export function useAdminAnalyticsMarketIntel() {
+  return useQuery({
+    queryKey: ["admin-analytics", "market-intel"],
+    queryFn: () => api.get<AdminAnalyticsEnvelope<MarketIntelAnalytics>>("/api/admin/analytics/market-intel"),
+    staleTime: 60_000,
+  });
+}
+
+export function useAdminAnalyticsFeatureUsage() {
+  return useQuery({
+    queryKey: ["admin-analytics", "feature-usage"],
+    queryFn: () => api.get<AdminAnalyticsEnvelope<FeatureUsageAnalytics>>("/api/admin/analytics/feature-usage"),
+    staleTime: 60_000,
+  });
+}
+
+export function useAdminAnalyticsSystemHealth() {
+  return useQuery({
+    queryKey: ["admin-analytics", "system-health"],
+    queryFn: () => api.get<AdminAnalyticsEnvelope<SystemHealthAnalytics>>("/api/admin/analytics/system-health"),
+    staleTime: 60_000,
   });
 }
 

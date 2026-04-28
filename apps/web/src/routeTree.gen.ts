@@ -22,6 +22,7 @@ import { Route as JobsRouteImport } from './routes/jobs'
 import { Route as ForgotPasswordRouteImport } from './routes/forgot-password'
 import { Route as ConfigurationRouteImport } from './routes/configuration'
 import { Route as AppliedRouteImport } from './routes/applied'
+import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminUsersRouteImport } from './routes/admin-users'
 import { Route as AdminSupportRouteImport } from './routes/admin-support'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
@@ -93,6 +94,11 @@ const AppliedRoute = AppliedRouteImport.update({
   path: '/applied',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminAnalyticsRoute = AdminAnalyticsRouteImport.update({
+  id: '/admin-analytics',
+  path: '/admin-analytics',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminUsersRoute = AdminUsersRouteImport.update({
   id: '/admin-users',
   path: '/admin-users',
@@ -122,6 +128,7 @@ const IndexRoute = IndexRouteImport.update({
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -142,6 +149,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -163,6 +171,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/admin': typeof AdminRoute
+  '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -185,6 +194,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/admin'
+    | '/admin-analytics'
     | '/admin-flags'
     | '/admin-support'
     | '/admin-users'
@@ -205,6 +215,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/admin'
+    | '/admin-analytics'
     | '/admin-flags'
     | '/admin-support'
     | '/admin-users'
@@ -225,6 +236,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/admin'
+    | '/admin-analytics'
     | '/admin-flags'
     | '/admin-support'
     | '/admin-users'
@@ -246,6 +258,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AdminRoute: typeof AdminRoute
+  AdminAnalyticsRoute: typeof AdminAnalyticsRoute
   AdminFlagsRoute: typeof AdminFlagsRoute
   AdminSupportRoute: typeof AdminSupportRoute
   AdminUsersRoute: typeof AdminUsersRoute
@@ -385,6 +398,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin-analytics': {
+      id: '/admin-analytics'
+      path: '/admin-analytics'
+      fullPath: '/admin-analytics'
+      preLoaderRoute: typeof AdminAnalyticsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -398,6 +418,7 @@ declare module '@tanstack/react-router' {
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AdminRoute: AdminRoute,
+  AdminAnalyticsRoute: AdminAnalyticsRoute,
   AdminFlagsRoute: AdminFlagsRoute,
   AdminSupportRoute: AdminSupportRoute,
   AdminUsersRoute: AdminUsersRoute,

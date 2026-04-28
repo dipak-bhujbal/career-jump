@@ -13,8 +13,8 @@ import {
   pruneInventoryForStorage,
   saveInventory,
 } from "../services/inventory";
-import { releaseActiveRunLock, reserveEmailSendAttempt, updateEmailSendAttempt } from "../storage";
-import type { InventorySnapshot, JobPosting } from "../types";
+import { markFirstScanAtIfUnset, recordEvent, releaseActiveRunLock, reserveEmailSendAttempt, updateEmailSendAttempt } from "../storage";
+import type { InventorySnapshot, JobPosting, RequestActor } from "../types";
 import { makeAwsEnv } from "./env";
 import { companyResultPrefix, getRunMeta, markFinalized } from "./run-state";
 
@@ -34,6 +34,18 @@ type FailedCompanyResult = {
   error: string;
   failedAt: string;
 };
+
+function analyticsActorForTenant(tenantId?: string): RequestActor | null {
+  if (!tenantId) return null;
+  return {
+    userId: tenantId,
+    tenantId,
+    email: "",
+    displayName: "",
+    scope: "user",
+    isAdmin: false,
+  };
+}
 
 async function loadPreviousInventory(tenantId?: string): Promise<InventorySnapshot | null> {
   const env = makeAwsEnv();
@@ -113,6 +125,13 @@ function mergeInventories(results: CompanyResult[], configuredCompanies: number)
 
 function companyIdentity(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function runCompletionStatus(meta: Awaited<ReturnType<typeof getRunMeta>>): "success" | "partial" | "failed" {
+  if (!meta) return "failed";
+  if ((meta.failedCompanies ?? 0) === 0) return "success";
+  if ((meta.completedCompanies ?? 0) === 0) return "failed";
+  return "partial";
 }
 
 function summarizeInventory(inventory: InventorySnapshot, jobs: JobPosting[], statsPatch: Partial<InventorySnapshot["stats"]> = {}): InventorySnapshot {
@@ -253,6 +272,33 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
         emailSkipReason,
         emailError,
       },
+    });
+
+    const analyticsActor = analyticsActorForTenant(tenantId);
+    const runStartedAtMs = Date.parse(meta.startedAt);
+    const runCompletedAtMs = Date.now();
+    const durationMs = Number.isFinite(runStartedAtMs) ? Math.max(0, runCompletedAtMs - runStartedAtMs) : 0;
+    void (async () => {
+      await recordEvent(analyticsActor, "RUN_COMPLETED", {
+        runId,
+        companiesScanned: meta.completedCompanies + meta.failedCompanies,
+        durationMs,
+        status: runCompletionStatus(meta),
+      });
+
+      if (!analyticsActor) return;
+      const firstScan = await markFirstScanAtIfUnset(analyticsActor.userId);
+      if (!firstScan.wasFirstScan || !firstScan.joinedAt) return;
+
+      const joinedAtMs = Date.parse(firstScan.joinedAt);
+      const hoursAfterSignup = Number.isFinite(joinedAtMs)
+        ? Math.max(0, Math.round(((runCompletedAtMs - joinedAtMs) / (60 * 60 * 1000)) * 100) / 100)
+        : null;
+      await recordEvent(analyticsActor, "FIRST_SCAN_RUN", {
+        hoursAfterSignup,
+      });
+    })().catch((error) => {
+      console.warn("[analytics] failed to record run completion events", error);
     });
 
     await markFinalized(runId);

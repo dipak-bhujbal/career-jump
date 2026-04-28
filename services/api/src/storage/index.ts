@@ -9,5 +9,6 @@ export * from "./overrides";
 export * from "./accounts";
 export * from "./password-reset";
 export * from "./raw-scans";
+export * from "./admin-analytics";
 export * from "./registry-admin";
 export * from "./workday-scan-state";

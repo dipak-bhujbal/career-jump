@@ -227,6 +227,28 @@ export async function loadUserProfile(userId: string): Promise<UserProfileRecord
   return loadUserProfileRow(userId);
 }
 
+export async function markFirstScanAtIfUnset(
+  userId: string,
+  timestamp = nowISO()
+): Promise<{ wasFirstScan: boolean; firstScanAt: string | null; joinedAt: string | null }> {
+  const existing = await loadUserProfileRow(userId);
+  if (!existing) {
+    return { wasFirstScan: false, firstScanAt: null, joinedAt: null };
+  }
+  if (existing.firstScanAt) {
+    return { wasFirstScan: false, firstScanAt: existing.firstScanAt, joinedAt: existing.joinedAt };
+  }
+
+  const updated: UserTableProfileRow = {
+    ...existing,
+    firstScanAt: timestamp,
+  };
+  // Keep first-scan detection on the profile row so analytics can do a
+  // constant-time point lookup instead of re-reading the events table.
+  await putRow(usersTableName(), updated);
+  return { wasFirstScan: true, firstScanAt: timestamp, joinedAt: existing.joinedAt };
+}
+
 export async function ensureUserProfile(actor: RequestActor): Promise<UserProfileRecord> {
   const existing = await loadUserProfileRow(actor.userId);
   const timestamp = nowISO();
@@ -452,21 +474,28 @@ export async function loadFeatureFlags(actor: RequestActor): Promise<FeatureFlag
 }
 
 export async function loadSystemWorkdayLayerFlags(): Promise<{ layer2: boolean; layer3: boolean }> {
-  // Background scans need global flag reads without depending on a user session.
-  const existing = await queryRows<SupportFeatureFlagRow>(
-    supportTableName(),
-    "pk = :pk",
-    { ":pk": "FEATURE" },
-    { limit: 50 }
-  );
+  try {
+    // Background scans need global flag reads without depending on a user
+    // session. If the read fails, fall back to the safest possible behavior:
+    // keep higher Workday layers disabled until flags can be read again.
+    const existing = await queryRows<SupportFeatureFlagRow>(
+      supportTableName(),
+      "pk = :pk",
+      { ":pk": "FEATURE" },
+      { limit: 50 }
+    );
 
-  const layer2 = existing.find((flag) => flag.flagName === "workday_layer2_headless");
-  const layer3 = existing.find((flag) => flag.flagName === "workday_layer3_scraperapi");
+    const layer2 = existing.find((flag) => flag.flagName === "workday_layer2_headless");
+    const layer3 = existing.find((flag) => flag.flagName === "workday_layer3_scraperapi");
 
-  return {
-    layer2: layer2?.enabled === true,
-    layer3: layer3?.enabled === true,
-  };
+    return {
+      layer2: layer2?.enabled === true,
+      layer3: layer3?.enabled === true,
+    };
+  } catch (error) {
+    console.warn("[feature-flags] failed to load system Workday layer flags", error);
+    return { layer2: false, layer3: false };
+  }
 }
 
 export async function saveFeatureFlag(actor: RequestActor, input: FeatureFlagRecord): Promise<FeatureFlagRecord> {

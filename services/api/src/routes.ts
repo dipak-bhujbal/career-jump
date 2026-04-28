@@ -40,6 +40,10 @@ import {
   deleteKvPrefix,
   ensureActiveRunOwnership,
   findUserProfiles,
+  getFeatureUsageAnalytics,
+  getGrowthAnalytics,
+  getMarketIntelAnalytics,
+  getSystemHealthAnalytics,
   getSupportTicket,
   loadAnnouncements,
   listSavedFilters,
@@ -733,6 +737,56 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return jsonResponse({ ok: true, total: tickets.length, tickets });
     }
 
+    // Keep analytics endpoints in the existing admin-gated section so access
+    // control and response shape stay consistent with the rest of the admin API.
+    if (url.pathname === "/api/admin/analytics/growth" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      try {
+        const envelope = await getGrowthAnalytics();
+        return jsonResponse({ ok: true, ...envelope });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/admin/analytics/market-intel" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      try {
+        const envelope = await getMarketIntelAnalytics();
+        return jsonResponse({ ok: true, ...envelope });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/admin/analytics/feature-usage" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      try {
+        const envelope = await getFeatureUsageAnalytics();
+        return jsonResponse({ ok: true, ...envelope });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/admin/analytics/system-health" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      try {
+        const envelope = await getSystemHealthAnalytics();
+        return jsonResponse({ ok: true, ...envelope });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
     if (url.pathname === "/api/config" && request.method === "GET") {
       const tenantContext = await getTenantContext();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
@@ -1231,6 +1285,17 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
       const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);
       const pagedJobs = jobs.slice(offset, offset + limit);
+      const filteredCompanies = uniqueSortedCompanies(jobs.map((job) => job.company));
+      const companySlug = filteredCompanies.length === 1 ? slugify(filteredCompanies[0]) : "multi";
+
+      // Treat list retrieval as a coarse engagement signal without blocking the
+      // user-facing inventory response on analytics writes.
+      void recordEvent(tenantContext, "JOB_VIEWED", {
+        companySlug,
+        jobCount: jobs.length,
+      }).catch((error) => {
+        console.warn("[analytics] failed to record job view event", error);
+      });
 
       return jsonResponse({
         ok: true,
