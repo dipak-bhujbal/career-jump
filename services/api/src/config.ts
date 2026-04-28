@@ -354,29 +354,47 @@ export function sanitizeCompanies(input: unknown): CompanyInput[] {
 }
 
 async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
-  const needsRegistryHydration = companies.some((company) =>
-    (company.isRegistry === true || Boolean(company.registryAts || company.registryTier))
-    && !company.boardUrl
-  );
+  const needsRegistryHydration = companies.some((company) => {
+    const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
+    const missingWorkdayFields = company.source === "workday" && !(company.host && company.tenant && company.site);
+    // Older saved rows may predate registry provenance fields, so use the
+    // company name lookup to heal missing canonical board/base URLs and
+    // Workday identifiers even when isRegistry was never persisted.
+    return missingWorkdayFields || (isRegistryBacked && !company.boardUrl);
+  });
   if (!needsRegistryHydration) return companies;
 
   await loadRegistryCache();
   return companies.map((company) => {
-    const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
-    if (!isRegistryBacked) return company;
+    const wasMarkedRegistry = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
+    const missingWorkdayFields = company.source === "workday" && !(company.host && company.tenant && company.site);
+    const shouldHydrateFromRegistry = wasMarkedRegistry || missingWorkdayFields;
+    if (!shouldHydrateFromRegistry) return company;
 
     const entry = getByCompany(company.company);
     if (!entry?.board_url) return company;
 
-    const parsed = parseConfiguredAts(company.source, entry.board_url);
+    const normalizedSource = company.source ?? normalizeSource(entry.ats);
+    if (!normalizedSource) return company;
+
+    const parsed = parseConfiguredAts(normalizedSource, entry.board_url);
     return {
       ...company,
+      source: normalizedSource ?? company.source,
       boardUrl: entry.board_url,
-      sampleUrl: company.source === "workday" ? entry.board_url : (company.sampleUrl || entry.sample_url || entry.board_url),
+      // Workday scans should keep using the canonical board URL from the
+      // registry so older sample posting URLs do not reintroduce bad site IDs.
+      sampleUrl:
+        normalizedSource === "workday"
+          ? entry.board_url
+          : (company.sampleUrl || entry.sample_url || entry.board_url),
+      isRegistry: company.isRegistry === true ? true : undefined,
+      registryAts: company.registryAts || entry.ats || undefined,
+      registryTier: company.registryTier || entry.tier || undefined,
       workdayBaseUrl:
         typeof parsed.workdayBaseUrl === "string" && parsed.workdayBaseUrl.trim()
           ? parsed.workdayBaseUrl
-          : company.workdayBaseUrl,
+          : company.workdayBaseUrl || (normalizedSource === "workday" ? entry.board_url : undefined),
       host: typeof parsed.host === "string" && parsed.host.trim() ? parsed.host : company.host,
       tenant: typeof parsed.tenant === "string" && parsed.tenant.trim() ? parsed.tenant : company.tenant,
       site: typeof parsed.site === "string" && parsed.site.trim() ? parsed.site : company.site,

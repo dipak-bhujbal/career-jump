@@ -793,7 +793,10 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
-        - DynamoDBReadPolicy:
+        # Workday scan-state persistence and custom-company promotion both
+        # write registry rows during scan execution, so read-only access is not
+        # sufficient here.
+        - DynamoDBCrudPolicy:
             TableName: !Ref RegistryTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RawScansTable
