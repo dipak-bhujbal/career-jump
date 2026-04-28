@@ -18,9 +18,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
+import { UpgradePrompt } from "@/features/billing/upgrade";
 import { CompanyHoverCard } from "@/features/companies/CompanyHoverCard";
-import { type Job, type AppliedJob, type AppliedStatus, type ActionPlanRow, type InterviewRound, type NoteRecord } from "@/lib/api";
-import { useApplyJob, useDiscardJob, useSaveJobNotes } from "./queries";
+import { ApiError, type Job, type AppliedJob, type AppliedStatus, type ActionPlanRow, type InterviewRound, type NoteRecord } from "@/lib/api";
+import { useMe } from "@/features/session/queries";
+import { useAddNote, useApplyJob, useDeleteNote, useDiscardJob, useSaveJobNotes, useUpdateNote } from "./queries";
 import { useUpdateStatus } from "@/features/applied/queries";
 import { useAddInterviewRound, useDeleteInterviewRound, useScheduleInterview } from "@/features/plan/queries";
 import { toast } from "@/components/ui/toast";
@@ -330,10 +332,15 @@ export function JobDetailsDrawer({ source, onClose, inline = false }: JobDetails
 function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource; onClose: () => void; inline?: boolean }) {
   const meta = project(source);
   const [notes, setNotes] = useState(meta.notes);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const apply = useApplyJob();
   const discard = useDiscardJob();
   const saveNotes = useSaveJobNotes();
+  const addNote = useAddNote();
+  const updateNote = useUpdateNote();
+  const deleteNote = useDeleteNote();
   const updateStatus = useUpdateStatus();
+  const { data: me } = useMe();
 
   useEffect(() => { setNotes(meta.notes); }, [meta.notes]);
 
@@ -350,7 +357,13 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
         toast(`Applied to ${meta.title} ✨ Best of luck!`);
         onClose();
       },
-      onError: (e) => toast(e instanceof Error ? e.message : "Apply failed", "error"),
+      onError: (e) => {
+        if (e instanceof ApiError && e.status === 402 && (e.data as { error?: string }).error === "applied_jobs_limit_reached") {
+          setUpgradeOpen(true);
+          return;
+        }
+        toast(e instanceof Error ? e.message : "Apply failed", "error");
+      },
     });
   }
 
@@ -472,11 +485,21 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
           />
         )}
 
-        <NotesSection
-          jobKey={meta.jobKey}
-          initialNotes={meta.notes}
-          saveNotes={saveNotes}
-        />
+        {source.type === "available" ? (
+          <SimpleNotesSection
+            jobKey={meta.jobKey}
+            initialNotes={notes}
+            saveNotes={saveNotes}
+          />
+        ) : (
+          <NotesSection
+            jobKey={meta.jobKey}
+            records={meta.noteRecords}
+            addNote={addNote}
+            updateNote={updateNote}
+            deleteNote={deleteNote}
+          />
+        )}
       </div>
 
       {source.type === "available" && (
@@ -494,9 +517,18 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
 
   if (inline) {
     return (
-      <aside className="flex flex-col h-full bg-[hsl(var(--popover))] overflow-hidden">
-        {innerContent}
-      </aside>
+      <>
+        <aside className="flex flex-col h-full bg-[hsl(var(--popover))] overflow-hidden">
+          {innerContent}
+        </aside>
+        <UpgradePrompt
+          open={upgradeOpen}
+          onClose={() => setUpgradeOpen(false)}
+          currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+          title="Upgrade to track more applications"
+          body="Your current plan has reached the applied-jobs limit. Upgrade with Stripe Checkout to keep applying."
+        />
+      </>
     );
   }
 
@@ -506,21 +538,28 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
       <aside className="fixed inset-y-0 right-0 z-40 w-full max-w-lg border-l border-[hsl(var(--border))] bg-[hsl(var(--popover))] shadow-2xl flex flex-col animate-in slide-in-from-right">
         {innerContent}
       </aside>
+      <UpgradePrompt
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+        title="Upgrade to track more applications"
+        body="Your current plan has reached the applied-jobs limit. Upgrade with Stripe Checkout to keep applying."
+      />
     </>
   );
 }
 
 // ---------- WhatsApp-style notes section ----------
 
-interface NotesSectionProps {
+interface SimpleNotesSectionProps {
   jobKey: string;
   initialNotes: string;
   saveNotes: ReturnType<typeof useSaveJobNotes>;
 }
 
-function NotesSection({ jobKey, initialNotes, saveNotes }: NotesSectionProps) {
-  // The live API persists one notes string per job key. Keep the drawer
-  // aligned with that contract so applied-job notes save through /api/jobs/notes.
+function SimpleNotesSection({ jobKey, initialNotes, saveNotes }: SimpleNotesSectionProps) {
+  // Available jobs still use the lightweight single-notes field until the user
+  // applies. Applied jobs switch to the record-style thread below.
   const [notes, setNotes] = useState(initialNotes);
 
   useEffect(() => {
@@ -562,6 +601,170 @@ function NotesSection({ jobKey, initialNotes, saveNotes }: NotesSectionProps) {
             <Check size={12} /> Save
           </Button>
         </div>
+      </div>
+    </details>
+  );
+}
+
+interface NotesSectionProps {
+  jobKey: string;
+  records: NoteRecord[];
+  addNote: ReturnType<typeof useAddNote>;
+  updateNote: ReturnType<typeof useUpdateNote>;
+  deleteNote: ReturnType<typeof useDeleteNote>;
+}
+
+function NotesSection({ jobKey, records, addNote, updateNote, deleteNote }: NotesSectionProps) {
+  // Keep the note thread responsive locally while React Query refreshes the
+  // authoritative applied-job payload after each mutation.
+  const [localRecords, setLocalRecords] = useState<NoteRecord[]>(records);
+  useEffect(() => { setLocalRecords(records); }, [records]);
+
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editText, setEditText] = useState("");
+
+  function handleAdd() {
+    const text = draft.trim();
+    if (!text) return;
+    const optimistic: NoteRecord = { id: `tmp-${Date.now()}`, text, createdAt: new Date().toISOString() };
+    setLocalRecords((prev) => [...prev, optimistic]);
+    setDraft("");
+    setAdding(false);
+    addNote.mutate({ jobKey, text }, {
+      onSuccess: () => toast("Note added"),
+      onError: (e) => {
+        setLocalRecords(records);
+        toast(e instanceof Error ? e.message : "Add failed", "error");
+      },
+    });
+  }
+
+  function handleStartEdit(record: NoteRecord) {
+    setEditingId(record.id);
+    setEditText(record.text);
+  }
+
+  function handleSaveEdit(record: NoteRecord) {
+    const text = editText.trim();
+    if (!text || text === record.text) {
+      setEditingId(null);
+      return;
+    }
+    setLocalRecords((prev) => prev.map((item) => (
+      item.id === record.id ? { ...item, text, updatedAt: new Date().toISOString() } : item
+    )));
+    setEditingId(null);
+    updateNote.mutate({ jobKey, noteId: record.id, text }, {
+      onSuccess: () => toast("Note updated"),
+      onError: (e) => {
+        setLocalRecords(records);
+        toast(e instanceof Error ? e.message : "Update failed", "error");
+      },
+    });
+  }
+
+  function handleDelete(noteId: string) {
+    setLocalRecords((prev) => prev.filter((record) => record.id !== noteId));
+    deleteNote.mutate({ jobKey, noteId }, {
+      onSuccess: () => toast("Note deleted", "info"),
+      onError: (e) => {
+        setLocalRecords(records);
+        toast(e instanceof Error ? e.message : "Delete failed", "error");
+      },
+    });
+  }
+
+  return (
+    <details open className="group rounded-md border border-[hsl(var(--border))]">
+      <summary className="cursor-pointer list-none flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-medium hover:bg-[hsl(var(--accent))]/40 rounded-t-md">
+        <span className="inline-flex items-center gap-2">
+          <Pencil size={13} className="text-[hsl(var(--muted-foreground))]" />
+          Notes
+          <span className="text-xs text-[hsl(var(--muted-foreground))] font-normal">({localRecords.length})</span>
+        </span>
+        <ChevronDown size={14} className="transition-transform group-open:rotate-180" />
+      </summary>
+
+      <div className="border-t border-[hsl(var(--border))]">
+        {localRecords.length === 0 && !adding && (
+          <div className="px-3 py-3 text-xs text-[hsl(var(--muted-foreground))] italic">No notes yet.</div>
+        )}
+
+        {localRecords.map((record) => (
+          <div key={record.id} className="px-3 py-2.5 border-b border-[hsl(var(--border))]/60 last:border-b-0 group/note">
+            {editingId === record.id ? (
+              <div className="space-y-2">
+                <textarea
+                  autoFocus
+                  value={editText}
+                  onChange={(event) => setEditText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) handleSaveEdit(record);
+                    if (event.key === "Escape") setEditingId(null);
+                  }}
+                  className="w-full min-h-[72px] rounded-md border border-[hsl(var(--input))] bg-transparent px-2.5 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+                />
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" variant="success" onClick={() => handleSaveEdit(record)} disabled={updateNote.isPending}>
+                    <Check size={12} /> Save
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm whitespace-pre-wrap break-words">{record.text}</p>
+                <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">
+                  <span>{relativeTime(record.createdAt)}</span>
+                  {record.updatedAt && <span className="italic">edited</span>}
+                  <span className="ml-auto flex items-center gap-2 opacity-0 group-hover/note:opacity-100 transition-opacity">
+                    <button type="button" onClick={() => handleStartEdit(record)} className="hover:text-[hsl(var(--foreground))] transition-colors">
+                      <Pencil size={11} />
+                    </button>
+                    <button type="button" onClick={() => handleDelete(record.id)} className="hover:text-rose-500 transition-colors">
+                      <X size={11} />
+                    </button>
+                  </span>
+                </div>
+              </>
+            )}
+          </div>
+        ))}
+
+        {adding ? (
+          <div className="px-3 py-2.5 space-y-2 border-t border-[hsl(var(--border))]/60">
+            <textarea
+              autoFocus
+              value={draft}
+              onChange={(event) => setDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) handleAdd();
+                if (event.key === "Escape") {
+                  setAdding(false);
+                  setDraft("");
+                }
+              }}
+              placeholder="Write a note… (Cmd/Ctrl+Enter to save)"
+              className="w-full min-h-[72px] rounded-md border border-[hsl(var(--input))] bg-transparent px-2.5 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+            />
+            <div className="flex items-center gap-1.5">
+              <Button size="sm" variant="success" onClick={handleAdd} disabled={addNote.isPending || !draft.trim()}>
+                <Check size={12} /> Save
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => { setAdding(false); setDraft(""); }}>Cancel</Button>
+            </div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            className="w-full px-3 py-2 text-left text-xs text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/40 flex items-center gap-1.5 transition-colors border-t border-[hsl(var(--border))]/60"
+          >
+            <Plus size={12} /> Add note
+          </button>
+        )}
       </div>
     </details>
   );

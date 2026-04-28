@@ -26,10 +26,12 @@ import { BulkActionBar } from "@/features/jobs/BulkActionBar";
 import { useApplyJob, useDiscardJob, useJobs, useManualAddJob, type JobsFilter } from "@/features/jobs/queries";
 import { useSavedFilters, useSaveFilter, useDeleteFilter } from "@/features/filters/queries";
 import { Dialog } from "@/components/ui/dialog";
-import { type Job } from "@/lib/api";
+import { ApiError, type Job } from "@/lib/api";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useHotkey } from "@/lib/hotkeys";
+import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
+import { useMe } from "@/features/session/queries";
 
 interface JobsSearch { new?: string; updated?: string; q?: string }
 
@@ -75,9 +77,11 @@ function JobsRoute() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [focusedIndex, setFocusedIndex] = useState(0);
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const lastCheckedIndexRef = useRef<number | null>(null);
   const keywordInputRef = useRef<HTMLInputElement>(null);
   const qc = useQueryClient();
+  const { data: me } = useMe();
 
   // Resizable split pane — persists list-pane width across sessions.
   const [listPaneWidth, setListPaneWidth] = useState(() => Number(localStorage.getItem("cj_split_width")) || 620);
@@ -158,6 +162,18 @@ function JobsRoute() {
   // Reset focus when filters change.
   useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
 
+  function openUpgrade() {
+    setUpgradeOpen(true);
+  }
+
+  function handleApplyError(err: unknown) {
+    if (err instanceof ApiError && err.status === 402 && (err.data as { error?: string }).error === "applied_jobs_limit_reached") {
+      setUpgradeOpen(true);
+      return;
+    }
+    toast(err instanceof Error ? err.message : "Apply failed", "error");
+  }
+
   // Hotkeys.
   useHotkey({ id: "jobs-down", description: "Move focus down", category: "Jobs", key: "j" }, () => setFocusedIndex((i) => Math.min(jobs.length - 1, i + 1)));
   useHotkey({ id: "jobs-up", description: "Move focus up", category: "Jobs", key: "k" }, () => setFocusedIndex((i) => Math.max(0, i - 1)));
@@ -170,7 +186,7 @@ function JobsRoute() {
     if (!job) return;
     apply.mutate({ jobKey: job.jobKey }, {
       onSuccess: () => toast(`Applied to ${job.jobTitle}`),
-      onError: (err) => toast(err instanceof Error ? err.message : "Apply failed", "error"),
+      onError: handleApplyError,
     });
   });
   useHotkey({ id: "jobs-discard", description: "Discard focused job", category: "Jobs", key: "x" }, () => {
@@ -258,6 +274,13 @@ function JobsRoute() {
             setDateRange({ from: null, to: null });
           }}
         />
+
+        {totals?.jobsCapped ? (
+          <UpgradeBanner
+            message={`${(totals.totalAvailableJobs ?? total).toLocaleString()} jobs matched, but your current plan only shows ${totals.jobCapLimit ?? total}. Upgrade to unlock the rest.`}
+            cta={openUpgrade}
+          />
+        ) : null}
 
         {/* Advanced filters card — page-specific quick filters at the top
             (New/Updated chips), then the consistent 4-field row below. */}
@@ -494,6 +517,13 @@ function JobsRoute() {
       )}
       <BulkActionBar selected={checked} onClear={() => setChecked(new Set())} />
       <ManualAddJobDialog open={manualOpen} onClose={() => setManualOpen(false)} />
+      <UpgradePrompt
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+        title="Upgrade to unlock more jobs"
+        body="Your current plan has reached its visible or applied job limit. Upgrade with Stripe Checkout to keep moving."
+      />
     </>
   );
 }

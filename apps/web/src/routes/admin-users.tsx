@@ -74,6 +74,15 @@ function AdminUsersRoute() {
                     <div className="mt-2 text-sm">Plan: {selected.profile.plan}</div>
                     <div className="text-sm">Status: {selected.profile.accountStatus}</div>
                     <div className="text-sm">Joined: {relativeTime(selected.profile.joinedAt)}</div>
+                    <div className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">Tenant ID</div>
+                    <button
+                      type="button"
+                      className="font-mono text-xs text-[hsl(var(--foreground))] hover:underline cursor-copy"
+                      onClick={() => navigator.clipboard.writeText(selected.profile.tenantId)}
+                      title="Click to copy"
+                    >
+                      {selected.profile.tenantId}
+                    </button>
                   </div>
                   <div className="rounded-lg border border-[hsl(var(--border))] p-4">
                     <div className="text-xs uppercase text-[hsl(var(--muted-foreground))]">Notifications</div>

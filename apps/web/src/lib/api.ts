@@ -181,7 +181,7 @@ export type MeEnvelope = {
     email: string;
     displayName: string;
     accountStatus: "active" | "suspended";
-    plan: "free" | "pro" | "power";
+    plan: "free" | "starter" | "pro" | "power";
     joinedAt: string;
     lastLoginAt: string;
   };
@@ -191,7 +191,7 @@ export type MeEnvelope = {
     trackedCompanies: string[];
   };
   billing?: {
-    plan: "free" | "pro" | "power";
+    plan: "free" | "starter" | "pro" | "power";
     status: string;
     provider: string;
     currentPeriodEnd?: string;
@@ -242,7 +242,14 @@ export type JobsEnvelope = {
   runAt?: string;
   total: number;
   pagination: { offset: number; limit: number; nextOffset: number; hasMore: boolean };
-  totals: { availableJobs: number; newJobs: number; updatedJobs: number };
+  totals: {
+    availableJobs: number;
+    newJobs: number;
+    updatedJobs: number;
+    totalAvailableJobs?: number;
+    jobsCapped?: boolean;
+    jobCapLimit?: number | null;
+  };
   companyOptions: string[];
   jobs: Job[];
 };
@@ -397,7 +404,7 @@ export type AdminUsersEnvelope = {
     email: string;
     displayName: string;
     accountStatus: "active" | "suspended";
-    plan: "free" | "pro" | "power";
+    plan: "free" | "starter" | "pro" | "power";
     joinedAt: string;
     lastLoginAt: string;
     scope: "user" | "admin";
@@ -413,7 +420,7 @@ export type AdminUserEnvelope = {
     trackedCompanies: string[];
   };
   billing: {
-    plan: "free" | "pro" | "power";
+    plan: "free" | "starter" | "pro" | "power";
     status: string;
     provider: string;
   };
@@ -428,9 +435,75 @@ export type FeatureFlagsEnvelope = {
     enabled: boolean;
     description: string;
     rolloutPercent: number;
-    enabledForPlans: Array<"free" | "pro" | "power">;
+    enabledForPlans: Array<"free" | "starter" | "pro" | "power">;
     enabledForUsers: string[];
   }>;
+};
+
+export type PlanConfig = {
+  plan: "free" | "starter" | "pro" | "power";
+  displayName: string;
+  scanCacheAgeHours: number;
+  canTriggerLiveScan: boolean;
+  maxCompanies: number | null;
+  maxSessions: number;
+  maxVisibleJobs: number | null;
+  maxAppliedJobs: number | null;
+  emailNotificationsEnabled: boolean;
+  weeklyDigestEnabled: boolean;
+  maxEmailsPerWeek: number;
+  enabledFeatures: string[];
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type PlanConfigsEnvelope = {
+  ok: boolean;
+  configs: PlanConfig[];
+};
+
+export type PlanConfigEnvelope = {
+  ok: boolean;
+  config: PlanConfig;
+};
+
+export type StripeConfigPublic = {
+  publishableKey: string;
+  webhookConfigured: boolean;
+  priceIds: {
+    starter: string;
+    pro: string;
+    power: string;
+  };
+  updatedAt: string;
+  updatedBy: string;
+};
+
+export type StripeConfigEnvelope = {
+  ok: boolean;
+  configured: boolean;
+  config: StripeConfigPublic | null;
+};
+
+export type BillingSubscriptionEnvelope = {
+  ok: boolean;
+  subscription: {
+    tenantId: string;
+    plan: "free" | "starter" | "pro" | "power";
+    status: string;
+    provider: "internal" | "stripe";
+    stripeCustomerId?: string;
+    stripeSubscriptionId?: string;
+    currentPeriodEnd?: string;
+    updatedAt?: string;
+  } | null;
+  planConfig: PlanConfig | null;
+};
+
+export type BillingCheckoutEnvelope = {
+  ok: boolean;
+  url: string;
+  sessionId: string;
 };
 
 // ---------- Admin analytics ----------

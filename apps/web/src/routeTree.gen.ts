@@ -24,6 +24,8 @@ import { Route as ConfigurationRouteImport } from './routes/configuration'
 import { Route as AppliedRouteImport } from './routes/applied'
 import { Route as AdminUsersRouteImport } from './routes/admin-users'
 import { Route as AdminSupportRouteImport } from './routes/admin-support'
+import { Route as AdminStripeConfigRouteImport } from './routes/admin-stripe-config'
+import { Route as AdminPlanConfigRouteImport } from './routes/admin-plan-config'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
 import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminRouteImport } from './routes/admin'
@@ -104,6 +106,16 @@ const AdminSupportRoute = AdminSupportRouteImport.update({
   path: '/admin-support',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminStripeConfigRoute = AdminStripeConfigRouteImport.update({
+  id: '/admin-stripe-config',
+  path: '/admin-stripe-config',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdminPlanConfigRoute = AdminPlanConfigRouteImport.update({
+  id: '/admin-plan-config',
+  path: '/admin-plan-config',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminFlagsRoute = AdminFlagsRouteImport.update({
   id: '/admin-flags',
   path: '/admin-flags',
@@ -130,6 +142,8 @@ export interface FileRoutesByFullPath {
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
+  '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
   '/applied': typeof AppliedRoute
@@ -151,6 +165,8 @@ export interface FileRoutesByTo {
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
+  '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
   '/applied': typeof AppliedRoute
@@ -173,6 +189,8 @@ export interface FileRoutesById {
   '/admin': typeof AdminRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-flags': typeof AdminFlagsRoute
+  '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
   '/applied': typeof AppliedRoute
@@ -196,6 +214,8 @@ export interface FileRouteTypes {
     | '/admin'
     | '/admin-analytics'
     | '/admin-flags'
+    | '/admin-plan-config'
+    | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
     | '/applied'
@@ -217,6 +237,8 @@ export interface FileRouteTypes {
     | '/admin'
     | '/admin-analytics'
     | '/admin-flags'
+    | '/admin-plan-config'
+    | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
     | '/applied'
@@ -238,6 +260,8 @@ export interface FileRouteTypes {
     | '/admin'
     | '/admin-analytics'
     | '/admin-flags'
+    | '/admin-plan-config'
+    | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
     | '/applied'
@@ -260,6 +284,8 @@ export interface RootRouteChildren {
   AdminRoute: typeof AdminRoute
   AdminAnalyticsRoute: typeof AdminAnalyticsRoute
   AdminFlagsRoute: typeof AdminFlagsRoute
+  AdminPlanConfigRoute: typeof AdminPlanConfigRoute
+  AdminStripeConfigRoute: typeof AdminStripeConfigRoute
   AdminSupportRoute: typeof AdminSupportRoute
   AdminUsersRoute: typeof AdminUsersRoute
   AppliedRoute: typeof AppliedRoute
@@ -384,6 +410,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminSupportRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin-stripe-config': {
+      id: '/admin-stripe-config'
+      path: '/admin-stripe-config'
+      fullPath: '/admin-stripe-config'
+      preLoaderRoute: typeof AdminStripeConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/admin-plan-config': {
+      id: '/admin-plan-config'
+      path: '/admin-plan-config'
+      fullPath: '/admin-plan-config'
+      preLoaderRoute: typeof AdminPlanConfigRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin-flags': {
       id: '/admin-flags'
       path: '/admin-flags'
@@ -420,6 +460,8 @@ const rootRouteChildren: RootRouteChildren = {
   AdminRoute: AdminRoute,
   AdminAnalyticsRoute: AdminAnalyticsRoute,
   AdminFlagsRoute: AdminFlagsRoute,
+  AdminPlanConfigRoute: AdminPlanConfigRoute,
+  AdminStripeConfigRoute: AdminStripeConfigRoute,
   AdminSupportRoute: AdminSupportRoute,
   AdminUsersRoute: AdminUsersRoute,
   AppliedRoute: AppliedRoute,

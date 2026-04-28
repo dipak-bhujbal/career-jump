@@ -22,6 +22,7 @@ import {
   loadBillingSubscription,
   loadJobNotes,
   loadLatestRawScan,
+  loadPlanConfig,
   markRegistryCompanyScanFailure,
   markRegistryCompanyScanMisconfigured,
   markRegistryCompanyScanSuccess,
@@ -441,11 +442,7 @@ function buildWorkdayLayerAttemptOrder(
   return [...new Set(order)];
 }
 
-const PLAN_CACHE_AGE_MS: Record<UserPlan, number> = {
-  free: Infinity,
-  pro: 8 * 60 * 60 * 1000,
-  power: 4 * 60 * 60 * 1000,
-};
+type PlanCacheOpts = { allowStale: true } | { allowStale?: false; maxAgeMs?: number };
 
 async function fetchCompanyJobsWithSharedCache(
   env: Env,
@@ -453,10 +450,10 @@ async function fetchCompanyJobsWithSharedCache(
   detected: DetectedConfig,
   includeKeywords: string[],
   tenantId?: string,
-  userPlan: UserPlan | null = null,
+  planCacheOpts: PlanCacheOpts = {},
 ): Promise<CompanyFetchOutcome> {
-  // Free tier: always serve from cache — never trigger a live fetch.
-  if (userPlan === "free") {
+  // Cache-only mode (free tier with canTriggerLiveScan=false).
+  if ((planCacheOpts as { allowStale?: boolean }).allowStale) {
     const cachedScan = await loadLatestRawScan(companyName, detected, { allowStale: true });
     return {
       fetchedJobs: cachedScan?.jobs ?? [],
@@ -469,7 +466,7 @@ async function fetchCompanyJobsWithSharedCache(
     };
   }
 
-  const planMaxAgeMs = userPlan !== null ? PLAN_CACHE_AGE_MS[userPlan] : undefined;
+  const planMaxAgeMs = (planCacheOpts as { maxAgeMs?: number }).maxAgeMs;
   const freshRawScan = await loadLatestRawScan(companyName, detected, { maxAgeMs: planMaxAgeMs });
   if (freshRawScan) {
     return {
@@ -650,14 +647,22 @@ export async function buildInventory(
 
   // Plan tier only applies to user-triggered scans (tenantId present).
   // System/background scans (no tenantId) run live with no cache restrictions.
-  let userPlan: UserPlan | null = null;
+  let planCacheOpts: PlanCacheOpts = {};
   if (tenantId) {
-    userPlan = "free";
+    let userPlan: UserPlan = "free";
     try {
       const subscription = await loadBillingSubscription(tenantId);
       userPlan = subscription.plan;
     } catch {
       // Default to free on billing lookup failure — safe degradation
+    }
+    try {
+      const planCfg = await loadPlanConfig(userPlan);
+      planCacheOpts = planCfg.canTriggerLiveScan
+        ? { maxAgeMs: planCfg.scanCacheAgeHours * 60 * 60 * 1000 }
+        : { allowStale: true };
+    } catch {
+      planCacheOpts = { allowStale: true };
     }
   }
 
@@ -749,7 +754,7 @@ export async function buildInventory(
         detected,
         config.jobtitles.includeKeywords,
         tenantId,
-        userPlan,
+        planCacheOpts,
       );
       const fetchedJobs = companyFetch.fetchedJobs;
       totalCompaniesDetected += 1;

@@ -333,7 +333,7 @@ export type EmailWebhookConfig = {
   sharedSecret: string;
 };
 
-export type UserPlan = "free" | "pro" | "power";
+export type UserPlan = "free" | "starter" | "pro" | "power";
 export type AccountStatus = "active" | "suspended";
 
 export type UserProfileRecord = {
@@ -380,6 +380,23 @@ export type BillingSubscriptionRecord = {
   stripeSubscriptionId?: string;
   currentPeriodEnd?: string;
   updatedAt: string;
+};
+
+export type PlanConfig = {
+  plan: UserPlan;
+  displayName: string;
+  scanCacheAgeHours: number;
+  canTriggerLiveScan: boolean;
+  maxCompanies: number | null;
+  maxSessions: number;
+  maxVisibleJobs: number | null;
+  maxAppliedJobs: number | null;
+  emailNotificationsEnabled: boolean;
+  weeklyDigestEnabled: boolean;
+  maxEmailsPerWeek: number;
+  enabledFeatures: string[];
+  updatedAt: string;
+  updatedBy: string;
 };
 
 export type FeatureFlagRecord = {

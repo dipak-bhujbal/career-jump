@@ -45,6 +45,12 @@ vi.mock("../../src/storage", async () => {
     legacySeenJobKeys: vi.fn(async () => new Set()),
     loadAppliedJobs: vi.fn(async () => ({})),
     loadBillingSubscription: vi.fn(async () => ({ plan: "power" })),
+    loadPlanConfig: vi.fn(async () => ({
+      plan: "power", canTriggerLiveScan: true, scanCacheAgeHours: 4,
+      maxSessions: 3, maxCompanies: null, emailNotificationsEnabled: true,
+      weeklyDigestEnabled: true, maxEmailsPerWeek: 14, enabledFeatures: [],
+      displayName: "Power", updatedAt: "", updatedBy: "system",
+    })),
     loadJobNotes: vi.fn(async () => ({})),
     loadLatestRawScan: vi.fn(async () => null),
     loadSystemWorkdayLayerFlags: vi.fn(async () => ({ layer2: false, layer3: false })),

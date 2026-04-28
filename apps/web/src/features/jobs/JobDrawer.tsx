@@ -9,7 +9,9 @@ import { useEffect, useState } from "react";
 import { ExternalLink, Send, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { type Job } from "@/lib/api";
+import { ApiError, type Job } from "@/lib/api";
+import { UpgradePrompt } from "@/features/billing/upgrade";
+import { useMe } from "@/features/session/queries";
 import { useApplyJob, useDiscardJob, useSaveJobNotes } from "./queries";
 import { toast } from "@/components/ui/toast";
 
@@ -20,9 +22,11 @@ interface JobDrawerProps {
 
 export function JobDrawer({ job, onClose }: JobDrawerProps) {
   const [notes, setNotes] = useState("");
+  const [upgradeOpen, setUpgradeOpen] = useState(false);
   const apply = useApplyJob();
   const discard = useDiscardJob();
   const saveNotes = useSaveJobNotes();
+  const { data: me } = useMe();
 
   useEffect(() => {
     if (job) setNotes(job.notes ?? "");
@@ -43,7 +47,13 @@ export function JobDrawer({ job, onClose }: JobDrawerProps) {
     if (!job) return;
     apply.mutate({ jobKey: job.jobKey, notes }, {
       onSuccess: () => { toast(`Applied to ${job.jobTitle}`); onClose(); },
-      onError: (e) => toast(e instanceof Error ? e.message : "Apply failed", "error"),
+      onError: (e) => {
+        if (e instanceof ApiError && e.status === 402 && (e.data as { error?: string }).error === "applied_jobs_limit_reached") {
+          setUpgradeOpen(true);
+          return;
+        }
+        toast(e instanceof Error ? e.message : "Apply failed", "error");
+      },
     });
   }
 
@@ -98,6 +108,13 @@ export function JobDrawer({ job, onClose }: JobDrawerProps) {
           {apply.isPending ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />} Apply
         </Button>
       </div>
+      <UpgradePrompt
+        open={upgradeOpen}
+        onClose={() => setUpgradeOpen(false)}
+        currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+        title="Upgrade to track more applications"
+        body="Your current plan has reached the applied-jobs limit. Upgrade with Stripe Checkout to keep applying."
+      />
     </aside>
   );
 }

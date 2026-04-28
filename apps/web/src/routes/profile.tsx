@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
   User, Lock, LogOut, Save, Trash2, DatabaseZap, KeyRound, AlertTriangle,
@@ -16,18 +16,34 @@ import { api, type JobsEnvelope } from "@/lib/api";
 import { useJobs } from "@/features/jobs/queries";
 import { useApplied } from "@/features/applied/queries";
 import { useActionPlan } from "@/features/plan/queries";
+import { useBillingSubscription, useStartCheckout } from "@/features/billing/queries";
 import { getAuthDisplayEmail, getAuthDisplayName } from "@/features/auth/display";
 import { cn } from "@/lib/utils";
 import { Select } from "@/components/ui/select";
+import { useMe } from "@/features/session/queries";
 import { useCreateSupportMessage, useCreateSupportTicket, useSupportTicket, useSupportTickets } from "@/features/support/queries";
 import { relativeTime } from "@/lib/format";
 
-export const Route = createFileRoute("/profile")({ component: ProfileRoute });
+type ProfileSearch = {
+  tab?: string;
+  upgraded?: string;
+  canceled?: string;
+};
 
-type Section = "account" | "password" | "support" | "danger";
+export const Route = createFileRoute("/profile")({
+  component: ProfileRoute,
+  validateSearch: (search: Record<string, unknown>): ProfileSearch => ({
+    tab: typeof search.tab === "string" ? search.tab : undefined,
+    upgraded: typeof search.upgraded === "string" ? search.upgraded : undefined,
+    canceled: typeof search.canceled === "string" ? search.canceled : undefined,
+  }),
+});
+
+type Section = "account" | "subscription" | "password" | "support" | "danger";
 
 const NAV: { id: Section; label: string; icon: React.ReactNode; danger?: boolean }[] = [
   { id: "account", label: "Account", icon: <User size={14} /> },
+  { id: "subscription", label: "Subscription", icon: <Briefcase size={14} /> },
   { id: "password", label: "Password", icon: <KeyRound size={14} /> },
   { id: "support", label: "Support", icon: <LifeBuoy size={14} /> },
   { id: "danger", label: "Danger zone", icon: <AlertTriangle size={14} />, danger: true },
@@ -304,9 +320,123 @@ function PasswordSection() {
   );
 }
 
+function SubscriptionSection() {
+  const { data: me } = useMe();
+  const { data, isLoading } = useBillingSubscription();
+  const checkout = useStartCheckout();
+  const jobs = useJobs({ limit: 1 });
+  const applied = useApplied({});
+  const trackedCompanies = me?.settings?.trackedCompanies?.length ?? 0;
+  const currentPlan = data?.subscription?.plan ?? me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const currentConfig = data?.planConfig;
+  const activePlanName = currentConfig?.displayName ?? currentPlan;
+
+  const usageRows = [
+    { label: "Tracked companies", used: trackedCompanies, limit: currentConfig?.maxCompanies ?? null },
+    { label: "Visible jobs", used: jobs.data?.totals.availableJobs ?? 0, limit: currentConfig?.maxVisibleJobs ?? null },
+    { label: "Applied jobs", used: applied.data?.jobs?.length ?? 0, limit: currentConfig?.maxAppliedJobs ?? null },
+  ];
+
+  function handleUpgrade(plan: "starter" | "pro" | "power") {
+    checkout.mutate(plan, {
+      onSuccess: (result) => {
+        window.location.assign(result.url);
+      },
+      onError: (error) => {
+        toast(error instanceof Error ? error.message : "Checkout failed", "error");
+      },
+    });
+  }
+
+  return (
+    <div className="grid grid-cols-5 gap-6 items-start">
+      <div className="col-span-3 space-y-6">
+        <SectionCard title="Current subscription" description="Plan status, billing period, and upgrade entry point.">
+          <div className="space-y-4">
+            {isLoading ? (
+              <div className="text-sm text-[hsl(var(--muted-foreground))]">Loading billing state…</div>
+            ) : null}
+            <div className="grid grid-cols-2 gap-4">
+              <StatTile icon={<Briefcase size={15} />} label="Current plan" value={activePlanName} sub={data?.subscription?.status ?? me?.billing?.status ?? "active"} />
+              <StatTile icon={<CheckCircle2 size={15} />} label="Billing period end" value={data?.subscription?.currentPeriodEnd ? new Date(data.subscription.currentPeriodEnd).toLocaleDateString() : "—"} sub={data?.subscription?.provider ?? me?.billing?.provider ?? "internal"} />
+            </div>
+            <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-4 space-y-3">
+              <div className="text-sm font-medium">Usage against current plan</div>
+              <div className="space-y-2">
+                {usageRows.map((row) => (
+                  <div key={row.label} className="flex items-center justify-between gap-4 text-sm">
+                    <span>{row.label}</span>
+                    <span className="text-[hsl(var(--muted-foreground))]">
+                      {row.used} / {row.limit === null ? "Unlimited" : row.limit}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Upgrade options" description="Launch Stripe Checkout to move to a higher plan.">
+          <div className="grid gap-4 md:grid-cols-3">
+            {[
+              { plan: "starter" as const, label: "Starter" },
+              { plan: "pro" as const, label: "Pro" },
+              { plan: "power" as const, label: "Power" },
+            ].map((option) => (
+              <div key={option.plan} className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--background))] p-4 space-y-3">
+                <div>
+                  <div className="font-semibold">{option.label}</div>
+                  <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                    {option.plan === currentPlan ? "Current plan" : "Upgrade with Stripe Checkout"}
+                  </div>
+                </div>
+                <Button
+                  onClick={() => handleUpgrade(option.plan)}
+                  disabled={checkout.isPending || option.plan === currentPlan}
+                  className="w-full"
+                >
+                  {option.plan === currentPlan ? "Current plan" : checkout.isPending ? "Redirecting…" : "Upgrade now"}
+                </Button>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="col-span-2">
+        <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
+          <div className="px-5 py-4 border-b border-[hsl(var(--border))]">
+            <div className="font-semibold text-sm">Billing notes</div>
+            <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">What happens when you upgrade.</div>
+          </div>
+          <div className="p-5 space-y-5">
+            <SecurityTip
+              icon={<ShieldCheck size={15} />}
+              title="Secure checkout"
+              body="Stripe Checkout handles payment entry and subscription creation outside the app."
+            />
+            <SecurityTip
+              icon={<Info size={15} />}
+              title="Instant plan changes"
+              body="After a successful checkout, Career Jump redirects back to this tab and refreshes plan state."
+            />
+            <SecurityTip
+              icon={<LifeBuoy size={15} />}
+              title="Need help?"
+              body="Use the Support section if billing status or plan limits look wrong after an upgrade."
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SupportSection() {
   const { data, isLoading } = useSupportTickets();
-  const tickets = data?.tickets ?? [];
+  // Keep the tickets array stable for the selection bootstrap effect below so
+  // React Hook linting does not treat the fallback array as a new dependency.
+  const tickets = useMemo(() => data?.tickets ?? [], [data?.tickets]);
   const [selectedTicketId, setSelectedTicketId] = useState<string | null>(null);
   const [subject, setSubject] = useState("");
   const [category, setCategory] = useState<(typeof SUPPORT_CATEGORIES)[number]["value"]>("bug");
@@ -733,6 +863,7 @@ async function fetchAllJobsForExport(): Promise<JobsEnvelope> {
 function ProfileRoute() {
   const profileData = useProfile();
   const { user } = useAuth();
+  const search = Route.useSearch();
   const [activeSection, setActiveSection] = useState<Section>("account");
   const releaseVersion = import.meta.env.VITE_APP_VERSION || "0.0.0";
 
@@ -743,6 +874,20 @@ function ProfileRoute() {
     : getAuthDisplayName(user, "User");
   const displayEmail = profileData.profile.email || getAuthDisplayEmail(user);
   const initial = (displayName[0] ?? "U").toUpperCase();
+
+  useEffect(() => {
+    if (search.tab === "subscription") {
+      setActiveSection("subscription");
+    }
+  }, [search.tab]);
+
+  useEffect(() => {
+    if (search.upgraded === "true") {
+      toast("Subscription updated");
+    } else if (search.canceled === "true") {
+      toast("Checkout canceled", "info");
+    }
+  }, [search.canceled, search.upgraded]);
 
   return (
     <>
@@ -792,6 +937,7 @@ function ProfileRoute() {
         {/* Content */}
         <main className="flex-1 overflow-y-auto p-8">
           {activeSection === "account" && <AccountSection {...profileData} />}
+          {activeSection === "subscription" && <SubscriptionSection />}
           {activeSection === "password" && <PasswordSection />}
           {activeSection === "support" && <SupportSection />}
           {activeSection === "danger" && <DangerSection />}

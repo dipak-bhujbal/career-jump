@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { Shield, Users, LifeBuoy, Flag, BarChart3 } from "lucide-react";
+import { Shield, Users, LifeBuoy, Flag, BarChart3, SlidersHorizontal, CreditCard } from "lucide-react";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { useAdminSummary } from "@/features/support/queries";
@@ -24,6 +24,10 @@ function AdminRoute() {
     { to: "/admin-support", title: "Support Queue", value: data?.support.totalTickets ?? 0, meta: `${data?.support.openTickets ?? 0} open`, icon: LifeBuoy },
     { to: "/logs", title: "Logs", value: "Admin only", meta: "User-filterable audit view", icon: Shield },
     { to: "/admin-flags", title: "Feature Flags", value: data?.featureFlags.length ?? 0, meta: "Rollout controls", icon: Flag },
+    // Keep plan policy one click away from the admin workspace so pricing
+    // operations do not require a hidden direct route.
+    { to: "/admin-plan-config", title: "Plan Config", value: "Policy", meta: "Pricing and entitlement controls", icon: SlidersHorizontal },
+    { to: "/admin-stripe-config", title: "Stripe Config", value: "Billing", meta: "Checkout and price IDs", icon: CreditCard },
     // Keep analytics visible from the main admin workspace so operators do not
     // need to know the direct route to reach the new reporting surface.
     { to: "/admin-analytics", title: "Analytics", value: "30d", meta: "Growth, usage, and health", icon: BarChart3 },
@@ -32,7 +36,7 @@ function AdminRoute() {
   return (
     <>
       <Topbar title="Admin Workspace" subtitle="Operations, support, and audit controls." />
-      <div className="p-6 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="p-6 grid gap-4 md:grid-cols-2 xl:grid-cols-7">
         {cards.map((card) => {
           const Icon = card.icon;
           return (

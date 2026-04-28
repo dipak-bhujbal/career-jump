@@ -20,6 +20,7 @@ interface NotifPrefs {
 
 const DEFAULT_PREFS: NotifPrefs = { newJobsAlert: true, weeklyDigest: true, statusUpdate: true };
 const PREFS_KEY = "cj:notif-prefs";
+const releaseVersion = import.meta.env.VITE_APP_VERSION || "0.0.0";
 
 function loadPrefs(): NotifPrefs {
   try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem(PREFS_KEY) ?? "{}") } as NotifPrefs; }
@@ -174,7 +175,7 @@ function SettingsRoute() {
           </div>
           <div className="px-6 py-5 space-y-2.5 text-sm text-[hsl(var(--muted-foreground))]">
             {[
-              ["Version", "v5.0.0-alpha · React rebuild"],
+              ["Version", `v${releaseVersion}`],
               ["Infrastructure", "AWS Lambda · DynamoDB · Cognito · SES"],
               ["Log retention", "6 hours"],
             ].map(([label, value]) => (

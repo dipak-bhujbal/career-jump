@@ -13,7 +13,7 @@
  * Each widget is its own self-contained component (see ./widgets.tsx)
  * and is sized via `cols` 1-2 in a 4-column responsive grid.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Plus, Settings, RotateCcw, GripVertical, X, Check } from "lucide-react";
 import {
@@ -32,13 +32,18 @@ import { useWidgetStore } from "@/features/dashboard/widget-store";
 import { REGISTRY } from "@/features/dashboard/widgets";
 import { AddWidgetDialog } from "@/features/dashboard/AddWidgetDialog";
 import { cn } from "@/lib/utils";
+import { useMe } from "@/features/session/queries";
+import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
 
 export const Route = createFileRoute("/")({ component: DashboardRoute });
 
 function DashboardRoute() {
   const { data } = useDashboard();
+  const { data: me } = useMe();
   const { layout, customizing, setLayout, toggleCustomizing, reset } = useWidgetStore();
   const [addOpen, setAddOpen] = useState(false);
+  const [showUpgradeNudge, setShowUpgradeNudge] = useState(false);
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -53,6 +58,16 @@ function DashboardRoute() {
     if (oldIdx < 0 || newIdx < 0) return;
     setLayout(arrayMove(layout, oldIdx, newIdx));
   }
+
+  useEffect(() => {
+    const shouldNudge = sessionStorage.getItem("cj_upgrade_nudge_after_login") === "1";
+    const isEntryTier = (me?.billing?.plan ?? me?.profile?.plan ?? "free") === "free"
+      || (me?.billing?.plan ?? me?.profile?.plan ?? "free") === "starter";
+    if (shouldNudge && isEntryTier) {
+      setShowUpgradeNudge(true);
+      sessionStorage.removeItem("cj_upgrade_nudge_after_login");
+    }
+  }, [me?.billing?.plan, me?.profile?.plan]);
 
   return (
     <>
@@ -78,6 +93,14 @@ function DashboardRoute() {
         }
       />
       <div className="p-6">
+        {showUpgradeNudge ? (
+          <div className="mb-4">
+            <UpgradeBanner
+              message="You’re on an entry-tier plan. Upgrade now to unlock more visible jobs, more tracked applications, and richer scan coverage."
+              cta={() => setUpgradePromptOpen(true)}
+            />
+          </div>
+        ) : null}
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}>
           <SortableContext items={layout} strategy={rectSortingStrategy}>
             <div className="grid gap-4 grid-cols-1 md:grid-cols-2 lg:grid-cols-4">
@@ -97,6 +120,13 @@ function DashboardRoute() {
       </div>
 
       <AddWidgetDialog open={addOpen} onClose={() => setAddOpen(false)} />
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+        currentPlan={me?.billing?.plan ?? me?.profile?.plan ?? "free"}
+        title="Upgrade to unlock more of Career Jump"
+        body="Move beyond the entry tier to raise company, job, and applied-job limits with Stripe Checkout."
+      />
     </>
   );
 }

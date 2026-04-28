@@ -4,10 +4,18 @@ const loadLatestRawScanMock = vi.fn();
 const fetchJobsForDetectedConfigMock = vi.fn();
 const saveRawScanMock = vi.fn();
 const loadBillingSubscriptionMock = vi.fn();
+const loadPlanConfigMock = vi.fn();
 const getDetectedConfigMock = vi.fn();
 const markRegistryCompanyScanSuccessMock = vi.fn();
 const markRegistryCompanyScanFailureMock = vi.fn();
 const markRegistryCompanyScanMisconfiguredMock = vi.fn();
+
+const PLAN_DEFAULTS = {
+  free:    { plan: "free"    as const, canTriggerLiveScan: false, scanCacheAgeHours: 0, maxSessions: 1, maxCompanies: 5,    maxVisibleJobs: 15,  maxAppliedJobs: 50,   emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 0,  enabledFeatures: [], displayName: "Free",    updatedAt: "", updatedBy: "system" },
+  starter: { plan: "starter" as const, canTriggerLiveScan: true,  scanCacheAgeHours: 4, maxSessions: 1, maxCompanies: 10,   maxVisibleJobs: 40,  maxAppliedJobs: 150,  emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 3,  enabledFeatures: [], displayName: "Starter", updatedAt: "", updatedBy: "system" },
+  pro:     { plan: "pro"     as const, canTriggerLiveScan: true,  scanCacheAgeHours: 8, maxSessions: 2, maxCompanies: 25,   maxVisibleJobs: 100, maxAppliedJobs: 500,  emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 7,  enabledFeatures: [], displayName: "Pro",     updatedAt: "", updatedBy: "system" },
+  power:   { plan: "power"   as const, canTriggerLiveScan: true,  scanCacheAgeHours: 4, maxSessions: 3, maxCompanies: null, maxVisibleJobs: null, maxAppliedJobs: null, emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 14, enabledFeatures: [], displayName: "Power",   updatedAt: "", updatedBy: "system" },
+};
 
 vi.mock("../../src/storage", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/storage")>();
@@ -16,6 +24,7 @@ vi.mock("../../src/storage", async (importOriginal) => {
     loadLatestRawScan: loadLatestRawScanMock,
     saveRawScan: saveRawScanMock,
     loadBillingSubscription: loadBillingSubscriptionMock,
+    loadPlanConfig: loadPlanConfigMock,
     markRegistryCompanyScanSuccess: markRegistryCompanyScanSuccessMock,
     markRegistryCompanyScanFailure: markRegistryCompanyScanFailureMock,
     markRegistryCompanyScanMisconfigured: markRegistryCompanyScanMisconfiguredMock,
@@ -81,6 +90,10 @@ describe("buildInventory plan-tier cache enforcement", () => {
     markRegistryCompanyScanSuccessMock.mockResolvedValue(undefined);
     markRegistryCompanyScanFailureMock.mockResolvedValue(undefined);
     markRegistryCompanyScanMisconfiguredMock.mockResolvedValue(undefined);
+    // Default: return correct plan config for whichever plan is requested
+    loadPlanConfigMock.mockImplementation((plan: "free" | "pro" | "power") =>
+      Promise.resolve(PLAN_DEFAULTS[plan]),
+    );
   });
 
   it("free tier: serves stale cache and never calls fetchJobsForDetectedConfig", async () => {

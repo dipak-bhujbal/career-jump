@@ -141,6 +141,8 @@ describe("registry ops dashboard", () => {
   });
 
   it("handler returns the same summary shape the scheduled Lambda logs", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-28T12:00:00.000Z"));
     scanAllRowsMock
       .mockResolvedValueOnce(makeRegistryRows(1))
       .mockResolvedValueOnce([

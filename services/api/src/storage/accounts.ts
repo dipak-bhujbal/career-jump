@@ -29,6 +29,7 @@ import {
   supportTableName,
   usersTableName,
 } from "../aws/dynamo";
+import { loadPlanConfig } from "./plan-config";
 
 const cognito = new CognitoIdentityProviderClient({});
 
@@ -142,15 +143,13 @@ function defaultSubscription(userId: string): BillingSubscriptionRecord {
   };
 }
 
-function sessionLimitForPlan(plan: UserPlan): number {
-  switch (plan) {
-    case "power":
-      return 3;
-    case "pro":
-      return 2;
-    case "free":
-    default:
-      return 1;
+async function sessionLimitForPlan(plan: UserPlan): Promise<number> {
+  try {
+    const cfg = await loadPlanConfig(plan);
+    return cfg.maxSessions;
+  } catch {
+    // Fall back to safe defaults if config is unavailable
+    return plan === "power" ? 3 : plan === "pro" ? 2 : 1;
   }
 }
 
@@ -360,7 +359,7 @@ export async function ensureUserSession(
   }
 
   const activeSessions = await listUserSessions(actor.userId);
-  const limit = sessionLimitForPlan(plan);
+  const limit = await sessionLimitForPlan(plan);
   const sortedSessions = [...activeSessions].sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));
   if (sortedSessions.length >= limit) {
     const oldest = sortedSessions[0];

@@ -16,6 +16,7 @@ import type {
   InterviewRoundDesignation,
   JobSource,
   JobPosting,
+  NoteRecord,
   ProtectedDiscoveryRecord,
   SavedFilterRecord,
   SavedFilterScope,
@@ -246,11 +247,14 @@ function normalizeAppliedJobRecord(key: string, value: unknown): AppliedJobRecor
   const timeline = Array.isArray(row.timeline)
     ? row.timeline.map(normalizeTimelineEvent).filter((item): item is TimelineEvent => Boolean(item))
     : baseTimelineForRecord(job, appliedAt);
+  const noteRecords = normalizeNoteRecords(row.noteRecords, row.notes, appliedAt);
+  const notes = summarizeNoteRecords(noteRecords) ?? (typeof row.notes === "string" ? row.notes : undefined);
 
   return {
     jobKey: nextKey,
     job,
-    notes: typeof row.notes === "string" ? row.notes : undefined,
+    notes,
+    noteRecords,
     appliedAt,
     status: normalizeAppliedStatus(row.status),
     interviewRounds,
@@ -282,6 +286,43 @@ export async function loadAppliedJobs(env: Env, tenantId?: string): Promise<Reco
   }
 
   return result;
+}
+
+function normalizeNoteRecords(raw: unknown, legacyNotes: unknown, fallbackCreatedAt: string): NoteRecord[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((entry, index) => normalizeNoteRecord(entry, fallbackCreatedAt, index))
+      .filter((entry): entry is NoteRecord => Boolean(entry));
+  }
+
+  const legacyText = typeof legacyNotes === "string" ? legacyNotes.trim() : "";
+  if (!legacyText) return [];
+
+  // Lift pre-record notes into a single note bubble so older data stays visible
+  // and editable in the record-style drawer.
+  return [{
+    id: "legacy-note",
+    text: legacyText,
+    createdAt: fallbackCreatedAt,
+  }];
+}
+
+function normalizeNoteRecord(raw: unknown, fallbackCreatedAt: string, index: number): NoteRecord | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const text = typeof row.text === "string" ? row.text.trim() : "";
+  if (!text) return null;
+  return {
+    id: typeof row.id === "string" && row.id.trim() ? row.id : `note-${index}`,
+    text,
+    createdAt: typeof row.createdAt === "string" && row.createdAt ? row.createdAt : fallbackCreatedAt,
+    updatedAt: typeof row.updatedAt === "string" && row.updatedAt ? row.updatedAt : undefined,
+  };
+}
+
+function summarizeNoteRecords(records: NoteRecord[]): string | undefined {
+  if (!records.length) return undefined;
+  return records.map((record) => record.text.trim()).filter(Boolean).join("\n\n") || undefined;
 }
 
 export async function saveAppliedJobs(env: Env, data: Record<string, AppliedJobRecord>, tenantId?: string): Promise<void> {

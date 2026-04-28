@@ -41,6 +41,9 @@ function LoginRoute() {
     setLoading(true);
     try {
       await signIn(email.trim(), password, rememberMe, isAdminMode ? "admin" : "user");
+      // Set a one-shot post-login nudge flag so the dashboard can decide
+      // whether to surface the upgrade banner after authentication settles.
+      if (!isAdminMode) sessionStorage.setItem("cj_upgrade_nudge_after_login", "1");
       void navigate({ to: "/" });
     } catch (err) {
       const ae = err as { code?: string; message?: string };

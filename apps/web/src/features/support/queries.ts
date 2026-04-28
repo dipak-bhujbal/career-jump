@@ -5,6 +5,9 @@ import {
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
   type AdminSummaryEnvelope,
+  type PlanConfig,
+  type PlanConfigEnvelope,
+  type PlanConfigsEnvelope,
   type AdminUserEnvelope,
   type AdminUsersEnvelope,
   type FeatureFlagsEnvelope,
@@ -115,6 +118,28 @@ export function useFeatureFlags() {
     queryKey: ["admin-feature-flags"],
     queryFn: () => api.get<FeatureFlagsEnvelope>("/api/admin/feature-flags"),
     staleTime: 10_000,
+  });
+}
+
+export function usePlanConfigs() {
+  return useQuery({
+    queryKey: ["admin-plan-config"],
+    queryFn: () => api.get<PlanConfigsEnvelope>("/api/admin/plan-config"),
+    staleTime: 10_000,
+  });
+}
+
+export function useSavePlanConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    // Keep the payload typed so the editor cannot drift away from the API
+    // contract while we are still using hand-written fetch wrappers.
+    mutationFn: (body: PlanConfig) => api.put<PlanConfigEnvelope>(`/api/admin/plan-config/${body.plan}`, body),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-plan-config"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+      await queryClient.invalidateQueries({ queryKey: meKey });
+    },
   });
 }
 

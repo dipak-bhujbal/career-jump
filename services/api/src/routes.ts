@@ -51,8 +51,13 @@ import {
   listAppLogs,
   listSupportTicketMessages,
   listUserTickets,
+  loadAllPlanConfigs,
   loadBillingSubscription,
+  loadPlanConfig,
   loadFeatureFlags,
+  loadStripeConfigPublic,
+  saveStripeConfig,
+  savePlanConfig,
   loadActiveRunLock,
   loadAppliedJobs,
   loadCompanyScanOverrides,
@@ -76,6 +81,7 @@ import {
   updateEmailSendAttempt,
 } from "./storage";
 import { buildDashboardPayload } from "./services/dashboard";
+import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
   fetchJobsForDetectedConfig,
   getDetectedConfig,
@@ -96,6 +102,7 @@ import type {
   InterviewRoundDesignation,
   InventorySnapshot,
   JobPosting,
+  NoteRecord,
   RuntimeConfig,
   SavedFilterScope,
   TimelineEvent,
@@ -202,6 +209,43 @@ function parseMultiValues(params: URLSearchParams, key: string): string[] {
 function uniqueSortedCompanies(values: string[]): string[] {
   return [...new Set(values.map((value) => String(value).trim()).filter(Boolean))]
     .sort((a, b) => a.localeCompare(b));
+}
+
+function enabledCompanyKeys(companies: RuntimeConfig["companies"]): Set<string> {
+  return new Set(
+    companies
+      .filter((company) => company.enabled !== false)
+      .map((company) => slugify(company.company))
+      .filter(Boolean),
+  );
+}
+
+function effectiveEnabledCompanyKeys(
+  companies: RuntimeConfig["companies"],
+  overrides: Record<string, { paused: boolean }>,
+): Set<string> {
+  return new Set(
+    companies
+      .filter((company) => company.enabled !== false)
+      .filter((company) => overrides[slugify(company.company)]?.paused !== true)
+      .map((company) => slugify(company.company))
+      .filter(Boolean),
+  );
+}
+
+async function loadCompanyLimitForUser(userId: string): Promise<number | null> {
+  const subscription = await loadBillingSubscription(userId);
+  const planConfig = await loadPlanConfig(subscription.plan);
+  return planConfig.maxCompanies;
+}
+
+function maxCompaniesError(limit: number, current: number) {
+  return {
+    ok: false,
+    error: `Plan limit reached. This plan allows up to ${limit} tracked companies.`,
+    limit,
+    current,
+  };
 }
 
 function mergeAppliedJobsWithInventory(
@@ -347,20 +391,55 @@ function ensureBaseTimeline(record: AppliedJobRecord): AppliedJobRecord {
 }
 
 function createAppliedRecord(job: JobPosting, key: string, existing?: AppliedJobRecord, notes?: string): AppliedJobRecord {
+  const legacyNoteRecords = buildInitialNoteRecords(notes);
   if (existing) {
-    return notes ? { ...ensureBaseTimeline(existing), notes } : ensureBaseTimeline(existing);
+    if (!notes) return ensureBaseTimeline(existing);
+    const noteRecords = [...(existing.noteRecords ?? []), ...legacyNoteRecords];
+    return {
+      ...ensureBaseTimeline(existing),
+      noteRecords,
+      notes: summarizeNoteRecords(noteRecords),
+    };
   }
   const appliedAt = nowISO();
   return ensureBaseTimeline({
     jobKey: key,
     job,
-    notes: notes || undefined,
+    notes: summarizeNoteRecords(legacyNoteRecords),
+    noteRecords: legacyNoteRecords,
     appliedAt,
     status: "Applied",
     interviewRounds: [],
     timeline: [],
     lastStatusChangedAt: appliedAt,
   });
+}
+
+function buildInitialNoteRecords(notes?: string): NoteRecord[] {
+  const text = String(notes ?? "").trim();
+  if (!text) return [];
+  return [{
+    id: crypto.randomUUID(),
+    text,
+    createdAt: nowISO(),
+  }];
+}
+
+function summarizeNoteRecords(records: NoteRecord[]): string | undefined {
+  if (!records.length) return undefined;
+  return records.map((record) => record.text.trim()).filter(Boolean).join("\n\n") || undefined;
+}
+
+function upsertAppliedJobNotes(
+  record: AppliedJobRecord,
+  updater: (records: NoteRecord[]) => NoteRecord[]
+): AppliedJobRecord {
+  const nextRecords = updater([...(record.noteRecords ?? [])]);
+  return {
+    ...record,
+    noteRecords: nextRecords,
+    notes: summarizeNoteRecords(nextRecords),
+  };
 }
 
 function appendInterviewRound(record: AppliedJobRecord): AppliedJobRecord {
@@ -424,6 +503,7 @@ function buildActionPlanRows(rows: AppliedJobRecord[]): ActionPlanRow[] {
         company: row.job.company,
         jobTitle: row.job.title,
         notes: row.notes,
+        noteRecords: row.noteRecords,
         appliedAt: formatET(row.appliedAt) ?? null,
         appliedAtDate: formatDateOnly(row.appliedAt) ?? null,
         interviewAt: currentRound?.interviewAt ? formatET(currentRound.interviewAt) : null,
@@ -786,6 +866,137 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
     }
 
+    if (url.pathname === "/api/admin/plan-config" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const configs = await loadAllPlanConfigs();
+      return jsonResponse({ ok: true, configs });
+    }
+
+    const adminPlanConfigMatch = url.pathname.match(/^\/api\/admin\/plan-config\/(free|starter|pro|power)$/);
+    if (adminPlanConfigMatch && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const plan = adminPlanConfigMatch[1] as "free" | "starter" | "pro" | "power";
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const scanCacheAgeHours = Number(body.scanCacheAgeHours);
+      const maxSessions = Number(body.maxSessions);
+      const maxEmailsPerWeek = Number(body.maxEmailsPerWeek);
+      if (!Number.isFinite(scanCacheAgeHours) || scanCacheAgeHours < 0) {
+        return jsonResponse({ ok: false, error: "scanCacheAgeHours must be a non-negative number" }, 400);
+      }
+      if (!Number.isFinite(maxSessions) || maxSessions < 1) {
+        return jsonResponse({ ok: false, error: "maxSessions must be at least 1" }, 400);
+      }
+      const config = await savePlanConfig(tenantContext.userId, {
+        plan,
+        displayName: String(body.displayName ?? plan),
+        scanCacheAgeHours,
+        canTriggerLiveScan: body.canTriggerLiveScan === true,
+        maxCompanies: body.maxCompanies === null ? null : Number(body.maxCompanies) || null,
+        maxSessions,
+        maxVisibleJobs: body.maxVisibleJobs === null ? null : Number(body.maxVisibleJobs) || null,
+        maxAppliedJobs: body.maxAppliedJobs === null ? null : Number(body.maxAppliedJobs) || null,
+        emailNotificationsEnabled: body.emailNotificationsEnabled === true,
+        weeklyDigestEnabled: body.weeklyDigestEnabled === true,
+        maxEmailsPerWeek: Number.isFinite(maxEmailsPerWeek) ? maxEmailsPerWeek : 0,
+        enabledFeatures: Array.isArray(body.enabledFeatures) ? body.enabledFeatures.map(String) : [],
+      });
+      await recordEvent(
+        { userId: tenantContext.userId, tenantId: tenantContext.tenantId, email: tenantContext.email, displayName: tenantContext.displayName, scope: tenantContext.scope, isAdmin: tenantContext.isAdmin },
+        "PLAN_CONFIG_UPDATED",
+        { plan, updatedBy: tenantContext.userId },
+      );
+      return jsonResponse({ ok: true, config });
+    }
+
+    if (url.pathname === "/api/admin/stripe-config" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const config = await loadStripeConfigPublic();
+      return jsonResponse({ ok: true, configured: Boolean(config), config: config ?? null });
+    }
+
+    if (url.pathname === "/api/admin/stripe-config" && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const publishableKey = String(body.publishableKey ?? "").trim();
+      const secretKey = String(body.secretKey ?? "").trim();
+      const webhookSecret = String(body.webhookSecret ?? "").trim();
+      if (!publishableKey || !secretKey) {
+        return jsonResponse({ ok: false, error: "publishableKey and secretKey are required" }, 400);
+      }
+      const priceIds = {
+        starter: String((body.priceIds as Record<string, unknown>)?.starter ?? "").trim(),
+        pro: String((body.priceIds as Record<string, unknown>)?.pro ?? "").trim(),
+        power: String((body.priceIds as Record<string, unknown>)?.power ?? "").trim(),
+      };
+      const saved = await saveStripeConfig(tenantContext.userId, {
+        publishableKey,
+        secretKey,
+        webhookSecret,
+        priceIds,
+      });
+      await recordEvent(
+        { userId: tenantContext.userId, tenantId: tenantContext.tenantId, email: tenantContext.email, displayName: tenantContext.displayName, scope: tenantContext.scope, isAdmin: tenantContext.isAdmin },
+        "STRIPE_CONFIG_UPDATED",
+        { updatedBy: tenantContext.userId },
+      );
+      return jsonResponse({ ok: true, config: saved });
+    }
+
+    if (url.pathname === "/api/billing/checkout" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const plan = body.plan as string;
+      if (!["starter", "pro", "power"].includes(plan)) {
+        return jsonResponse({ ok: false, error: "Invalid plan. Must be starter, pro, or power." }, 400);
+      }
+      const origin = request.headers.get("origin") ?? "https://app.careerjump.io";
+      try {
+        const result = await createCheckoutSession(
+          tenantContext.tenantId,
+          tenantContext.userId,
+          tenantContext.email,
+          plan as "starter" | "pro" | "power",
+          `${origin}/profile?tab=subscription&upgraded=true`,
+          `${origin}/profile?tab=subscription&canceled=true`,
+        );
+        return jsonResponse({ ok: true, url: result.url, sessionId: result.sessionId });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : "Checkout failed" }, 500);
+      }
+    }
+
+    if (url.pathname === "/api/billing/subscription" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const [subscription, planCfg] = await Promise.all([
+        loadBillingSubscription(tenantContext.tenantId).catch(() => null),
+        loadBillingSubscription(tenantContext.tenantId)
+          .then((s) => loadPlanConfig(s.plan))
+          .catch(() => null),
+      ]);
+      return jsonResponse({ ok: true, subscription, planConfig: planCfg });
+    }
+
+    if (url.pathname === "/api/stripe/webhook" && request.method === "POST") {
+      const signature = request.headers.get("stripe-signature") ?? "";
+      const rawBody = await request.text();
+      try {
+        const result = await handleStripeWebhook(rawBody, signature);
+        return jsonResponse({ ok: true, ...result });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Webhook error";
+        const status = message.includes("signature") ? 400 : 500;
+        return jsonResponse({ ok: false, error: message }, status);
+      }
+    }
+
     if (url.pathname === "/api/config" && request.method === "GET") {
       const tenantContext = await getTenantContext();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
@@ -824,6 +1035,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
       const companies = sanitizeCompanies(body.companies ?? []);
+      const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId);
       await loadRegistryCache();
       const duplicateRegistryCompany = companies.find((company) =>
         company.isRegistry !== true && Boolean(getByCompany(company.company))
@@ -842,6 +1054,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           error: `Company '${invalidCompany.company}' has source '${invalidCompany.source}' but the board URL or ATS identifiers could not be parsed. Check the URL and try again.`,
         }, 422);
       }
+      try {
+        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+        const currentEnabled = enabledCompanyKeys(currentConfig.companies);
+        const nextEnabled = enabledCompanyKeys(companies);
+        if (maxCompanies !== null && nextEnabled.size > maxCompanies) {
+          const introducedEnabledCompany = [...nextEnabled].some((key) => !currentEnabled.has(key));
+          if (introducedEnabledCompany || nextEnabled.size > currentEnabled.size) {
+            return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+          }
+        }
+      } catch {
+        // Fall through on plan-config lookup failure so config saves do not
+        // become unavailable if billing config is temporarily unreadable.
+      }
       const next: RuntimeConfig = {
         companies,
         jobtitles: sanitizeJobtitles(body.jobtitles ?? {}),
@@ -858,6 +1084,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!companyName) return jsonResponse({ ok: false, error: "company name is required" }, 400);
 
       const body = await readJsonBody<Record<string, unknown>>(request);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const currentPaused = currentOverrides[slugify(companyName)]?.paused === true;
       const paused = typeof body.paused === "boolean"
@@ -865,6 +1092,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         : typeof body.enabled === "boolean"
           ? !body.enabled
           : !currentPaused;
+      try {
+        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+        const enabledCompanies = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
+        const companyKey = slugify(companyName);
+        const currentlyEnabled = enabledCompanies.has(companyKey);
+        if (maxCompanies !== null && !paused && !currentlyEnabled && enabledCompanies.size >= maxCompanies) {
+          return jsonResponse(maxCompaniesError(maxCompanies, enabledCompanies.size), 403);
+        }
+      } catch {
+        // Ignore temporary pricing-config lookup failures and preserve the
+        // existing toggle path rather than blocking the whole settings flow.
+      }
 
       const override = await setCompanyScanOverride(env, {
         tenantId: tenantContext.tenantId,
@@ -883,7 +1122,24 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (typeof body.paused !== "boolean") return jsonResponse({ ok: false, error: "paused boolean is required" }, 400);
 
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const companies = config.companies.map((company) => company.company).filter(Boolean);
+      try {
+        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+        const currentEnabled = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
+        const totalEnabledIfUnpaused = enabledCompanyKeys(config.companies);
+        if (
+          maxCompanies !== null
+          && body.paused === false
+          && totalEnabledIfUnpaused.size > maxCompanies
+          && currentEnabled.size < totalEnabledIfUnpaused.size
+        ) {
+          return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+        }
+      } catch {
+        // Preserve the existing bulk-toggle path if pricing config is
+        // temporarily unavailable.
+      }
       const companyScanOverrides = await setCompanyScanOverrides(env, {
         tenantId: tenantContext.tenantId,
         companies,
@@ -1242,14 +1498,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (url.pathname === "/api/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId);
-      const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantContext.tenantId);
+      const [{ inventory, state: inventoryState }, billing] = await Promise.all([
+        loadInventoryWithState(env, config, tenantContext.tenantId),
+        loadBillingSubscription(tenantContext.tenantId).catch(() => null),
+      ]);
+      const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       const newJobKeys = new Set(inventoryState.lastNewJobKeys);
       const updatedJobKeys = new Set(inventoryState.lastUpdatedJobKeys);
       const newOnly = url.searchParams.get("newOnly") === "true";
       const updatedOnly = url.searchParams.get("updatedOnly") === "true";
-      const availableJobs = inventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
+      const allAvailableJobs = inventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
+      const jobCap = planCfg?.maxVisibleJobs ?? null;
+      const availableJobs = jobCap !== null ? allAvailableJobs.slice(0, jobCap) : allAvailableJobs;
       const companyOptions = uniqueSortedCompanies(availableJobs.map((job) => job.company));
       const totalNewAvailable = availableJobs.filter((job) => newJobKeys.has(jobKey(job))).length;
       const totalUpdatedAvailable = availableJobs.filter((job) => updatedJobKeys.has(jobKey(job))).length;
@@ -1301,8 +1563,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         },
         totals: {
           availableJobs: availableJobs.length,
+          totalAvailableJobs: allAvailableJobs.length,
           newJobs: totalNewAvailable,
           updatedJobs: totalUpdatedAvailable,
+          jobsCapped: jobCap !== null && allAvailableJobs.length > jobCap,
+          jobCapLimit: jobCap,
         },
         companyOptions,
         jobs: pagedJobs.map((job) => ({
@@ -1414,6 +1679,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         jobs: rows.map((row) => ({
           jobKey: row.jobKey,
           notes: row.notes || jobNotes[row.jobKey] || "",
+          noteRecords: row.noteRecords ?? [],
           company: row.job.company,
           jobTitle: row.job.title,
           appliedAt: formatET(row.appliedAt),
@@ -1423,23 +1689,44 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           url: row.job.url,
           status: row.status,
           isUpdated: updatedJobKeys.has(row.jobKey),
+          interviewRounds: row.interviewRounds,
+          timeline: row.timeline,
+          lastStatusChangedAt: row.lastStatusChangedAt,
         })),
       });
     }
 
     if (url.pathname === "/api/jobs/apply" && request.method === "POST") {
-      const body = await readJsonBody<{ jobKey?: string } & Record<string, unknown>>(request);
+      const body = await readJsonBody<{ jobKey?: string; notes?: string } & Record<string, unknown>>(request);
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const [config, appliedJobsForLimit, billingForLimit] = await Promise.all([
+        loadRuntimeConfig(env, tenantContext.tenantId),
+        loadAppliedJobs(env, tenantContext.tenantId),
+        loadBillingSubscription(tenantContext.tenantId).catch(() => null),
+      ]);
+      const planCfgForLimit = billingForLimit ? await loadPlanConfig(billingForLimit.plan).catch(() => null) : null;
+      const appliedCount = Object.keys(appliedJobsForLimit).length;
+      if (planCfgForLimit?.maxAppliedJobs !== null && planCfgForLimit?.maxAppliedJobs !== undefined) {
+        if (appliedCount >= planCfgForLimit.maxAppliedJobs) {
+          return jsonResponse({
+            ok: false,
+            error: "applied_jobs_limit_reached",
+            limit: planCfgForLimit.maxAppliedJobs,
+            plan: billingForLimit?.plan ?? "free",
+          }, 402);
+        }
+      }
       const inventory = await loadInventory(env, config, tenantContext.tenantId);
-      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const appliedJobs = appliedJobsForLimit;
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
       if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
+      const submittedNotes = String(body.notes ?? "").trim();
+      const initialNotes = submittedNotes || jobNotes[body.jobKey];
 
-      appliedJobs[body.jobKey] = createAppliedRecord(job, body.jobKey, appliedJobs[body.jobKey], jobNotes[body.jobKey]);
+      appliedJobs[body.jobKey] = createAppliedRecord(job, body.jobKey, appliedJobs[body.jobKey], initialNotes);
       delete jobNotes[body.jobKey];
       await saveJobNotes(env, jobNotes, tenantContext.tenantId);
       await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
@@ -1473,6 +1760,77 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await saveJobNotes(env, jobNotes, tenantContext.tenantId);
 
       return jsonResponse({ ok: true, jobKey: body.jobKey, notes: note });
+    }
+
+    if (url.pathname === "/api/notes/add" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; text?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const text = String(body.text ?? "").trim();
+      if (!text) return jsonResponse({ ok: false, error: "text is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const record: NoteRecord = {
+        id: crypto.randomUUID(),
+        text,
+        createdAt: nowISO(),
+      };
+      appliedJobs[body.jobKey] = upsertAppliedJobNotes(existing, (records) => [...records, record]);
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, jobKey: body.jobKey, record });
+    }
+
+    if (url.pathname === "/api/notes/update" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; noteId?: string; text?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey || !body.noteId) return jsonResponse({ ok: false, error: "jobKey and noteId are required" }, 400);
+
+      const text = String(body.text ?? "").trim();
+      if (!text) return jsonResponse({ ok: false, error: "text is required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const current = existing.noteRecords ?? [];
+      if (!current.some((record) => record.id === body.noteId)) {
+        return jsonResponse({ ok: false, error: "Note not found" }, 404);
+      }
+
+      const updatedAt = nowISO();
+      appliedJobs[body.jobKey] = upsertAppliedJobNotes(existing, (records) => records.map((record) => (
+        record.id === body.noteId ? { ...record, text, updatedAt } : record
+      )));
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, jobKey: body.jobKey, noteId: body.noteId, text });
+    }
+
+    if (url.pathname === "/api/notes/delete" && request.method === "POST") {
+      const body = await readJsonBody<{ jobKey?: string; noteId?: string } & Record<string, unknown>>(request);
+      if (!body.jobKey || !body.noteId) return jsonResponse({ ok: false, error: "jobKey and noteId are required" }, 400);
+
+      const tenantContext = await getTenantContext();
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const existing = appliedJobs[body.jobKey];
+      if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const current = existing.noteRecords ?? [];
+      if (!current.some((record) => record.id === body.noteId)) {
+        return jsonResponse({ ok: false, error: "Note not found" }, 404);
+      }
+
+      appliedJobs[body.jobKey] = upsertAppliedJobNotes(existing, (records) => (
+        records.filter((record) => record.id !== body.noteId)
+      ));
+      await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
+
+      return jsonResponse({ ok: true, jobKey: body.jobKey, noteId: body.noteId });
     }
 
     if (url.pathname === "/api/jobs/discard" && request.method === "POST") {
