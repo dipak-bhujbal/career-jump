@@ -29,7 +29,25 @@ export type RequestActor = {
   isAdmin: boolean;
 };
 
-export type Source = "greenhouse" | "ashby" | "smartrecruiters" | "workday" | "lever";
+export type Source =
+  | "greenhouse"
+  | "ashby"
+  | "smartrecruiters"
+  | "workday"
+  | "lever"
+  | "bamboohr"
+  | "breezy"
+  | "eightfold"
+  | "icims"
+  | "jobvite"
+  | "oracle"
+  | "phenom"
+  | "recruitee"
+  | "successfactors"
+  | "taleo"
+  | "workable"
+  | "custom-jsonld"
+  | "sitemap";
 export type JobSource = Source | "manual";
 
 export type CompanyInput = {
@@ -454,6 +472,13 @@ export type DetectedConfig =
       host?: string;
       tenant?: string;
       site?: string;
+    }
+  | {
+      source: "registry-adapter";
+      adapterId: Source | string;
+      boardUrl: string;
+      sampleUrl?: string;
+      companyName: string;
     };
 
 export type WorkdayScanLayer = "layer1" | "layer2" | "layer3";

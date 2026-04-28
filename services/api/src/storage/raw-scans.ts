@@ -39,6 +39,11 @@ function stableDetectedToken(detected: DetectedConfig): string {
         `tenant:${slugify(detected.tenant ?? "")}`,
         `site:${slugify(detected.site ?? "")}`,
       ].join("|");
+    case "registry-adapter":
+      return [
+        `adapter:${slugify(detected.adapterId ?? "")}`,
+        `board:${slugify(detected.boardUrl ?? "")}`,
+      ].join("|");
   }
 }
 

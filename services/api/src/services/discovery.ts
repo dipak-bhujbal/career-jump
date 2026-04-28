@@ -5,6 +5,7 @@ import { fetchGreenhouseJobs } from "../ats/core/greenhouse";
 import { fetchLeverJobs } from "../ats/core/lever";
 import { fetchSmartRecruitersJobs } from "../ats/core/smartrecruiters";
 import { fetchWorkdayJobs } from "../ats/core/workday";
+import { fetchJobsForEntry } from "../ats/registry";
 
 function namesMatch(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
@@ -71,6 +72,21 @@ export async function fetchJobsForDetectedConfig(
         },
         includeKeywords
       );
+
+    case "registry-adapter": {
+      const jobs = await fetchJobsForEntry({
+        rank: null,
+        sheet: "Runtime Config",
+        company: detected.companyName || companyName,
+        board_url: detected.boardUrl,
+        ats: detected.adapterId,
+        total_jobs: null,
+        source: "runtime_config",
+        tier: "NEEDS_REVIEW",
+        sample_url: detected.sampleUrl ?? null,
+      });
+      return jobs ?? [];
+    }
   }
 }
 

@@ -53,6 +53,21 @@ function workdayParts(boardUrl: string): { host: string; sub: string; tenant: st
   }
 }
 
+function greenhouseBoardToken(boardUrl: string): string {
+  const url = new URL(boardUrl);
+  const parts = url.pathname.split("/").filter(Boolean);
+  const host = url.hostname.toLowerCase();
+  const queryBoardToken = url.searchParams.get("for")?.trim();
+  if (queryBoardToken) return queryBoardToken;
+  if (host === "boards-api.greenhouse.io" && parts[0] === "v1" && parts[1] === "boards" && parts[2]) {
+    return parts[2];
+  }
+  if (url.searchParams.get("gh_jid")?.trim() && parts[0]) {
+    return parts[0];
+  }
+  return parts[0] ?? "";
+}
+
 const adapters: AtsAdapter[] = [
   {
     id: "workday",
@@ -80,27 +95,28 @@ const adapters: AtsAdapter[] = [
     async fetchJobs(c, company) {
       const w = workdayParts(c.boardUrl);
       if (!w) return [];
-      // Existing adapter takes a different config shape — adapt:
-      return fetchWorkdayJobs(company, { host: w.host, tenant: w.tenant, site: w.tenant }, []);
+      // Existing core Workday fetcher expects both the tenant hostname label
+      // and the board/site token extracted from the canonical board URL.
+      return fetchWorkdayJobs(company, { host: w.host, tenant: w.sub, site: w.tenant }, []);
     },
   },
   {
     id: "greenhouse",
     kind: "core",
     async validate(c) {
-      const slug = lastPathSegment(c.boardUrl);
+      const slug = greenhouseBoardToken(c.boardUrl);
       const cfg = await validateGreenhouseToken(slug);
       return cfg !== null;
     },
     async count(c) {
-      const slug = lastPathSegment(c.boardUrl);
+      const slug = greenhouseBoardToken(c.boardUrl);
       const r = await atsJson<{ meta?: { total?: number }; jobs?: unknown[] }>(
         `https://boards-api.greenhouse.io/v1/boards/${slug}/jobs?content=false`,
       );
       return r?.meta?.total ?? r?.jobs?.length ?? 0;
     },
     async fetchJobs(c, company) {
-      const slug = lastPathSegment(c.boardUrl);
+      const slug = greenhouseBoardToken(c.boardUrl);
       return fetchGreenhouseJobs(company, slug);
     },
   },

@@ -14,7 +14,7 @@ import "./custom"; // self-registers all custom adapters
 
 import type { JobPosting } from "../types";
 import { getAdapter, listAdapters } from "./shared/types";
-import { normalizeAtsId } from "./shared/normalize";
+import { inferAtsIdFromUrl, normalizeAtsId } from "./shared/normalize";
 
 export type RegistryEntry = {
   rank: number | null;
@@ -47,17 +47,31 @@ export function loadRegistry(json: unknown): SeedRegistry {
  * Resolve the adapter for an entry. Custom adapters (keyed by company id)
  * win over generic ATS adapters when both apply.
  */
+function adapterCandidates(entry: RegistryEntry) {
+  const candidates = new Set<string>();
+
+  // Company-specific adapters always win when they exist.
+  candidates.add(`custom:${normalizeCompanyKey(entry.company)}`);
+
+  const normalizedAts = normalizeAtsId(entry.ats);
+  if (normalizedAts) candidates.add(normalizedAts);
+
+  // Some rows are missing ATS labels or store older labels that are less
+  // reliable than the canonical board URL. Use the URL as a fallback hint.
+  const inferred = inferAtsIdFromUrl(entry.sample_url || entry.board_url);
+  if (inferred) candidates.add(normalizeAtsId(inferred));
+
+  // Generic custom scraping is the last resort for otherwise valid boards.
+  candidates.add("custom-jsonld");
+  candidates.add("custom-sitemap");
+
+  return Array.from(candidates)
+    .map((id) => getAdapter(id))
+    .filter((adapter): adapter is NonNullable<ReturnType<typeof getAdapter>> => Boolean(adapter));
+}
+
 export function resolveAdapter(entry: RegistryEntry) {
-  // Custom-by-company wins
-  const customId = `custom:${normalizeCompanyKey(entry.company)}`;
-  const custom = getAdapter(customId);
-  if (custom) return custom;
-  // Generic ATS adapter
-  if (entry.ats) {
-    const generic = getAdapter(normalizeAtsId(entry.ats));
-    if (generic) return generic;
-  }
-  return null;
+  return adapterCandidates(entry)[0] ?? null;
 }
 
 function normalizeCompanyKey(name: string): string {
@@ -66,19 +80,31 @@ function normalizeCompanyKey(name: string): string {
 
 export async function countJobs(entry: RegistryEntry): Promise<number> {
   if (!entry.board_url) return 0;
-  const adapter = resolveAdapter(entry);
-  if (!adapter) return 0;
-  return adapter.count({ boardUrl: entry.board_url, tenantId: entry.tenantId });
+  for (const adapter of adapterCandidates(entry)) {
+    try {
+      const count = await adapter.count({ boardUrl: entry.board_url, tenantId: entry.tenantId });
+      if (count > 0) return count;
+    } catch {
+      // Keep trying fallbacks so one brittle adapter does not block the row.
+    }
+  }
+  return 0;
 }
 
 export async function fetchJobsForEntry(entry: RegistryEntry): Promise<JobPosting[] | null> {
   if (!entry.board_url) return null;
-  const adapter = resolveAdapter(entry);
-  if (!adapter) return null;
-  return adapter.fetchJobs(
-    { boardUrl: entry.board_url, tenantId: entry.tenantId },
-    entry.company,
-  );
+  for (const adapter of adapterCandidates(entry)) {
+    try {
+      const jobs = await adapter.fetchJobs(
+        { boardUrl: entry.board_url, tenantId: entry.tenantId },
+        entry.company,
+      );
+      if (jobs.length > 0) return jobs;
+    } catch {
+      // Fall through to the next adapter candidate for resilient scanning.
+    }
+  }
+  return [];
 }
 
 /** Diagnostic: return all registered adapter ids. */

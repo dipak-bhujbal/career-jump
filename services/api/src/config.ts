@@ -1,4 +1,5 @@
 import { CONFIG_KEY } from "./constants";
+import { inferAtsIdFromUrl, normalizeAtsId } from "./ats/shared/normalize";
 import { hyphenSlug, nowISO, slugify } from "./lib/utils";
 import { configStoreKv } from "./lib/bindings";
 import { tenantScopedKey } from "./lib/tenant";
@@ -13,13 +14,32 @@ function sanitizeStringArray(value: unknown): string[] {
 }
 
 function normalizeSource(value: unknown): Source | undefined {
-  return value === "greenhouse" ||
-    value === "ashby" ||
-    value === "smartrecruiters" ||
-    value === "workday" ||
-    value === "lever"
-    ? value
+  const normalized = normalizeAtsId(typeof value === "string" ? value : null);
+  return normalized === "greenhouse" ||
+    normalized === "ashby" ||
+    normalized === "smartrecruiters" ||
+    normalized === "workday" ||
+    normalized === "lever" ||
+    normalized === "bamboohr" ||
+    normalized === "breezy" ||
+    normalized === "eightfold" ||
+    normalized === "icims" ||
+    normalized === "jobvite" ||
+    normalized === "oracle" ||
+    normalized === "phenom" ||
+    normalized === "recruitee" ||
+    normalized === "successfactors" ||
+    normalized === "taleo" ||
+    normalized === "workable" ||
+    normalized === "custom-jsonld" ||
+    normalized === "sitemap"
+    ? normalized
     : undefined;
+}
+
+function inferSourceFromUrl(rawUrl: string | undefined): Source | undefined {
+  const inferred = normalizeAtsId(inferAtsIdFromUrl(rawUrl));
+  return normalizeSource(inferred);
 }
 
 /**
@@ -125,6 +145,10 @@ function parseGreenhouseSampleUrl(sampleUrl: string): Pick<CompanyInput, "boardT
     if (hostedGreenhouseJob && parts[0]) {
       return { boardToken: parts[0] };
     }
+    // Boards API URLs carry the token in /v1/boards/<token>/jobs.
+    if (host === "boards-api.greenhouse.io" && parts[0] === "v1" && parts[1] === "boards" && parts[2]) {
+      return { boardToken: parts[2] };
+    }
     if (!nativeGreenhouseHost) {
       return {};
     }
@@ -211,6 +235,8 @@ export function parseConfiguredAts(
       return parseSmartRecruitersSampleUrl(sampleUrl);
     case "lever":
       return parseLeverSampleUrl(sampleUrl);
+    default:
+      return {};
   }
 }
 
@@ -277,16 +303,45 @@ export function companyToDetectedConfig(company: CompanyInput): DetectedConfig |
         ? { source: "lever", leverSite: company.leverSite, sampleUrl: company.sampleUrl }
         : null;
 
+    case "bamboohr":
+    case "breezy":
+    case "eightfold":
+    case "icims":
+    case "jobvite":
+    case "oracle":
+    case "phenom":
+    case "recruitee":
+    case "successfactors":
+    case "taleo":
+    case "workable":
+    case "custom-jsonld":
+    case "sitemap": {
+      const boardUrl = canonicalBoardUrlForCompany(company);
+      if (!boardUrl) return null;
+      return {
+        source: "registry-adapter",
+        adapterId: company.source,
+        boardUrl,
+        sampleUrl: company.sampleUrl,
+        companyName: company.company,
+      };
+    }
+
     default:
       return null;
   }
 }
 
 function normalizeCompany(input: Record<string, unknown>): CompanyInput {
-  const source = normalizeSource(input.source);
+  const sourceFromInput = normalizeSource(input.source);
   const companyName = String(input.company).trim();
   const sampleUrl = typeof input.sampleUrl === "string" && input.sampleUrl.trim() ? input.sampleUrl.trim() : undefined;
   const boardUrl = typeof input.boardUrl === "string" && input.boardUrl.trim() ? input.boardUrl.trim() : undefined;
+  // Prefer explicit ATS labels, but heal older/missing rows from the URL when
+  // the provider is obvious from the host/path.
+  // Unknown-but-real registry boards should still be scannable through the
+  // generic custom pipeline instead of becoming null runtime configs.
+  const source = sourceFromInput ?? inferSourceFromUrl(sampleUrl || boardUrl) ?? (boardUrl ? "custom-jsonld" : undefined);
   const atsParsingSource = boardUrl || sampleUrl;
   const parsed = parseConfiguredAts(source, atsParsingSource);
   const inferredGreenhouseBoardToken = source === "greenhouse"
@@ -393,10 +448,19 @@ async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promis
     const entry = getByCompany(company.company);
     if (!entry?.board_url) return company;
 
-    const normalizedSource = company.source ?? normalizeSource(entry.ats);
+    // Registry ATS labels are helpful but not perfect. If they are absent or
+    // too loose, derive the provider from the canonical board/sample URL.
+    const normalizedSource =
+      company.source ??
+      normalizeSource(entry.ats) ??
+      inferSourceFromUrl(entry.sample_url || entry.board_url || undefined) ??
+      "custom-jsonld";
     if (!normalizedSource) return company;
 
-    const parsed = parseConfiguredAts(normalizedSource, entry.board_url);
+    const parsingUrl = normalizedSource === "workday"
+      ? entry.board_url
+      : (entry.sample_url || entry.board_url);
+    const parsed = parseConfiguredAts(normalizedSource, parsingUrl);
     return {
       ...company,
       source: normalizedSource ?? company.source,
