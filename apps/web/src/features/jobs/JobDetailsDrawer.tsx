@@ -20,7 +20,7 @@ import { Select } from "@/components/ui/select";
 import { Input } from "@/components/ui/input";
 import { CompanyHoverCard } from "@/features/companies/CompanyHoverCard";
 import { type Job, type AppliedJob, type AppliedStatus, type ActionPlanRow, type InterviewRound, type NoteRecord } from "@/lib/api";
-import { useApplyJob, useDiscardJob, useAddNote, useUpdateNote, useDeleteNote } from "./queries";
+import { useApplyJob, useDiscardJob, useSaveJobNotes } from "./queries";
 import { useUpdateStatus } from "@/features/applied/queries";
 import { useAddInterviewRound, useDeleteInterviewRound, useScheduleInterview } from "@/features/plan/queries";
 import { toast } from "@/components/ui/toast";
@@ -332,10 +332,8 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
   const [notes, setNotes] = useState(meta.notes);
   const apply = useApplyJob();
   const discard = useDiscardJob();
+  const saveNotes = useSaveJobNotes();
   const updateStatus = useUpdateStatus();
-  const addNote = useAddNote();
-  const updateNote = useUpdateNote();
-  const deleteNote = useDeleteNote();
 
   useEffect(() => { setNotes(meta.notes); }, [meta.notes]);
 
@@ -476,10 +474,8 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
 
         <NotesSection
           jobKey={meta.jobKey}
-          records={meta.noteRecords}
-          addNote={addNote}
-          updateNote={updateNote}
-          deleteNote={deleteNote}
+          initialNotes={meta.notes}
+          saveNotes={saveNotes}
         />
       </div>
 
@@ -518,65 +514,26 @@ function DrawerInner({ source, onClose, inline = false }: { source: DrawerSource
 
 interface NotesSectionProps {
   jobKey: string;
-  records: NoteRecord[];
-  addNote: ReturnType<typeof useAddNote>;
-  updateNote: ReturnType<typeof useUpdateNote>;
-  deleteNote: ReturnType<typeof useDeleteNote>;
+  initialNotes: string;
+  saveNotes: ReturnType<typeof useSaveJobNotes>;
 }
 
-function NotesSection({ jobKey, records, addNote, updateNote, deleteNote }: NotesSectionProps) {
-  // Optimistic local copy — updates instantly on add/edit/delete, then
-  // syncs back to server-truth when the parent's query refetch lands.
-  const [localRecords, setLocalRecords] = useState<NoteRecord[]>(records);
-  useEffect(() => { setLocalRecords(records); }, [records]);
+function NotesSection({ jobKey, initialNotes, saveNotes }: NotesSectionProps) {
+  // The live API persists one notes string per job key. Keep the drawer
+  // aligned with that contract so applied-job notes save through /api/jobs/notes.
+  const [notes, setNotes] = useState(initialNotes);
 
-  const [adding, setAdding] = useState(false);
-  const [draft, setDraft] = useState("");
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [editText, setEditText] = useState("");
+  useEffect(() => {
+    setNotes(initialNotes);
+  }, [initialNotes]);
 
-  function handleAdd() {
-    const text = draft.trim();
-    if (!text) return;
-    const optimistic: NoteRecord = { id: `tmp-${Date.now()}`, text, createdAt: new Date().toISOString() };
-    setLocalRecords((prev) => [...prev, optimistic]);
-    setDraft("");
-    setAdding(false);
-    addNote.mutate({ jobKey, text }, {
-      onSuccess: () => toast("Note added"),
+  function handleSave() {
+    if (notes === initialNotes) return;
+    saveNotes.mutate({ jobKey, notes }, {
+      onSuccess: () => toast("Notes saved"),
       onError: (e) => {
-        setLocalRecords(records); // rollback to server truth
-        toast(e instanceof Error ? e.message : "Add failed", "error");
-      },
-    });
-  }
-
-  function handleStartEdit(r: NoteRecord) {
-    setEditingId(r.id);
-    setEditText(r.text);
-  }
-
-  function handleSaveEdit(r: NoteRecord) {
-    const text = editText.trim();
-    if (!text || text === r.text) { setEditingId(null); return; }
-    setLocalRecords((prev) => prev.map((n) => n.id === r.id ? { ...n, text, updatedAt: new Date().toISOString() } : n));
-    setEditingId(null);
-    updateNote.mutate({ jobKey, noteId: r.id, text }, {
-      onSuccess: () => toast("Note updated"),
-      onError: (e) => {
-        setLocalRecords(records);
-        toast(e instanceof Error ? e.message : "Update failed", "error");
-      },
-    });
-  }
-
-  function handleDelete(noteId: string) {
-    setLocalRecords((prev) => prev.filter((n) => n.id !== noteId));
-    deleteNote.mutate({ jobKey, noteId }, {
-      onSuccess: () => toast("Note deleted", "info"),
-      onError: (e) => {
-        setLocalRecords(records);
-        toast(e instanceof Error ? e.message : "Delete failed", "error");
+        setNotes(initialNotes);
+        toast(e instanceof Error ? e.message : "Save failed", "error");
       },
     });
   }
@@ -587,80 +544,24 @@ function NotesSection({ jobKey, records, addNote, updateNote, deleteNote }: Note
         <span className="inline-flex items-center gap-2">
           <Pencil size={13} className="text-[hsl(var(--muted-foreground))]" />
           Notes
-          <span className="text-xs text-[hsl(var(--muted-foreground))] font-normal">({localRecords.length})</span>
         </span>
         <ChevronDown size={14} className="transition-transform group-open:rotate-180" />
       </summary>
 
-      <div className="border-t border-[hsl(var(--border))]">
-        {localRecords.length === 0 && !adding && (
-          <div className="px-3 py-3 text-xs text-[hsl(var(--muted-foreground))] italic">No notes yet.</div>
-        )}
-
-        {localRecords.map((r) => (
-          <div key={r.id} className="px-3 py-2.5 border-b border-[hsl(var(--border))]/60 last:border-b-0 group/note">
-            {editingId === r.id ? (
-              <div className="space-y-2">
-                <textarea
-                  autoFocus
-                  value={editText}
-                  onChange={(e) => setEditText(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSaveEdit(r); if (e.key === "Escape") setEditingId(null); }}
-                  className="w-full min-h-[72px] rounded-md border border-[hsl(var(--input))] bg-transparent px-2.5 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
-                />
-                <div className="flex items-center gap-1.5">
-                  <Button size="sm" variant="success" onClick={() => handleSaveEdit(r)} disabled={updateNote.isPending}>
-                    <Check size={12} /> Save
-                  </Button>
-                  <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
-                </div>
-              </div>
-            ) : (
-              <>
-                <p className="text-sm whitespace-pre-wrap break-words">{r.text}</p>
-                <div className="flex items-center gap-3 mt-1.5 text-[10px] text-[hsl(var(--muted-foreground))]">
-                  <span>{relativeTime(r.createdAt)}</span>
-                  {r.updatedAt && <span className="italic">edited</span>}
-                  <span className="ml-auto flex items-center gap-2 opacity-0 group-hover/note:opacity-100 transition-opacity">
-                    <button type="button" onClick={() => handleStartEdit(r)} className="hover:text-[hsl(var(--foreground))] transition-colors">
-                      <Pencil size={11} />
-                    </button>
-                    <button type="button" onClick={() => handleDelete(r.id)} className="hover:text-rose-500 transition-colors">
-                      <X size={11} />
-                    </button>
-                  </span>
-                </div>
-              </>
-            )}
-          </div>
-        ))}
-
-        {adding ? (
-          <div className="px-3 py-2.5 space-y-2 border-t border-[hsl(var(--border))]/60">
-            <textarea
-              autoFocus
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleAdd(); if (e.key === "Escape") { setAdding(false); setDraft(""); } }}
-              placeholder="Write a note… (⌘↵ to save)"
-              className="w-full min-h-[72px] rounded-md border border-[hsl(var(--input))] bg-transparent px-2.5 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
-            />
-            <div className="flex items-center gap-1.5">
-              <Button size="sm" variant="success" onClick={handleAdd} disabled={addNote.isPending || !draft.trim()}>
-                <Check size={12} /> Save
-              </Button>
-              <Button size="sm" variant="outline" onClick={() => { setAdding(false); setDraft(""); }}>Cancel</Button>
-            </div>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setAdding(true)}
-            className="w-full px-3 py-2 text-left text-xs text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/40 flex items-center gap-1.5 transition-colors border-t border-[hsl(var(--border))]/60"
-          >
-            <Plus size={12} /> Add note
-          </button>
-        )}
+      <div className="border-t border-[hsl(var(--border))] px-3 py-2.5 space-y-2">
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          onBlur={handleSave}
+          placeholder="Recruiter updates, interview prep, follow-ups…"
+          className="w-full min-h-[96px] rounded-md border border-[hsl(var(--input))] bg-transparent px-2.5 py-2 text-sm resize-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+        />
+        <div className="flex items-center justify-between gap-2 text-[10px] text-[hsl(var(--muted-foreground))]">
+          <span>Saved on blur using the current applied-job notes API.</span>
+          <Button size="sm" variant="success" onClick={handleSave} disabled={saveNotes.isPending || notes === initialNotes}>
+            <Check size={12} /> Save
+          </Button>
+        </div>
       </div>
     </details>
   );

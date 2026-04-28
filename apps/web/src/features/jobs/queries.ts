@@ -74,6 +74,9 @@ export function useSaveJobNotes() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["applied"] });
+      // The shared drawer edits notes for action-plan rows too, so refresh
+      // that surface alongside available/applied job lists.
+      qc.invalidateQueries({ queryKey: ["actionPlan"] });
     },
   });
 }
