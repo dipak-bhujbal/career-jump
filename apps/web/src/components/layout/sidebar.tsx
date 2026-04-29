@@ -1,11 +1,15 @@
 import { Link, useLocation } from "@tanstack/react-router";
-import { LayoutDashboard, Briefcase, CheckSquare, Target, Settings, Sparkles, ScrollText, User, LogOut, Shield, LifeBuoy, Users, BellRing, BookOpen } from "lucide-react";
+import { useState } from "react";
+import { LayoutDashboard, Briefcase, CheckSquare, Target, Settings, Sparkles, User, LogOut, Shield } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarActions } from "./sidebar-actions";
 import { useAuth } from "@/features/auth/AuthContext";
 import { getAuthDisplayName } from "@/features/auth/display";
 import { useProfile } from "@/features/profile/useProfile";
 import { useMe } from "@/features/session/queries";
+import { Button } from "@/components/ui/button";
+import { UpgradePrompt } from "@/features/billing/upgrade";
+import { planIntervalLabel, planPricePlaceholders } from "@/features/billing/plan-display";
 
 const userItems = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -19,11 +23,6 @@ const userItems = [
 
 const adminItems = [
   { to: "/admin", label: "Admin", icon: Shield },
-  { to: "/admin-announcements", label: "Announcements", icon: BellRing },
-  { to: "/admin-docs", label: "Docs", icon: BookOpen },
-  { to: "/admin-users", label: "Users", icon: Users },
-  { to: "/admin-support", label: "Support Queue", icon: LifeBuoy },
-  { to: "/logs", label: "Logs", icon: ScrollText },
 ];
 
 export function Sidebar() {
@@ -31,7 +30,13 @@ export function Sidebar() {
   const { user, signOut } = useAuth();
   const { profile } = useProfile();
   const { data: me } = useMe();
+  const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
   const items = me?.actor?.isAdmin ? [...userItems, ...adminItems] : userItems;
+  const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
+  const pageHasPrimaryUpgradeBanner = ["/", "/jobs", "/applied", "/plan", "/configuration"].some((routePath) =>
+    routePath === "/" ? pathname === routePath : pathname.startsWith(routePath),
+  );
+  const showUpgradeRail = (currentPlan === "free" || currentPlan === "starter") && !pageHasPrimaryUpgradeBanner;
 
   // Prefer the user-saved profile username; fall back to auth identity.
   const displayName = profile.username !== "User" ? profile.username : getAuthDisplayName(user);
@@ -51,7 +56,7 @@ export function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav className="p-2 flex flex-col gap-0.5 flex-1 overflow-y-auto">
+      <nav className="min-h-0 p-2 flex flex-col gap-0.5 flex-1 overflow-y-auto">
         {items.map((it) => {
           const active = pathname === it.to || (it.to !== "/" && pathname.startsWith(it.to));
           const Icon = it.icon;
@@ -72,6 +77,35 @@ export function Sidebar() {
           );
         })}
       </nav>
+
+      {showUpgradeRail ? (
+        <div className="px-3 pb-3">
+          {/* Keep one persistent upgrade entry in the shell so the billing path
+              is visible immediately after login on every authenticated route. */}
+          <div className="rounded-2xl border border-amber-500/35 bg-[linear-gradient(180deg,rgba(251,191,36,0.18),rgba(255,255,255,0.92))] p-3 text-sm shadow-sm dark:bg-[linear-gradient(180deg,rgba(245,158,11,0.14),rgba(17,24,39,0.95))]">
+            <div className="flex items-center gap-2 text-amber-900 dark:text-amber-50">
+              <Sparkles size={15} />
+              <span className="font-semibold">Upgrade your search</span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-amber-900/85 dark:text-amber-100/85">
+              Entry tiers are best for getting started. Unlock more tracked companies, more visible jobs, and a larger applied pipeline.
+            </p>
+            <div className="mt-3 space-y-1 text-xs text-amber-950/80 dark:text-amber-100/80">
+              <div className="flex items-center justify-between">
+                <span>Starter</span>
+                <span>{planPricePlaceholders.starter}{planIntervalLabel}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Pro</span>
+                <span>{planPricePlaceholders.pro}{planIntervalLabel}</span>
+              </div>
+            </div>
+            <Button size="sm" className="mt-3 w-full" onClick={() => setUpgradePromptOpen(true)}>
+              Compare plans
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <SidebarActions />
 
@@ -101,6 +135,13 @@ export function Sidebar() {
           </button>
         </div>
       </div>
+      <UpgradePrompt
+        open={upgradePromptOpen}
+        onClose={() => setUpgradePromptOpen(false)}
+        currentPlan={currentPlan}
+        title="Upgrade for more pipeline headroom"
+        body="Compare the current pricing tiers and choose the plan that matches the search volume and pipeline size you want to run."
+      />
     </aside>
   );
 }

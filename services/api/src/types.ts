@@ -387,6 +387,7 @@ export type PlanConfig = {
   displayName: string;
   scanCacheAgeHours: number;
   canTriggerLiveScan: boolean;
+  dailyLiveScans: number;
   maxCompanies: number | null;
   maxSessions: number;
   maxVisibleJobs: number | null;
@@ -397,6 +398,22 @@ export type PlanConfig = {
   enabledFeatures: string[];
   updatedAt: string;
   updatedBy: string;
+};
+
+export type ScanOutcome =
+  | "cache_hit"
+  | "live_fetch_started"
+  | "live_fetch_completed"
+  | "quota_blocked"
+  | "cache_miss_no_data"
+  | "scan_failed";
+
+export type ScanQuotaUsage = {
+  tenantId: string;
+  date: string;
+  liveScansUsed: number;
+  lastLiveScanAt: string | null;
+  runIds: string[];
 };
 
 export type FeatureFlagRecord = {
@@ -477,6 +494,10 @@ export type InventorySnapshot = {
     byCompany: Record<string, number>;
     byCompanyFetched?: Record<string, number>;
     keywordCounts: Record<string, number>;
+    cacheHits?: number;
+    liveFetchCompanies?: number;
+    quotaBlockedCompanies?: string[];
+    remainingLiveScansToday?: number;
   };
 };
 

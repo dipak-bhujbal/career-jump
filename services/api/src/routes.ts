@@ -45,6 +45,7 @@ import {
   getFeatureUsageAnalytics,
   getGrowthAnalytics,
   getMarketIntelAnalytics,
+  getScanQuotaAnalytics,
   getSystemHealthAnalytics,
   getSupportTicket,
   listAnnouncements,
@@ -80,6 +81,9 @@ import {
   saveAppliedJobsForTenant,
   saveJobNotes,
   setUserAccountStatus,
+  adminSetUserPlan,
+  loadScanQuotaUsage,
+  remainingLiveScans,
   setCompanyScanOverride,
   setCompanyScanOverrides,
   updateEmailSendAttempt,
@@ -743,6 +747,29 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return jsonResponse({ ok: true, profile });
     }
 
+    const adminUserPlanMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)\/plan$/);
+    if (adminUserPlanMatch && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const userId = decodeURIComponent(adminUserPlanMatch[1] ?? "").replace(/^USER#/, "");
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const validPlans: UserPlan[] = ["free", "starter", "pro", "power"];
+      if (!validPlans.includes(body.plan as UserPlan)) {
+        return jsonResponse({ ok: false, error: `plan must be one of: ${validPlans.join(", ")}` }, 400);
+      }
+      const billing = await adminSetUserPlan({
+        userId: tenantContext.userId,
+        tenantId: tenantContext.tenantId,
+        email: tenantContext.email,
+        displayName: tenantContext.displayName,
+        scope: tenantContext.scope,
+        isAdmin: tenantContext.isAdmin,
+      }, userId, body.plan as UserPlan);
+      if (!billing) return jsonResponse({ ok: false, error: "User not found" }, 404);
+      return jsonResponse({ ok: true, billing });
+    }
+
     if (url.pathname === "/api/admin/feature-flags" && request.method === "GET") {
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
@@ -913,6 +940,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
     }
 
+    if (url.pathname === "/api/admin/analytics/scan-quota" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      try {
+        const envelope = await getScanQuotaAnalytics();
+        return jsonResponse({ ok: true, ...envelope });
+      } catch (error) {
+        return jsonResponse({ ok: false, error: error instanceof Error ? error.message : String(error) }, 500);
+      }
+    }
+
     if (url.pathname === "/api/admin/export/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
@@ -962,7 +1001,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         plan,
         displayName: String(body.displayName ?? plan),
         scanCacheAgeHours,
-        canTriggerLiveScan: body.canTriggerLiveScan === true,
+        canTriggerLiveScan: body.canTriggerLiveScan !== false,
+        dailyLiveScans: Number.isFinite(Number(body.dailyLiveScans)) ? Number(body.dailyLiveScans) : 2,
         maxCompanies: body.maxCompanies === null ? null : Number(body.maxCompanies) || null,
         maxSessions,
         maxVisibleJobs: body.maxVisibleJobs === null ? null : Number(body.maxVisibleJobs) || null,
@@ -1431,6 +1471,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           emailedUpdatedJobs: notificationJobs.updatedJobs.map((job) => ({ company: job.company, title: job.title, id: job.id })),
           emailStatus,
           emailError,
+          scanMeta: {
+            cacheHits: inventory.stats.cacheHits ?? 0,
+            liveFetchCompanies: inventory.stats.liveFetchCompanies ?? 0,
+            quotaBlockedCompanies: inventory.stats.quotaBlockedCompanies ?? [],
+            remainingLiveScansToday: inventory.stats.remainingLiveScansToday ?? null,
+          },
         });
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -1468,6 +1514,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       } finally {
         await releaseActiveRunLock(env, runId);
       }
+    }
+
+    if (url.pathname === "/api/scan-quota" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const [usage, remaining] = await Promise.all([
+        loadScanQuotaUsage(tenantContext.tenantId),
+        remainingLiveScans(tenantContext.tenantId),
+      ]);
+      return jsonResponse({ ok: true, liveScansUsed: usage.liveScansUsed, remainingLiveScansToday: remaining, lastLiveScanAt: usage.lastLiveScanAt, date: usage.date });
     }
 
     if (url.pathname === "/api/run/status" && request.method === "GET") {

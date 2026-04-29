@@ -11,10 +11,10 @@ vi.mock("../../src/aws/dynamo", () => ({
 
 function makePlanRow(plan: "free" | "pro" | "power", overrides: Record<string, unknown> = {}) {
   const base = {
-    free:    { plan: "free",    displayName: "Free",    scanCacheAgeHours: 0, canTriggerLiveScan: false, maxCompanies: 5,    maxSessions: 1, maxVisibleJobs: 15,  maxAppliedJobs: 50,   emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 0,  enabledFeatures: [] },
-    starter: { plan: "starter", displayName: "Starter", scanCacheAgeHours: 4, canTriggerLiveScan: true,  maxCompanies: 10,   maxSessions: 1, maxVisibleJobs: 40,  maxAppliedJobs: 150,  emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 3,  enabledFeatures: [] },
-    pro:     { plan: "pro",     displayName: "Pro",     scanCacheAgeHours: 8, canTriggerLiveScan: true,  maxCompanies: 25,   maxSessions: 2, maxVisibleJobs: 100, maxAppliedJobs: 500,  emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 7,  enabledFeatures: ["email_notifications"] },
-    power:   { plan: "power",   displayName: "Power",   scanCacheAgeHours: 4, canTriggerLiveScan: true,  maxCompanies: null, maxSessions: 3, maxVisibleJobs: null, maxAppliedJobs: null, emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 14, enabledFeatures: ["email_notifications", "priority_scan"] },
+    free:    { plan: "free",    displayName: "Free",    scanCacheAgeHours: 0, canTriggerLiveScan: true, dailyLiveScans: 2,   maxCompanies: 5,    maxSessions: 1, maxVisibleJobs: 15,  maxAppliedJobs: 50,   emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 0,  enabledFeatures: [] },
+    starter: { plan: "starter", displayName: "Starter", scanCacheAgeHours: 4, canTriggerLiveScan: true, dailyLiveScans: 10,  maxCompanies: 10,   maxSessions: 1, maxVisibleJobs: 40,  maxAppliedJobs: 150,  emailNotificationsEnabled: false, weeklyDigestEnabled: false, maxEmailsPerWeek: 3,  enabledFeatures: [] },
+    pro:     { plan: "pro",     displayName: "Pro",     scanCacheAgeHours: 8, canTriggerLiveScan: true, dailyLiveScans: 30,  maxCompanies: 25,   maxSessions: 2, maxVisibleJobs: 100, maxAppliedJobs: 500,  emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 7,  enabledFeatures: ["email_notifications"] },
+    power:   { plan: "power",   displayName: "Power",   scanCacheAgeHours: 4, canTriggerLiveScan: true, dailyLiveScans: 100, maxCompanies: null, maxSessions: 3, maxVisibleJobs: null, maxAppliedJobs: null, emailNotificationsEnabled: true,  weeklyDigestEnabled: true,  maxEmailsPerWeek: 14, enabledFeatures: ["email_notifications", "priority_scan"] },
   }[plan];
   return { pk: "PLAN_CONFIG", sk: plan, ...base, updatedAt: "2026-04-28T00:00:00.000Z", updatedBy: "admin-1", ...overrides };
 }
@@ -42,7 +42,8 @@ describe("plan-config storage", () => {
       const { loadPlanConfig } = await import("../../src/storage/plan-config");
       const cfg = await loadPlanConfig("free");
       expect(cfg.plan).toBe("free");
-      expect(cfg.canTriggerLiveScan).toBe(false);
+      expect(cfg.canTriggerLiveScan).toBe(true);
+      expect(cfg.dailyLiveScans).toBe(2);
       expect(cfg.maxCompanies).toBe(5);
       expect(cfg.maxSessions).toBe(1);
     });
@@ -80,9 +81,12 @@ describe("plan-config storage", () => {
       const free = configs.find((c) => c.plan === "free")!;
       const starter = configs.find((c) => c.plan === "starter")!;
       const power = configs.find((c) => c.plan === "power")!;
-      expect(free.canTriggerLiveScan).toBe(false);
+      expect(free.canTriggerLiveScan).toBe(true);
+      expect(free.dailyLiveScans).toBe(2);
       expect(starter.canTriggerLiveScan).toBe(true);
+      expect(starter.dailyLiveScans).toBe(10);
       expect(power.canTriggerLiveScan).toBe(true);
+      expect(power.dailyLiveScans).toBe(100);
     });
 
     it("serves from cache after initial load (4 DynamoDB calls total)", async () => {
@@ -107,6 +111,7 @@ describe("plan-config storage", () => {
         displayName: "Pro",
         scanCacheAgeHours: 6,
         canTriggerLiveScan: true,
+        dailyLiveScans: 30,
         maxCompanies: 20,
         maxSessions: 2,
         maxVisibleJobs: 80,

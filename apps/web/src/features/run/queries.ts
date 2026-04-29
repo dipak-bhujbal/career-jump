@@ -12,11 +12,29 @@ import {
   type AppliedJobsEnvelope,
   type Dashboard,
   type JobsEnvelope,
+  type RunStartResponse,
   type RunStatus,
+  type ScanQuotaEnvelope,
 } from "@/lib/api";
 import type { LogsEnvelope } from "@/features/logs/queries";
 
 export const runStatusKey = ["run", "status"] as const;
+export const latestRunResultKey = ["run", "latest-result"] as const;
+export const scanQuotaKey = ["run", "scan-quota"] as const;
+
+function normalizeRunStartResponse(result: RunStartResponse): RunStartResponse {
+  // Keep the client resilient during phased deploys by filling in the new
+  // quota-aware fields when an older backend response shape is returned.
+  return {
+    ...result,
+    scanMeta: {
+      cacheHits: result.scanMeta?.cacheHits ?? 0,
+      liveFetchCompanies: result.scanMeta?.liveFetchCompanies ?? 0,
+      quotaBlockedCompanies: result.scanMeta?.quotaBlockedCompanies ?? [],
+      remainingLiveScansToday: result.scanMeta?.remainingLiveScansToday ?? null,
+    },
+  };
+}
 
 export function useRunStatus() {
   return useQuery({
@@ -39,10 +57,34 @@ export function useRunStatus() {
   });
 }
 
+export function useLatestRunResult() {
+  return useQuery({
+    queryKey: latestRunResultKey,
+    // Keep this query local-only. We only use it to preserve the latest run
+    // completion summary in memory after the long-running mutation settles.
+    enabled: false,
+    initialData: null as RunStartResponse | null,
+    queryFn: () => Promise.resolve(null as RunStartResponse | null),
+    staleTime: Infinity,
+  });
+}
+
+export function useScanQuota() {
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: scanQuotaKey,
+    queryFn: () => api.get<ScanQuotaEnvelope>("/api/scan-quota"),
+    // Refresh quota passively while a run is active so the remaining count
+    // updates soon after completion without forcing manual reloads.
+    refetchInterval: () => (qc.getQueryData<RunStatus>(runStatusKey)?.active ? 5_000 : 60_000),
+    staleTime: 10_000,
+  });
+}
+
 export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<RunStatus>("/api/run"),
+    mutationFn: async () => normalizeRunStartResponse(await api.post<RunStartResponse>("/api/run")),
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: runStatusKey });
       const previousStatus = qc.getQueryData<RunStatus>(runStatusKey);
@@ -69,7 +111,15 @@ export function useStartRun() {
       }
       qc.removeQueries({ queryKey: runStatusKey, exact: true });
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: runStatusKey }),
+    onSuccess: (result) => {
+      // Keep the latest completed run summary around so idle UI surfaces can
+      // explain whether the last run fetched live data or fell back to cache.
+      qc.setQueryData(latestRunResultKey, result);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: runStatusKey });
+      qc.invalidateQueries({ queryKey: scanQuotaKey });
+    },
   });
 }
 

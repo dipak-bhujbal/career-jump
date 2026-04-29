@@ -117,7 +117,7 @@ async function generateSupportTicketId(): Promise<string> {
 }
 
 function normalizePlan(plan?: string | null): UserPlan {
-  return plan === "pro" || plan === "power" ? plan : "free";
+  return plan === "starter" || plan === "pro" || plan === "power" ? plan : "free";
 }
 
 function normalizeScope(scope?: string | null): AuthScope {
@@ -437,6 +437,28 @@ export async function setUserAccountStatus(
   const updated = { ...existing, accountStatus };
   await putRow(usersTableName(), updated);
   await recordEvent(actor, "ADMIN_ACTION", { targetUserId: userId, accountStatus, action: "set_account_status" });
+  return updated;
+}
+
+export async function adminSetUserPlan(
+  actor: RequestActor,
+  userId: string,
+  plan: UserPlan
+): Promise<BillingSubscriptionRecord | null> {
+  const profile = await loadUserProfileRow(userId);
+  if (!profile) return null;
+  const existing = await loadBillingSubscription(userId);
+  const updated: BillingTableSubscriptionRow = {
+    ...existing,
+    pk: userPk(userId),
+    sk: "SUBSCRIPTION",
+    plan,
+    status: "active",
+    provider: "internal",
+    updatedAt: nowISO(),
+  };
+  await putRow(billingTableName(), updated);
+  await recordEvent(actor, "ADMIN_ACTION", { targetUserId: userId, plan, action: "set_user_plan" });
   return updated;
 }
 

@@ -11,6 +11,7 @@ import { toast } from "@/components/ui/toast";
 import { usePlanConfigs, useSavePlanConfig } from "@/features/support/queries";
 import { useMe } from "@/features/session/queries";
 import type { PlanConfig } from "@/lib/api";
+import { planIntervalLabel, planPricePlaceholders } from "@/features/billing/plan-display";
 
 export const Route = createFileRoute("/admin-plan-config")({ component: AdminPlanConfigRoute });
 
@@ -18,6 +19,7 @@ type PlanFormState = {
   displayName: string;
   scanCacheAgeHours: string;
   canTriggerLiveScan: boolean;
+  dailyLiveScans: string;
   maxCompanies: string;
   maxSessions: string;
   maxVisibleJobs: string;
@@ -33,6 +35,7 @@ function toFormState(config: PlanConfig): PlanFormState {
     displayName: config.displayName,
     scanCacheAgeHours: String(config.scanCacheAgeHours),
     canTriggerLiveScan: config.canTriggerLiveScan,
+    dailyLiveScans: String(config.dailyLiveScans),
     maxCompanies: config.maxCompanies === null ? "" : String(config.maxCompanies),
     maxSessions: String(config.maxSessions),
     maxVisibleJobs: config.maxVisibleJobs === null ? "" : String(config.maxVisibleJobs),
@@ -55,6 +58,7 @@ function buildPayload(plan: PlanConfig["plan"], form: PlanFormState): PlanConfig
   if (!displayName) throw new Error("Display name is required");
 
   const scanCacheAgeHours = parseNumber(form.scanCacheAgeHours, "Scan cache age");
+  const dailyLiveScans = parseNumber(form.dailyLiveScans, "Daily live scans");
   const maxSessions = parseNumber(form.maxSessions, "Max sessions");
   const maxEmailsPerWeek = parseNumber(form.maxEmailsPerWeek, "Max emails per week");
   const maxCompanies = form.maxCompanies.trim() === "" ? null : parseNumber(form.maxCompanies, "Max companies");
@@ -72,6 +76,7 @@ function buildPayload(plan: PlanConfig["plan"], form: PlanFormState): PlanConfig
     displayName,
     scanCacheAgeHours,
     canTriggerLiveScan: form.canTriggerLiveScan,
+    dailyLiveScans,
     maxCompanies,
     maxSessions,
     maxVisibleJobs,
@@ -86,6 +91,13 @@ function buildPayload(plan: PlanConfig["plan"], form: PlanFormState): PlanConfig
     updatedBy: "",
   };
 }
+
+const planTone: Record<PlanConfig["plan"], string> = {
+  free: "border-slate-300/70 bg-slate-500/5",
+  starter: "border-emerald-400/45 bg-emerald-500/8",
+  pro: "border-sky-400/45 bg-sky-500/8",
+  power: "border-fuchsia-400/45 bg-fuchsia-500/8",
+};
 
 function booleanButtonClasses(enabled: boolean): string {
   return enabled
@@ -201,12 +213,27 @@ function PlanEditorCard({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-6">
+          {/* Keep the operator summary visible above the raw controls so the
+              admin can reason about plan impact before editing individual fields. */}
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <PlanStatCard label="Member-facing price" value={`${planPricePlaceholders[config.plan]}${planIntervalLabel}`} hint="Placeholder until public pricing is admin-managed." />
+            <PlanStatCard label="Company cap" value={config.maxCompanies === null ? "Unlimited" : String(config.maxCompanies)} hint="Tracked company limit." />
+            <PlanStatCard label="Visible jobs" value={config.maxVisibleJobs === null ? "Unlimited" : String(config.maxVisibleJobs)} hint="Available jobs cap." />
+            <PlanStatCard label="Live scan policy" value={config.canTriggerLiveScan ? `${config.dailyLiveScans}/day` : "Disabled"} hint={`${config.scanCacheAgeHours}h cache window`} />
+          </div>
+
           <div className="grid gap-4 md:grid-cols-2">
             <Field label="Display name">
               <Input value={form.displayName} onChange={(event) => patch({ displayName: event.target.value })} />
             </Field>
+            <Field label="Price placeholder" hint="Display-only for now. Stripe price IDs stay in Stripe Config.">
+              <Input value={planPricePlaceholders[config.plan]} readOnly />
+            </Field>
             <Field label="Scan cache age hours" hint="0 means live-only reads.">
               <Input value={form.scanCacheAgeHours} onChange={(event) => patch({ scanCacheAgeHours: event.target.value })} inputMode="numeric" />
+            </Field>
+            <Field label="Daily live scans" hint="Per-tenant live scan quota before the app falls back to cache/block behavior.">
+              <Input value={form.dailyLiveScans} onChange={(event) => patch({ dailyLiveScans: event.target.value })} inputMode="numeric" />
             </Field>
             <Field label="Max companies" hint="Leave blank for unlimited.">
               <Input value={form.maxCompanies} onChange={(event) => patch({ maxCompanies: event.target.value })} inputMode="numeric" />
@@ -314,22 +341,26 @@ export function AdminPlanConfigRoute() {
               <CardHeader>
                 <CardTitle>Plans</CardTitle>
                 <CardDescription>
-                  Switch plans here instead of scrolling through one long stacked admin form.
+                  Switch plans here instead of scrolling through one long stacked admin form. Each chip also carries the current member-facing placeholder price.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="flex flex-wrap gap-2">
+              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                 {(data?.configs ?? []).map((config) => (
                   <button
                     key={config.plan}
                     type="button"
-                    className={`rounded-full border px-4 py-2 text-sm font-medium uppercase tracking-[0.16em] transition-colors ${
+                    className={`rounded-2xl border px-4 py-4 text-left transition-colors ${planTone[config.plan]} ${
                       activePlan === config.plan
                         ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70 text-[hsl(var(--foreground))]"
                         : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/35"
                     }`}
                     onClick={() => setActivePlan(config.plan)}
                   >
-                    {config.displayName}
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em]">{config.displayName}</div>
+                    <div className="mt-2 text-2xl font-semibold">{planPricePlaceholders[config.plan]}<span className="text-sm font-medium text-[hsl(var(--muted-foreground))]">{planIntervalLabel}</span></div>
+                    <div className="mt-2 text-xs text-[hsl(var(--muted-foreground))]">
+                      {config.maxCompanies === null ? "Unlimited companies" : `${config.maxCompanies} companies`} · {config.canTriggerLiveScan ? `${config.dailyLiveScans}/day live scans` : "Live scan off"}
+                    </div>
                   </button>
                 ))}
               </CardContent>
@@ -353,5 +384,23 @@ export function AdminPlanConfigRoute() {
         </div>
       </AdminPageFrame>
     </>
+  );
+}
+
+function PlanStatCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-4">
+      <div className="text-xs font-medium uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">{label}</div>
+      <div className="mt-2 text-xl font-semibold">{value}</div>
+      <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">{hint}</div>
+    </div>
   );
 }

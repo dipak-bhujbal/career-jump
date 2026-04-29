@@ -39,6 +39,7 @@ interface MockState {
   runStartedAt: number;    // epoch ms — progress derived from elapsed time, not poll count
   runTotal: number;
   runCompanies: string[];  // only the non-paused companies for this run
+  liveScansUsed: number;
   emailWebhook: { webhookUrl: string | null; sharedSecretConfigured: boolean };
   savedFilters: SavedFilter[];
 }
@@ -57,6 +58,7 @@ function ensureState(): MockState {
     runStartedAt: 0,
     runTotal: 0,
     runCompanies: [],
+    liveScansUsed: 0,
     emailWebhook: { webhookUrl: null, sharedSecretConfigured: false },
     savedFilters: [],
   };
@@ -235,6 +237,17 @@ async function handle(url: URL, init?: RequestInit): Promise<Response | null> {
       currentCompany: s.runCompanies[fetched] ?? "",
       detail: `Scanning ${s.runCompanies[fetched] ?? "…"}`,
       percent: s.runTotal === 0 ? 0 : fetched / s.runTotal,
+    });
+  }
+
+  if (method === "GET" && path === "/api/scan-quota") {
+    const DAILY_LIVE_SCANS = 2;
+    return json({
+      ok: true,
+      liveScansUsed: s.liveScansUsed,
+      remainingLiveScansToday: Math.max(0, DAILY_LIVE_SCANS - s.liveScansUsed),
+      lastLiveScanAt: s.liveScansUsed > 0 ? new Date(s.runStartedAt || Date.now()).toISOString() : null,
+      date: new Date().toISOString().slice(0, 10),
     });
   }
 
@@ -423,11 +436,41 @@ async function handle(url: URL, init?: RequestInit): Promise<Response | null> {
       .filter((c) => !s.scanOverrides[companyKey(c.company)]?.paused)
       .map((c) => c.company);
     const newRunId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const DAILY_LIVE_SCANS = 2;
+    const remainingBefore = Math.max(0, DAILY_LIVE_SCANS - s.liveScansUsed);
+    const quotaBlockedCompanies = remainingBefore > 0 ? [] : s.runCompanies.slice(1, Math.min(3, s.runCompanies.length));
+    const staleCacheHits = remainingBefore > 0 ? 0 : Math.min(1, s.runCompanies.length);
+    const liveFetchCompanies = remainingBefore > 0
+      ? s.runCompanies.length
+      : 0;
     s.runId = newRunId;
     s.runStartedAt = Date.now();
     s.runActive = true;
     s.runTotal = s.runCompanies.length;
-    return json({ ok: true, active: true, runId: newRunId });
+    if (remainingBefore > 0) s.liveScansUsed += 1;
+    return json({
+      ok: true,
+      active: true,
+      runId: newRunId,
+      runAt: new Date().toISOString(),
+      totalNewMatches: 4,
+      totalUpdatedMatches: 2,
+      totalMatched: 24,
+      totalFetched: 48,
+      byCompany: Object.fromEntries(s.runCompanies.slice(0, 4).map((company) => [company, 6])),
+      emailedJobs: [],
+      emailedUpdatedJobs: [],
+      emailStatus: "skipped",
+      emailError: null,
+      scanMeta: {
+        // Model the real backend contract: once quota is exhausted, stale cache
+        // can still satisfy some companies, while companies without cache are skipped.
+        cacheHits: remainingBefore > 0 ? 1 : staleCacheHits,
+        liveFetchCompanies,
+        quotaBlockedCompanies,
+        remainingLiveScansToday: Math.max(0, DAILY_LIVE_SCANS - s.liveScansUsed),
+      },
+    });
   }
   if (method === "POST" && path === "/api/run/abort") {
     s.runActive = false;

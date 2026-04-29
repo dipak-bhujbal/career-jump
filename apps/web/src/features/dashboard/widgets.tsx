@@ -16,10 +16,11 @@ import {
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { useDashboard } from "./queries";
+import { useLatestRunResult, useScanQuota, useRunStatus } from "@/features/run/queries";
+import { formatLastRunSummary } from "@/features/run/presentation";
 import { useApplied } from "@/features/applied/queries";
 import { useConfig } from "@/features/companies/queries";
 import { useActionPlan } from "@/features/plan/queries";
-import { useRunStatus } from "@/features/run/queries";
 import { formatNumber, formatPercent, formatShortDate, relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { AppliedStatus } from "@/lib/api";
@@ -502,6 +503,8 @@ function StaleApplicationsWidget() {
 function LastScanWidget() {
   const { data: dashboard } = useDashboard();
   const { data: run } = useRunStatus();
+  const { data: latestRun } = useLatestRunResult();
+  const { data: quota } = useScanQuota();
   const isActive = run?.active === true;
   const lastRunAt = dashboard?.lastRunAt;
   return (
@@ -515,11 +518,24 @@ function LastScanWidget() {
           <span className="text-[hsl(var(--muted-foreground))]">Last run</span>
           <span>{lastRunAt ? relativeTime(lastRunAt) : "Never"}</span>
         </div>
+        {!isActive && (
+          <div className="flex items-center justify-between">
+            <span className="text-[hsl(var(--muted-foreground))]">Live scans left</span>
+            <span className="tabular-nums">{quota?.remainingLiveScansToday ?? "—"}</span>
+          </div>
+        )}
         {isActive && (
           <div className="flex items-center justify-between">
             <span className="text-[hsl(var(--muted-foreground))]">Progress</span>
             <span className="tabular-nums">{run?.fetchedCompanies ?? 0} / {run?.totalCompanies ?? 0}</span>
           </div>
+        )}
+        {!isActive && (
+          <p className="rounded-md border border-[hsl(var(--border))]/60 bg-[hsl(var(--secondary))]/35 px-2.5 py-2 text-[12px] text-[hsl(var(--muted-foreground))]">
+            {/* Surface quota-limited completions directly on the dashboard so
+                users do not have to infer cache-only runs from missing jobs. */}
+            {formatLastRunSummary(latestRun)}
+          </p>
         )}
       </div>
     </WidgetCard>

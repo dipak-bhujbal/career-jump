@@ -46,11 +46,13 @@ vi.mock("../../src/storage", async () => {
     loadAppliedJobs: vi.fn(async () => ({})),
     loadBillingSubscription: vi.fn(async () => ({ plan: "power" })),
     loadPlanConfig: vi.fn(async () => ({
-      plan: "power", canTriggerLiveScan: true, scanCacheAgeHours: 4,
+      plan: "power", canTriggerLiveScan: true, dailyLiveScans: 100, scanCacheAgeHours: 4,
       maxSessions: 3, maxCompanies: null, emailNotificationsEnabled: true,
       weeklyDigestEnabled: true, maxEmailsPerWeek: 14, enabledFeatures: [],
       displayName: "Power", updatedAt: "", updatedBy: "system",
     })),
+    tryConsumeLiveScan: vi.fn(async () => true),
+    remainingLiveScans: vi.fn(async () => 99),
     loadJobNotes: vi.fn(async () => ({})),
     loadLatestRawScan: vi.fn(async () => null),
     loadSystemWorkdayLayerFlags: vi.fn(async () => ({ layer2: false, layer3: false })),
@@ -216,11 +218,13 @@ describe("e2e run lifecycle", () => {
       return [];
     });
 
-    // loadLatestRawScan is called twice: once before the live scan (fresh-cache check),
-    // and once after the live scan fails (stale-fallback check).
-    // First call must return null so the live scan is attempted; second returns stale data.
+    // loadLatestRawScan is called three times:
+    // 1. quota-gate fresh-cache check (returns null → go to live path)
+    // 2. inside fetchCompanyJobsWithSharedCache fresh-cache check (returns null → attempt live scan)
+    // 3. inside fetchCompanyJobsWithSharedCache stale-fallback after live scan failure
     const storageMod = await import("../../src/storage");
     vi.mocked(storageMod.loadLatestRawScan)
+      .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce({
         jobs: [staleJob],

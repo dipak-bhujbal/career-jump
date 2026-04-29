@@ -8,10 +8,11 @@ import {
   Flag,
   LayoutDashboard,
   LifeBuoy,
+  ScrollText,
   SlidersHorizontal,
   Users,
 } from "lucide-react";
-import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
 type AdminNavItem = {
@@ -71,6 +72,12 @@ export const adminNavItems: AdminNavItem[] = [
     icon: LifeBuoy,
   },
   {
+    to: "/logs",
+    label: "Logs",
+    description: "Audit trail and run-level evidence.",
+    icon: ScrollText,
+  },
+  {
     to: "/admin-flags",
     label: "Flags",
     description: "Feature rollout controls.",
@@ -108,27 +115,21 @@ export function AdminSectionNav({ currentPath }: { currentPath: string }) {
   const normalizedCurrentPath = normalizePath(currentPath);
 
   return (
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+    <div className="flex flex-wrap gap-2">
       {adminNavItems.map((item) => {
-        const Icon = item.icon;
         const active = normalizePath(item.to) === normalizedCurrentPath;
-
         return (
-          <Link key={item.to} to={item.to}>
-            <Card className={cn(
-              "h-full border transition-colors",
+          <Link
+            key={item.to}
+            to={item.to}
+            className={cn(
+              "rounded-full border px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] transition-colors",
               active
-                ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70"
-                : "hover:bg-[hsl(var(--accent))]/35",
-            )}>
-              <CardHeader className="space-y-2">
-                <div className="flex items-center gap-2 text-sm font-semibold">
-                  <Icon size={15} />
-                  {item.label}
-                </div>
-                <CardDescription>{item.description}</CardDescription>
-              </CardHeader>
-            </Card>
+                ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70 text-[hsl(var(--foreground))]"
+                : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/35",
+            )}
+          >
+            {item.label}
           </Link>
         );
       })}

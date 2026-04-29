@@ -404,6 +404,36 @@ export type RunStatus = {
   message?: string;
 };
 
+export type RunScanMeta = {
+  cacheHits: number;
+  liveFetchCompanies: number;
+  quotaBlockedCompanies: string[];
+  remainingLiveScansToday: number | null;
+};
+
+export type RunStartResponse = {
+  ok: boolean;
+  runAt: string;
+  totalNewMatches: number;
+  totalUpdatedMatches: number;
+  totalMatched: number;
+  totalFetched: number;
+  byCompany: Record<string, number>;
+  emailedJobs: Array<{ company: string; title: string; id: string }>;
+  emailedUpdatedJobs: Array<{ company: string; title: string; id: string }>;
+  emailStatus: "sent" | "skipped" | "failed";
+  emailError: string | null;
+  scanMeta: RunScanMeta;
+};
+
+export type ScanQuotaEnvelope = {
+  ok: boolean;
+  liveScansUsed: number;
+  remainingLiveScansToday: number;
+  lastLiveScanAt: string | null;
+  date: string;
+};
+
 // ---------- Email webhook ----------
 export type EmailWebhookSettings = {
   webhookUrl?: string;
@@ -515,6 +545,7 @@ export type PlanConfig = {
   displayName: string;
   scanCacheAgeHours: number;
   canTriggerLiveScan: boolean;
+  dailyLiveScans: number;
   maxCompanies: number | null;
   maxSessions: number;
   maxVisibleJobs: number | null;
@@ -609,4 +640,24 @@ export type SystemHealthAnalytics = {
   scanFailuresByReason: Array<{ reason: string; count: number }>;
   scanFailuresByAts: Array<{ atsType: string; count: number }>;
   recentFailures: Array<{ company: string; reason: string; layer: string; at: string }>;
+};
+
+export type ScanQuotaAnalytics = {
+  cacheHitRate: number;
+  liveFetchRate: number;
+  quotaBlockRate: number;
+  totalRunsAnalyzed: number;
+  totalCacheHits: number;
+  totalLiveFetches: number;
+  totalQuotaBlocked: number;
+  perPlanUsage: Array<{
+    plan: "free" | "starter" | "pro" | "power";
+    totalLiveScansUsed: number;
+    tenantCount: number;
+    avgPerTenant: number;
+  }>;
+  quotaUsagePerDay: Array<{
+    date: string;
+    count: number;
+  }>;
 };

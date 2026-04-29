@@ -98,6 +98,7 @@ describe("api smoke max companies enforcement", () => {
       displayName: "Pro",
       scanCacheAgeHours: 8,
       canTriggerLiveScan: true,
+      dailyLiveScans: 30,
       maxCompanies: 1,
       maxSessions: 2,
       emailNotificationsEnabled: true,

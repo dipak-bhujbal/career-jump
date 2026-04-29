@@ -1,4 +1,4 @@
-import { eventsTableName, getRow, putRow, queryRows, registryTableName } from "../aws/dynamo";
+import { billingTableName, eventsTableName, getRow, putRow, queryRows, registryTableName, scanAllRows } from "../aws/dynamo";
 import { nowISO } from "../lib/utils";
 
 const ADMIN_ANALYTICS_CACHE_TTL_SECONDS = 60 * 60;
@@ -51,6 +51,18 @@ type SystemHealthAnalytics = {
   scanFailuresByReason: Array<{ reason: string; count: number }>;
   scanFailuresByAts: Array<{ atsType: string; count: number }>;
   recentFailures: Array<{ company: string; reason: string; layer: string; at: string }>;
+};
+
+type ScanQuotaAnalytics = {
+  cacheHitRate: number;
+  liveFetchRate: number;
+  quotaBlockRate: number;
+  totalRunsAnalyzed: number;
+  totalCacheHits: number;
+  totalLiveFetches: number;
+  totalQuotaBlocked: number;
+  perPlanUsage: Array<{ plan: string; totalLiveScansUsed: number; tenantCount: number; avgPerTenant: number }>;
+  quotaUsagePerDay: Array<{ date: string; count: number }>;
 };
 
 type AnalyticsEnvelope<T> = {
@@ -267,6 +279,92 @@ export async function getFeatureUsageAnalytics(): Promise<AnalyticsEnvelope<Feat
         .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
         .map(([layer, count]) => ({ layer, count })),
       jobViewedCount: jobViewedEvents.length,
+    };
+  });
+}
+
+export async function getScanQuotaAnalytics(): Promise<AnalyticsEnvelope<ScanQuotaAnalytics>> {
+  return withAnalyticsCache("scan-quota", async () => {
+    const startIso = daysAgoIso(ADMIN_ANALYTICS_WINDOW_DAYS);
+    const endIso = nowISO();
+
+    // Query aggregated per-run scan summaries emitted by buildInventory.
+    const summaryEvents = await queryEvents("RUN_SCAN_SUMMARY", startIso, endIso);
+
+    let totalCacheHits = 0;
+    let totalLiveFetches = 0;
+    let totalQuotaBlocked = 0;
+    for (const event of summaryEvents) {
+      totalCacheHits += numericDetail(event.details, "cacheHits") ?? 0;
+      totalLiveFetches += numericDetail(event.details, "liveFetchCompanies") ?? 0;
+      totalQuotaBlocked += numericDetail(event.details, "quotaBlocked") ?? 0;
+    }
+    const totalCompanySlots = totalCacheHits + totalLiveFetches + totalQuotaBlocked;
+    const cacheHitRate = totalCompanySlots ? round(totalCacheHits / totalCompanySlots) : 0;
+    const liveFetchRate = totalCompanySlots ? round(totalLiveFetches / totalCompanySlots) : 0;
+    const quotaBlockRate = totalCompanySlots ? round(totalQuotaBlocked / totalCompanySlots) : 0;
+
+    // Scan billing table for SCAN_USAGE#* rows in the window to build per-plan usage.
+    const cutoffDate = startIso.slice(0, 10);
+    const usageRows = await scanAllRows<{ pk: string; sk: string; liveScansUsed?: number }>(
+      billingTableName(),
+      {
+        filterExpression: "begins_with(sk, :prefix) AND sk >= :cutoff",
+        expressionAttributeValues: { ":prefix": "SCAN_USAGE#", ":cutoff": `SCAN_USAGE#${cutoffDate}` },
+      },
+    );
+
+    // Group usage by tenant, then join with subscription plan.
+    const usageByTenant = new Map<string, number>();
+    const usageByDate = new Map<string, number>();
+    for (const row of usageRows) {
+      const tenantId = row.pk.replace(/^USER#/, "");
+      const date = row.sk.replace(/^SCAN_USAGE#/, "");
+      const used = row.liveScansUsed ?? 0;
+      usageByTenant.set(tenantId, (usageByTenant.get(tenantId) ?? 0) + used);
+      incrementCount(usageByDate, date, used);
+    }
+
+    // Look up plan for each tenant (best-effort, unknown plan if lookup fails).
+    const planGroups = new Map<string, { total: number; tenants: Set<string> }>();
+    await Promise.all(
+      [...usageByTenant.entries()].map(async ([tenantId, used]) => {
+        let plan = "unknown";
+        try {
+          const sub = await queryRows<{ plan?: string }>(
+            billingTableName(),
+            "pk = :pk AND sk = :sk",
+            { ":pk": `USER#${tenantId}`, ":sk": "SUBSCRIPTION" },
+            { limit: 1, consistentRead: false },
+          );
+          plan = sub[0]?.plan ?? "unknown";
+        } catch { /* skip */ }
+        if (!planGroups.has(plan)) planGroups.set(plan, { total: 0, tenants: new Set() });
+        const group = planGroups.get(plan)!;
+        group.total += used;
+        group.tenants.add(tenantId);
+      })
+    );
+
+    const perPlanUsage = [...planGroups.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .map(([plan, { total, tenants }]) => ({
+        plan,
+        totalLiveScansUsed: total,
+        tenantCount: tenants.size,
+        avgPerTenant: tenants.size ? round(total / tenants.size) : 0,
+      }));
+
+    return {
+      cacheHitRate,
+      liveFetchRate,
+      quotaBlockRate,
+      totalRunsAnalyzed: summaryEvents.length,
+      totalCacheHits,
+      totalLiveFetches,
+      totalQuotaBlocked,
+      perPlanUsage,
+      quotaUsagePerDay: toCountSeries(usageByDate),
     };
   });
 }

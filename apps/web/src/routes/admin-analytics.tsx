@@ -8,13 +8,14 @@ import {
   useAdminAnalyticsFeatureUsage,
   useAdminAnalyticsGrowth,
   useAdminAnalyticsMarketIntel,
+  useAdminAnalyticsScanQuota,
   useAdminAnalyticsSystemHealth,
 } from "@/features/support/queries";
 import { useMe } from "@/features/session/queries";
 
 export const Route = createFileRoute("/admin-analytics")({ component: AdminAnalyticsRoute });
 
-type AnalyticsTab = "growth" | "market-intel" | "feature-usage" | "system-health";
+type AnalyticsTab = "growth" | "market-intel" | "feature-usage" | "system-health" | "scan-quota";
 
 type AnalyticsEnvelopeLike = {
   cachedAt: string;
@@ -32,6 +33,10 @@ function formatNumber(value: number | null): string {
 
 function formatDateTime(value: string): string {
   return new Date(value).toLocaleString();
+}
+
+function formatShortDate(value: string): string {
+  return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
 function TabButton({ active, label, onClick }: { active: boolean; label: string; onClick: () => void }) {
@@ -137,6 +142,70 @@ function PanelState({
     return <Card><CardContent className="py-6 text-sm text-rose-600">Failed to load analytics: {error.message}</CardContent></Card>;
   }
   return <>{children}</>;
+}
+
+function SegmentedRateBar({
+  segments,
+}: {
+  segments: Array<{ label: string; value: number; tone: string }>;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex h-3 overflow-hidden rounded-full bg-[hsl(var(--secondary))]">
+        {segments.map((segment) => (
+          <div
+            key={segment.label}
+            className={segment.tone}
+            style={{ width: `${Math.max(0, Math.min(100, segment.value * 100))}%` }}
+            title={`${segment.label}: ${formatPercent(segment.value)}`}
+          />
+        ))}
+      </div>
+      <div className="grid gap-2 md:grid-cols-3">
+        {segments.map((segment) => (
+          <div key={segment.label} className="rounded-md border border-[hsl(var(--border))]/60 bg-[hsl(var(--secondary))]/35 px-3 py-2">
+            <div className="text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">{segment.label}</div>
+            <div className="mt-1 text-sm font-semibold">{formatPercent(segment.value)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Sparkline({
+  points,
+}: {
+  points: Array<{ date: string; count: number }>;
+}) {
+  if (points.length === 0) {
+    return <div className="text-sm text-[hsl(var(--muted-foreground))]">No daily quota usage in the current window.</div>;
+  }
+
+  const width = 320;
+  const height = 72;
+  const max = Math.max(...points.map((point) => point.count), 1);
+  const stepX = points.length === 1 ? 0 : width / (points.length - 1);
+  const path = points.map((point, index) => {
+    const x = index * stepX;
+    const y = height - (point.count / max) * (height - 8) - 4;
+    return `${index === 0 ? "M" : "L"} ${x} ${y}`;
+  }).join(" ");
+
+  return (
+    <div className="space-y-3">
+      <svg viewBox={`0 0 ${width} ${height}`} className="h-20 w-full overflow-visible rounded-md border border-[hsl(var(--border))]/60 bg-[hsl(var(--secondary))]/25 p-2">
+        {/* Keep the sparkline intentionally simple so it remains readable
+            without bringing in a charting dependency for one admin panel. */}
+        <path d={path} fill="none" stroke="hsl(var(--primary))" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      <div className="flex items-center justify-between text-[12px] text-[hsl(var(--muted-foreground))]">
+        <span>{formatShortDate(points[0]!.date)}</span>
+        <span>Peak {formatNumber(max)} scans</span>
+        <span>{formatShortDate(points[points.length - 1]!.date)}</span>
+      </div>
+    </div>
+  );
 }
 
 function GrowthPanel() {
@@ -269,6 +338,72 @@ function SystemHealthPanel() {
   );
 }
 
+function ScanQuotaPanel() {
+  const query = useAdminAnalyticsScanQuota();
+  const envelope = query.data;
+  const perPlanUsage = [...(envelope?.data.perPlanUsage ?? [])]
+    .sort((a, b) => b.totalLiveScansUsed - a.totalLiveScansUsed);
+  const usagePerDay = [...(envelope?.data.quotaUsagePerDay ?? [])]
+    .sort((a, b) => a.date.localeCompare(b.date));
+  const rateSegments = envelope ? [
+    { label: "Cache hit", value: envelope.data.cacheHitRate, tone: "bg-emerald-500/80" },
+    { label: "Live fetch", value: envelope.data.liveFetchRate, tone: "bg-sky-500/80" },
+    { label: "Quota blocked", value: envelope.data.quotaBlockRate, tone: "bg-amber-500/85" },
+  ] : [];
+
+  return (
+    <PanelState isLoading={query.isLoading} error={query.error}>
+      {envelope ? (
+        <div className="space-y-4">
+          <EnvelopeMeta envelope={envelope} />
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+            <StatCard title="Runs Analyzed" value={formatNumber(envelope.data.totalRunsAnalyzed)} />
+            <StatCard title="Cache Hits" value={formatNumber(envelope.data.totalCacheHits)} />
+            <StatCard title="Live Fetches" value={formatNumber(envelope.data.totalLiveFetches)} />
+            <StatCard title="Quota Blocked" value={formatNumber(envelope.data.totalQuotaBlocked)} />
+          </div>
+          <Card>
+            <CardHeader>
+              <CardTitle>Scan Outcome Mix</CardTitle>
+              <CardDescription>
+                Breakdown of cache hits, live fetches, and quota-blocked companies emitted by the run summary events.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <SegmentedRateBar segments={rateSegments} />
+            </CardContent>
+          </Card>
+          <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+            <TableCard
+              title="Per-Plan Live Scan Usage"
+              description="How quota consumption is distributed across subscription tiers."
+              headers={["Plan", "Live Scans Used", "Tenants", "Avg / Tenant"]}
+              rows={perPlanUsage.map((row) => [
+                row.plan,
+                formatNumber(row.totalLiveScansUsed),
+                formatNumber(row.tenantCount),
+                row.avgPerTenant.toFixed(2),
+              ])}
+              emptyMessage="No plan-level quota usage was recorded in the current window."
+            />
+            <Card>
+              <CardHeader>
+                <CardTitle>Quota Usage Per Day</CardTitle>
+                <CardDescription>
+                  Daily live-scan consumption trend for the rolling analytics window.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Sparkline points={usagePerDay} />
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      ) : null}
+    </PanelState>
+  );
+}
+
 function AdminAnalyticsRoute() {
   const { data: me } = useMe();
   const location = useLocation();
@@ -306,6 +441,7 @@ function AdminAnalyticsRoute() {
               <TabButton active={activeTab === "market-intel"} label="Market Intel" onClick={() => setActiveTab("market-intel")} />
               <TabButton active={activeTab === "feature-usage"} label="Feature Usage" onClick={() => setActiveTab("feature-usage")} />
               <TabButton active={activeTab === "system-health"} label="System Health" onClick={() => setActiveTab("system-health")} />
+              <TabButton active={activeTab === "scan-quota"} label="Scan Quota" onClick={() => setActiveTab("scan-quota")} />
             </CardContent>
           </Card>
 
@@ -313,6 +449,7 @@ function AdminAnalyticsRoute() {
           {activeTab === "market-intel" ? <MarketIntelPanel /> : null}
           {activeTab === "feature-usage" ? <FeatureUsagePanel /> : null}
           {activeTab === "system-health" ? <SystemHealthPanel /> : null}
+          {activeTab === "scan-quota" ? <ScanQuotaPanel /> : null}
         </div>
       </AdminPageFrame>
     </>

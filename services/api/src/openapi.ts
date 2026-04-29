@@ -260,6 +260,25 @@ export function buildOpenApiDocument(baseUrl: string) {
             },
             emailStatus: { type: "string", enum: ["sent", "skipped", "failed"] },
             emailError: { type: "string", nullable: true },
+            scanMeta: {
+              type: "object",
+              properties: {
+                cacheHits: { type: "integer" },
+                liveFetchCompanies: { type: "integer" },
+                quotaBlockedCompanies: { type: "array", items: { type: "string" } },
+                remainingLiveScansToday: { type: "integer", nullable: true },
+              },
+            },
+          },
+        },
+        ScanQuotaResponse: {
+          type: "object",
+          properties: {
+            ok: { type: "boolean" },
+            liveScansUsed: { type: "integer" },
+            remainingLiveScansToday: { type: "integer" },
+            lastLiveScanAt: { type: "string", format: "date-time", nullable: true },
+            date: { type: "string" },
           },
         },
         JobsResponse: {
@@ -410,6 +429,23 @@ export function buildOpenApiDocument(baseUrl: string) {
           responses: {
             "200": {
               description: "Active scan state",
+            },
+          },
+        },
+      },
+      "/api/scan-quota": {
+        get: {
+          tags: ["services"],
+          summary: "Get remaining daily live scan quota",
+          description: "Returns the current tenant's daily live-scan usage and remaining quota for the current UTC date.",
+          responses: {
+            "200": {
+              description: "Scan quota summary",
+              content: {
+                "application/json": {
+                  schema: { $ref: "#/components/schemas/ScanQuotaResponse" },
+                },
+              },
             },
           },
         },
@@ -845,6 +881,35 @@ export function buildOpenApiDocument(baseUrl: string) {
           responses: { "200": { description: "User list" } },
         },
       },
+      "/api/admin/users/{userId}/plan": {
+        put: {
+          tags: ["admin"],
+          summary: "Override a user's subscription plan",
+          description: "Manually sets any user's subscription to the specified tier. Sets provider=internal, status=active. Audit-logged as ADMIN_ACTION.",
+          parameters: [
+            { name: "userId", in: "path", required: true, schema: { type: "string" } },
+          ],
+          requestBody: {
+            required: true,
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["plan"],
+                  properties: {
+                    plan: { type: "string", enum: ["free", "starter", "pro", "power"] },
+                  },
+                },
+              },
+            },
+          },
+          responses: {
+            "200": { description: "Billing subscription updated" },
+            "400": { description: "Invalid plan value" },
+            "404": { description: "User not found" },
+          },
+        },
+      },
       "/api/admin/feature-flags": {
         get: {
           tags: ["admin"],
@@ -1052,6 +1117,58 @@ export function buildOpenApiDocument(baseUrl: string) {
           summary: "System health analytics",
           description: "Returns Lambda execution metrics, scan success/failure rates, and DynamoDB operation counts.",
           responses: { "200": { description: "System health payload" } },
+        },
+      },
+      "/api/admin/analytics/scan-quota": {
+        get: {
+          tags: ["admin"],
+          summary: "Scan quota analytics",
+          description: "Returns cache-hit rate, live-fetch rate, quota-block rate, per-plan scan usage, and daily quota consumption trends over the last 30 days.",
+          responses: {
+            "200": {
+              description: "Scan quota analytics payload",
+              content: {
+                "application/json": {
+                  schema: {
+                    type: "object",
+                    properties: {
+                      ok: { type: "boolean" },
+                      cachedAt: { type: "string", format: "date-time" },
+                      cacheExpiresAt: { type: "string", format: "date-time" },
+                      data: {
+                        type: "object",
+                        properties: {
+                          cacheHitRate: { type: "number", description: "0–1 fraction of company slots served from cache" },
+                          liveFetchRate: { type: "number", description: "0–1 fraction of company slots live-fetched" },
+                          quotaBlockRate: { type: "number", description: "0–1 fraction of company slots blocked by quota" },
+                          totalRunsAnalyzed: { type: "integer" },
+                          totalCacheHits: { type: "integer" },
+                          totalLiveFetches: { type: "integer" },
+                          totalQuotaBlocked: { type: "integer" },
+                          perPlanUsage: {
+                            type: "array",
+                            items: {
+                              type: "object",
+                              properties: {
+                                plan: { type: "string" },
+                                totalLiveScansUsed: { type: "integer" },
+                                tenantCount: { type: "integer" },
+                                avgPerTenant: { type: "number" },
+                              },
+                            },
+                          },
+                          quotaUsagePerDay: {
+                            type: "array",
+                            items: { type: "object", properties: { date: { type: "string" }, count: { type: "integer" } } },
+                          },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
         },
       },
       "/api/admin/support/tickets": {

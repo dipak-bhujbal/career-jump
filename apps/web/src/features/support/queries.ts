@@ -14,6 +14,7 @@ import {
   type AdminUsersEnvelope,
   type FeatureFlagsEnvelope,
   type MarketIntelAnalytics,
+  type ScanQuotaAnalytics,
   type CreateAnnouncementRequest,
   type SupportTicketEnvelope,
   type SupportTicketsEnvelope,
@@ -104,6 +105,20 @@ export function useSetAdminUserStatus(userId: string | null) {
       await queryClient.invalidateQueries({ queryKey: ["admin-users"] });
       await queryClient.invalidateQueries({ queryKey: ["admin-user", userId] });
       await queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+    },
+  });
+}
+
+export function useSetAdminUserPlan(userId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (plan: "free" | "starter" | "pro" | "power") =>
+      api.put(`/api/admin/users/${userId}/plan`, { plan }),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-user", userId] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+      await queryClient.invalidateQueries({ queryKey: meKey });
     },
   });
 }
@@ -220,6 +235,14 @@ export function useAdminAnalyticsSystemHealth() {
   return useQuery({
     queryKey: ["admin-analytics", "system-health"],
     queryFn: () => api.get<AdminAnalyticsEnvelope<SystemHealthAnalytics>>("/api/admin/analytics/system-health"),
+    staleTime: 60_000,
+  });
+}
+
+export function useAdminAnalyticsScanQuota() {
+  return useQuery({
+    queryKey: ["admin-analytics", "scan-quota"],
+    queryFn: () => api.get<AdminAnalyticsEnvelope<ScanQuotaAnalytics>>("/api/admin/analytics/scan-quota"),
     staleTime: 60_000,
   });
 }

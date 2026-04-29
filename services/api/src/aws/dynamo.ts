@@ -7,6 +7,7 @@ import {
   PutItemCommand,
   QueryCommand,
   ScanCommand,
+  UpdateItemCommand,
 } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 
@@ -140,6 +141,100 @@ export async function scanRows<T>(
     Limit: limit,
   }));
   return (response.Items ?? []).map((item) => unmarshall(item) as T);
+}
+
+/**
+ * Atomically increments a numeric field by 1 and appends a value to a string-set field.
+ * Creates the row if it does not exist (using ADD/SET which are idempotent on missing items).
+ * Returns the new value of the incremented field.
+ */
+export async function atomicIncrementAndAppend(
+  tableName: string,
+  key: Record<string, unknown>,
+  incrementField: string,
+  appendField: string,
+  appendValue: string,
+  extraFields: Record<string, unknown> = {},
+): Promise<number> {
+  const extraNames: Record<string, string> = {};
+  const extraValues: Record<string, AttributeValue> = {};
+  let setExpr = `#ts = if_not_exists(#ts, :zero) + :one`;
+  extraNames["#ts"] = incrementField;
+  extraValues[":zero"] = { N: "0" };
+  extraValues[":one"] = { N: "1" };
+
+  for (const [k, v] of Object.entries(extraFields)) {
+    const nameKey = `#f_${k}`;
+    const valKey = `:f_${k}`;
+    extraNames[nameKey] = k;
+    extraValues[valKey] = marshall({ v }, { removeUndefinedValues: true })["v"] as AttributeValue;
+    setExpr += `, ${nameKey} = if_not_exists(${nameKey}, ${valKey})`;
+  }
+
+  const response = await client.send(new UpdateItemCommand({
+    TableName: tableName,
+    Key: marshall(key, { removeUndefinedValues: true }),
+    UpdateExpression: `SET ${setExpr} ADD #app :appVal`,
+    ExpressionAttributeNames: { ...extraNames, "#app": appendField },
+    ExpressionAttributeValues: {
+      ...extraValues,
+      ":appVal": { SS: [appendValue] },
+    },
+    ReturnValues: "UPDATED_NEW",
+  }));
+  const newVal = response.Attributes?.[incrementField];
+  return newVal ? Number(unmarshall({ v: newVal })["v"]) : 1;
+}
+
+/**
+ * Atomically consume one slot from a numeric counter, only if the current
+ * value is strictly less than the given quota. Returns `true` if the slot was
+ * consumed, `false` if quota was already exhausted (ConditionalCheckFailed).
+ * Also appends `appendValue` to a string-set field and sets `extraFields` on
+ * first write (via if_not_exists so they don't overwrite later updates).
+ */
+export async function atomicConsumeIfUnderQuota(
+  tableName: string,
+  key: Record<string, unknown>,
+  counterField: string,
+  quota: number,
+  appendField: string,
+  appendValue: string,
+  extraFields: Record<string, unknown> = {},
+): Promise<boolean> {
+  const extraNames: Record<string, string> = {};
+  const extraValues: Record<string, AttributeValue> = {};
+  let setExpr = `#ctr = if_not_exists(#ctr, :zero) + :one`;
+  extraNames["#ctr"] = counterField;
+  extraValues[":zero"] = { N: "0" };
+  extraValues[":one"] = { N: "1" };
+  extraValues[":quota"] = { N: String(quota) };
+
+  for (const [k, v] of Object.entries(extraFields)) {
+    const nameKey = `#f_${k}`;
+    const valKey = `:f_${k}`;
+    extraNames[nameKey] = k;
+    extraValues[valKey] = marshall({ v }, { removeUndefinedValues: true })["v"] as AttributeValue;
+    setExpr += `, ${nameKey} = if_not_exists(${nameKey}, ${valKey})`;
+  }
+
+  try {
+    await client.send(new UpdateItemCommand({
+      TableName: tableName,
+      Key: marshall(key, { removeUndefinedValues: true }),
+      UpdateExpression: `SET ${setExpr} ADD #app :appVal`,
+      ConditionExpression: "attribute_not_exists(#ctr) OR #ctr < :quota",
+      ExpressionAttributeNames: { ...extraNames, "#app": appendField },
+      ExpressionAttributeValues: {
+        ...extraValues,
+        ":appVal": { SS: [appendValue] },
+      },
+    }));
+    return true;
+  } catch (err) {
+    if (err instanceof ConditionalCheckFailedException) return false;
+    throw err;
+  }
 }
 
 export async function scanAllRows<T>(

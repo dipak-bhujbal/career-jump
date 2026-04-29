@@ -38,6 +38,8 @@ import {
   saveJobNotes,
   seenJobKey,
   shouldBypassLiveWorkdayScan,
+  tryConsumeLiveScan,
+  remainingLiveScans,
 } from "../storage";
 import { isScraperApiConfigured, scanWorkdayJobs } from "../ats/core/workday";
 import { fetchJobsForDetectedConfig, getDetectedConfig } from "./discovery";
@@ -644,10 +646,14 @@ export async function buildInventory(
   const userDiscardRegistry = await loadDiscardRegistry(env, tenantId);
   let totalFetched = 0;
   let totalCompaniesDetected = 0;
+  let cacheHits = 0;
+  let liveFetchCompanies = 0;
+  let quotaBlockedCompanies: string[] = [];
 
   // Plan tier only applies to user-triggered scans (tenantId present).
   // System/background scans (no tenantId) run live with no cache restrictions.
   let planCacheOpts: PlanCacheOpts = {};
+  let planScanCacheAgeMs: number | undefined;
   if (tenantId) {
     let userPlan: UserPlan = "free";
     try {
@@ -658,11 +664,18 @@ export async function buildInventory(
     }
     try {
       const planCfg = await loadPlanConfig(userPlan);
-      planCacheOpts = planCfg.canTriggerLiveScan
-        ? { maxAgeMs: planCfg.scanCacheAgeHours * 60 * 60 * 1000 }
-        : { allowStale: true };
+      // Treat missing/invalid cache-age config as zero-hour freshness so the
+      // scan still attempts a live fetch instead of silently degrading into a
+      // cache-only run.
+      const cacheAgeHours = Number.isFinite(planCfg.scanCacheAgeHours) ? planCfg.scanCacheAgeHours : 0;
+      planScanCacheAgeMs = cacheAgeHours * 60 * 60 * 1000;
+      // All plans can trigger live scans — quota gates instead of plan gate.
+      planCacheOpts = { maxAgeMs: planScanCacheAgeMs };
     } catch {
-      planCacheOpts = { allowStale: true };
+      // If plan-config storage is unavailable, keep the scan live-fetch
+      // capable. Falling back to stale cache only hides the real failure mode.
+      planScanCacheAgeMs = 0;
+      planCacheOpts = { maxAgeMs: 0 };
     }
   }
 
@@ -748,22 +761,84 @@ export async function buildInventory(
       }
 
       fetchStartedAt = Date.now();
-      const companyFetch = await fetchCompanyJobsWithSharedCache(
-        env,
-        company.company,
-        detected,
-        config.jobtitles.includeKeywords,
-        tenantId,
-        planCacheOpts,
-      );
+
+      // For user-triggered scans: check if the shared cache has a fresh enough
+      // result first. If not (cache miss), gate the live fetch on daily quota.
+      let companyFetch: CompanyFetchOutcome;
+      if (tenantId && planScanCacheAgeMs !== undefined) {
+        const cachedScan = await loadLatestRawScan(company.company, detected, { maxAgeMs: planScanCacheAgeMs });
+        if (cachedScan) {
+          // Fresh cache hit — serve immediately, no quota consumed.
+          companyFetch = {
+            fetchedJobs: cachedScan.jobs,
+            rawScanCache: { hit: true, stale: false, scannedAt: cachedScan.scannedAt },
+          };
+          cacheHits += 1;
+        } else {
+          // Cache miss — atomically consume quota before allowing live fetch.
+          const consumed = await tryConsumeLiveScan(tenantId, runId ?? "no-run-id");
+          if (!consumed) {
+            // Quota exhausted — serve stale cache if any, otherwise skip.
+            const stale = await loadLatestRawScan(company.company, detected, { allowStale: true });
+            if (stale) {
+              companyFetch = {
+                fetchedJobs: stale.jobs,
+                rawScanCache: { hit: true, stale: true, scannedAt: stale.scannedAt, reason: "quota_exhausted" },
+              };
+              cacheHits += 1;
+            } else {
+              quotaBlockedCompanies.push(company.company);
+              await recordAppLog(env, {
+                level: "warn",
+                event: "quota_blocked",
+                message: `Daily live scan quota exhausted for tenant — skipping live fetch for ${company.company}`,
+                tenantId,
+                company: company.company,
+                runId,
+                route: "scan",
+                details: { scanOutcome: "quota_blocked" },
+              });
+              byCompany[company.company] = 0;
+              byCompanyFetched[company.company] = 0;
+              continue;
+            }
+          } else {
+            // Quota consumed — perform live fetch.
+            liveFetchCompanies += 1;
+            companyFetch = await fetchCompanyJobsWithSharedCache(
+              env,
+              company.company,
+              detected,
+              config.jobtitles.includeKeywords,
+              tenantId,
+              planCacheOpts,
+            );
+          }
+        }
+      } else {
+        // System/background scan — no quota, run live.
+        companyFetch = await fetchCompanyJobsWithSharedCache(
+          env,
+          company.company,
+          detected,
+          config.jobtitles.includeKeywords,
+          tenantId,
+          planCacheOpts,
+        );
+        if (companyFetch.rawScanCache.hit) {
+          cacheHits += 1;
+        } else {
+          liveFetchCompanies += 1;
+        }
+      }
+
       const fetchedJobs = companyFetch.fetchedJobs;
       totalCompaniesDetected += 1;
       totalFetched += fetchedJobs.length;
       byCompanyFetched[company.company] = fetchedJobs.length;
       // Only advance scan-state when a real live fetch happened.
-      // Cache-hit reads (free/pro/power tier serving cached data) must not
-      // update nextScanAt / lastScanAt — that would corrupt the scheduler's
-      // source of truth and make Step 6 ops reporting lie.
+      // Cache-hit reads must not update nextScanAt / lastScanAt — that would
+      // corrupt the scheduler's source of truth.
       if (!companyFetch.rawScanCache.hit) {
         await markRegistryCompanyScanSuccess(company.company, {
           adapterId: registryAdapterId,
@@ -1010,6 +1085,23 @@ export async function buildInventory(
     }
   }
 
+  const remainingScans = tenantId ? await remainingLiveScans(tenantId).catch(() => undefined) : undefined;
+
+  // Emit a single aggregated analytics event per run so the admin can track
+  // cache-hit rate, live-fetch rate, and quota-block rate over time.
+  if (tenantId && (cacheHits > 0 || liveFetchCompanies > 0 || quotaBlockedCompanies.length > 0)) {
+    const actor = analyticsActorForTenant(tenantId);
+    if (actor) {
+      void recordEvent(actor, "RUN_SCAN_SUMMARY", {
+        runId: runId ?? null,
+        cacheHits,
+        liveFetchCompanies,
+        quotaBlocked: quotaBlockedCompanies.length,
+        totalCompanies: enabledCompanies.length,
+      }).catch(() => undefined);
+    }
+  }
+
   const scannedInventory: InventorySnapshot = {
     runAt: new Date().toISOString(),
     jobs,
@@ -1022,6 +1114,10 @@ export async function buildInventory(
       byCompany,
       byCompanyFetched,
       keywordCounts,
+      cacheHits,
+      liveFetchCompanies,
+      quotaBlockedCompanies: quotaBlockedCompanies.length ? quotaBlockedCompanies : undefined,
+      remainingLiveScansToday: remainingScans,
     },
   };
   const shouldPreserveUnscannedJobs = options.preserveUnscannedJobs !== false;

@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { createFileRoute, useLocation } from "@tanstack/react-router";
-import { CreditCard, Save } from "lucide-react";
+import { CreditCard, Save, ShieldCheck, Tag } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { useStripeConfig, useSaveStripeConfig } from "@/features/billing/queries";
 import { useMe } from "@/features/session/queries";
+import { planIntervalLabel, planPricePlaceholders } from "@/features/billing/plan-display";
 
 export const Route = createFileRoute("/admin-stripe-config")({ component: AdminStripeConfigRoute });
 
@@ -117,6 +118,22 @@ export function AdminStripeConfigRoute() {
                 <div className="rounded-xl border border-[hsl(var(--border))] px-3 py-3">
                   Price IDs: <span className="font-medium">{data?.configured ? "ready to review" : "not configured"}</span>
                 </div>
+                <div className="rounded-xl border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-3 py-3">
+                  <div className="flex items-center gap-2 font-medium">
+                    <ShieldCheck size={14} />
+                    Customer-facing pricing preview
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {(["starter", "pro", "power"] as const).map((plan) => (
+                      <div key={plan} className="flex items-center justify-between rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-3 py-2">
+                        <span className="font-medium capitalize">{plan}</span>
+                        <span className="text-xs text-[hsl(var(--muted-foreground))]">
+                          {planPricePlaceholders[plan]}{planIntervalLabel}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </CardContent>
             </Card>
             <Card>
@@ -139,16 +156,19 @@ export function AdminStripeConfigRoute() {
                   </Field>
                   <Field label="Starter price ID">
                     <Input value={active.starterPriceId} onChange={(event) => patch({ starterPriceId: event.target.value })} placeholder="price_..." />
+                    <PriceHint plan="starter" />
                   </Field>
                   <Field label="Pro price ID">
                     <Input value={active.proPriceId} onChange={(event) => patch({ proPriceId: event.target.value })} placeholder="price_..." />
+                    <PriceHint plan="pro" />
                   </Field>
                   <Field label="Power price ID">
                     <Input value={active.powerPriceId} onChange={(event) => patch({ powerPriceId: event.target.value })} placeholder="price_..." />
+                    <PriceHint plan="power" />
                   </Field>
                 </div>
                 <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                  Current status: {data?.configured ? "configured" : "not configured"} · Webhook: {resolved?.webhookConfigured ? "configured" : "missing"}
+                  Current status: {data?.configured ? "configured" : "not configured"} · Webhook: {resolved?.webhookConfigured ? "configured" : "missing"} · Placeholder prices are frontend-only until public pricing is exposed.
                 </div>
                 <div className="flex justify-end">
                   <Button onClick={save} disabled={saveStripeConfig.isPending}>
@@ -161,6 +181,15 @@ export function AdminStripeConfigRoute() {
         </div>
       </AdminPageFrame>
     </>
+  );
+}
+
+function PriceHint({ plan }: { plan: "starter" | "pro" | "power" }) {
+  return (
+    <div className="mt-2 inline-flex items-center gap-1.5 text-xs text-[hsl(var(--muted-foreground))]">
+      <Tag size={12} />
+      Display placeholder: {planPricePlaceholders[plan]}{planIntervalLabel}
+    </div>
   );
 }
 

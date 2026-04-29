@@ -20,6 +20,7 @@ import {
 import { useHotkey } from "@/lib/hotkeys";
 import { useTheme } from "@/lib/theme";
 import { useStartRun, useClearCache } from "@/features/run/queries";
+import { formatRunCompletionToast } from "@/features/run/presentation";
 import { useRegistrySearch } from "@/features/companies/queries";
 import { useJobs } from "@/features/jobs/queries";
 import { toast } from "@/components/ui/toast";
@@ -131,7 +132,13 @@ export function CommandPalette() {
 
           <Command.Group heading="Actions" className="text-[12px] uppercase tracking-wide text-[hsl(var(--muted-foreground))] px-2 pt-2 pb-1">
             <Item
-              onSelect={action(() => startRun.mutate(undefined, { onSuccess: () => toast("Scan started") }))}
+              onSelect={action(() => {
+                toast("Scan starting", "info");
+                startRun.mutate(undefined, {
+                  onSuccess: (result) => toast(formatRunCompletionToast(result)),
+                  onError: (error) => toast(error instanceof Error ? error.message : "Start failed", "error"),
+                });
+              })}
               icon={<Play size={14} />}
               label="Run scan"
               hint="immediate"

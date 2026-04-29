@@ -12,13 +12,16 @@ import { useRef, useEffect } from "react";
 import { Play, Trash2, Wand2, AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks,
+  useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks, useLatestRunResult, useScanQuota,
 } from "@/features/run/queries";
+import { formatLastRunSummary, formatRunCompletionToast, formatScanQuotaHint } from "@/features/run/presentation";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 
 export function SidebarActions() {
   const status = useRunStatus();
+  const quota = useScanQuota();
+  const latestRun = useLatestRunResult();
   const startRun = useStartRun();
   const abortRun = useAbortRun();
   const clearCache = useClearCache();
@@ -55,16 +58,27 @@ export function SidebarActions() {
         </Button>
       ) : (
         <Button
-          onClick={() => startRun.mutate(undefined, {
-            onSuccess: () => toast("Scan started"),
+          onClick={() => {
+            toast("Scan starting", "info");
+            startRun.mutate(undefined, {
+            onSuccess: (result) => toast(formatRunCompletionToast(result)),
             onError: (e) => toast(e instanceof Error ? e.message : "Start failed", "error"),
-          })}
+            });
+          }}
           disabled={busy}
         >
           {startRun.isPending ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
           Run scan
         </Button>
       )}
+      {!active ? (
+        <div className="rounded-md border border-[hsl(var(--border))]/60 bg-[hsl(var(--secondary))]/40 px-2.5 py-2 text-[12px] text-[hsl(var(--muted-foreground))]">
+          {/* Keep quota and completion context visible while idle so users can
+              tell whether the next scan will fetch live data or just reuse cache. */}
+          <div>{formatScanQuotaHint(quota.data)}</div>
+          <div className="mt-1">{formatLastRunSummary(latestRun.data)}</div>
+        </div>
+      ) : null}
       <Button variant="outline" size="sm" disabled={busy || active}
         onClick={() => {
           if (!window.confirm("Clear Cache will remove only available jobs and cached scan results. Applied jobs will stay. Continue?")) return;

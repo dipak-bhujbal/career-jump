@@ -14,6 +14,8 @@ import { fetchWorkdayJobs } from "../core/workday";
 import {
   countEightfoldJobs,
   fetchEightfoldJobs,
+  fetchEightfoldWhitelabelJobs,
+  parseEightfoldBoardUrl,
   validateEightfoldSlug,
 } from "../core/eightfold";
 import { countPhenomJobs, fetchPhenomJobs, validatePhenomSlug } from "../core/phenom";
@@ -179,9 +181,29 @@ const adapters: AtsAdapter[] = [
   {
     id: "eightfold",
     kind: "core",
-    async validate(c) { const r = await validateEightfoldSlug(subdomain(c.boardUrl)); return r !== null; },
-    async count(c) { return countEightfoldJobs(subdomain(c.boardUrl)); },
-    async fetchJobs(c, company) { return fetchEightfoldJobs(subdomain(c.boardUrl), company); },
+    async validate(c) {
+      const parsed = parseEightfoldBoardUrl(c.boardUrl);
+      if (!parsed) return false;
+      if (parsed.type === "whitelabel") return true; // pcsx URL stored = already validated
+      return (await validateEightfoldSlug(parsed.slug)) !== null;
+    },
+    async count(c) {
+      const parsed = parseEightfoldBoardUrl(c.boardUrl);
+      if (!parsed) return 0;
+      if (parsed.type === "whitelabel") {
+        const jobs = await fetchEightfoldWhitelabelJobs(parsed.careersBaseUrl, parsed.domainParam, "", { maxPages: 1 });
+        return jobs.length;
+      }
+      return countEightfoldJobs(parsed.slug);
+    },
+    async fetchJobs(c, company) {
+      const parsed = parseEightfoldBoardUrl(c.boardUrl);
+      if (!parsed) return [];
+      if (parsed.type === "whitelabel") {
+        return fetchEightfoldWhitelabelJobs(parsed.careersBaseUrl, parsed.domainParam, company);
+      }
+      return fetchEightfoldJobs(parsed.slug, company);
+    },
   },
   {
     id: "phenom",
