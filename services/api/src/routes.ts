@@ -92,6 +92,7 @@ import {
   toNdjson,
 } from "./storage";
 import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
+import { recordPasswordResetConfirmAttempt } from "./storage/password-reset";
 import { buildDashboardPayload } from "./services/dashboard";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
@@ -122,11 +123,26 @@ import type {
   UserPlan,
 } from "./types";
 
+class InvalidJsonBodyError extends Error {
+  constructor() {
+    super("Invalid JSON body");
+  }
+}
+
+class RequestValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+  }
+}
+
+const MAX_SUPPORT_TICKET_SUBJECT_LENGTH = 500;
+const MAX_SUPPORT_TICKET_BODY_LENGTH = 50_000;
+
 async function readJsonBody<T extends Record<string, unknown>>(request: Request): Promise<T> {
   try {
     return (await request.json()) as T;
   } catch {
-    return {} as T;
+    throw new InvalidJsonBodyError();
   }
 }
 
@@ -261,6 +277,34 @@ function maxCompaniesError(limit: number, current: number) {
   };
 }
 
+function validateSupportTextFields(subject: string, body: string): string | null {
+  if (!subject.trim() || !body.trim()) return "subject and body are required";
+  if (subject.length > MAX_SUPPORT_TICKET_SUBJECT_LENGTH) {
+    return `subject must be ${MAX_SUPPORT_TICKET_SUBJECT_LENGTH} characters or fewer`;
+  }
+  if (body.length > MAX_SUPPORT_TICKET_BODY_LENGTH) {
+    return `body must be ${MAX_SUPPORT_TICKET_BODY_LENGTH} characters or fewer`;
+  }
+  return null;
+}
+
+function parseIsoDateTime(value: unknown, fieldName: string): string | null {
+  if (value === null || value === undefined || value === "") return null;
+  const text = String(value);
+  const parsed = Date.parse(text);
+  if (!Number.isFinite(parsed)) {
+    throw new RequestValidationError(`${fieldName} must be a valid ISO date-time`);
+  }
+  return new Date(parsed).toISOString();
+}
+
+async function resolveBreakGlassTenantId(rawValue: string): Promise<string> {
+  const candidate = rawValue.trim();
+  if (!candidate) return "";
+  const profile = await loadUserProfile(candidate);
+  return profile?.tenantId ?? candidate;
+}
+
 function mergeAppliedJobsWithInventory(
   appliedJobs: Record<string, AppliedJobRecord>,
   inventory: InventorySnapshot
@@ -343,6 +387,26 @@ async function checkJobUrlHealth(url: string): Promise<{
   method: "HEAD" | "GET";
   reason?: string;
 }> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { broken: true, status: null, finalUrl: null, method: "HEAD", reason: "unsupported_protocol" };
+  }
+
+  const hostname = parsed.hostname.trim().toLowerCase();
+  if (
+    hostname === "localhost"
+    || hostname === "127.0.0.1"
+    || hostname === "::1"
+    || hostname.endsWith(".internal")
+    || hostname.endsWith(".local")
+    || /^10\./.test(hostname)
+    || /^192\.168\./.test(hostname)
+    || /^169\.254\./.test(hostname)
+    || /^172\.(1[6-9]|2\d|3[0-1])\./.test(hostname)
+  ) {
+    return { broken: true, status: null, finalUrl: null, method: "HEAD", reason: "private_host_blocked" };
+  }
+
   const headers = {
     Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "User-Agent": "career-jump/1.0",
@@ -388,7 +452,9 @@ async function checkJobUrlHealth(url: string): Promise<{
 
 function makeTimelineEvent(event: Omit<TimelineEvent, "id">): TimelineEvent {
   return {
-    id: `${event.type}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    // Use UUIDs so front-end timeline rendering never risks accidental
+    // collisions when several updates land in the same millisecond.
+    id: crypto.randomUUID(),
     ...event,
   };
 }
@@ -607,8 +673,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (url.pathname === "/api/support/tickets" && request.method === "POST") {
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Record<string, unknown>>(request);
-      if (!String(body.subject ?? "").trim() || !String(body.body ?? "").trim()) {
-        return jsonResponse({ ok: false, error: "subject and body are required" }, 400);
+      const subject = String(body.subject ?? "");
+      const messageBody = String(body.body ?? "");
+      const supportValidationError = validateSupportTextFields(subject, messageBody);
+      if (supportValidationError) {
+        return jsonResponse({ ok: false, error: supportValidationError }, 400);
       }
       const ticket = await createSupportTicket({
         userId: tenantContext.userId,
@@ -618,8 +687,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         scope: tenantContext.scope,
         isAdmin: tenantContext.isAdmin,
       }, {
-        subject: String(body.subject),
-        body: String(body.body),
+        subject,
+        body: messageBody,
         priority: body.priority as "low" | "normal" | "high" | "urgent" | undefined,
         tags: Array.isArray(body.tags)
           ? body.tags as Array<"bug" | "enhancement" | "subscription_assistance" | "other" | "billing" | "scan" | "account">
@@ -651,7 +720,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         return jsonResponse({ ok: false, error: "Forbidden" }, 403);
       }
       const body = await readJsonBody<Record<string, unknown>>(request);
-      if (!String(body.body ?? "").trim()) return jsonResponse({ ok: false, error: "body is required" }, 400);
+      const messageBody = String(body.body ?? "");
+      if (!messageBody.trim()) return jsonResponse({ ok: false, error: "body is required" }, 400);
+      if (messageBody.length > MAX_SUPPORT_TICKET_BODY_LENGTH) {
+        return jsonResponse({ ok: false, error: `body must be ${MAX_SUPPORT_TICKET_BODY_LENGTH} characters or fewer` }, 400);
+      }
       const message = await appendSupportMessage({
         userId: tenantContext.userId,
         tenantId: tenantContext.tenantId,
@@ -659,7 +732,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         displayName: tenantContext.displayName,
         scope: tenantContext.scope,
         isAdmin: tenantContext.isAdmin,
-      }, ticketId, String(body.body), { internal: body.internal === true });
+      }, ticketId, messageBody, { internal: body.internal === true });
       return jsonResponse({ ok: true, message }, 201);
     }
 
@@ -699,7 +772,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
-      const users = await findUserProfiles(url.searchParams.get("q") ?? undefined);
+      const q = url.searchParams.get("q") ?? undefined;
+      await recordEvent(tenantContext, "ADMIN_USER_SEARCH", { query: q ?? "" });
+      const users = await findUserProfiles(q);
       return jsonResponse({ ok: true, total: users.length, users });
     }
 
@@ -837,6 +912,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!String(body.title ?? "").trim() || !String(body.body ?? "").trim()) {
         return jsonResponse({ ok: false, error: "title and body are required" }, 400);
       }
+      const activeFrom = parseIsoDateTime(body.activeFrom ?? nowISO(), "activeFrom");
+      const activeTo = parseIsoDateTime(body.activeTo, "activeTo");
       const actor = { userId: tenantContext.userId, tenantId: tenantContext.tenantId, email: tenantContext.email, displayName: tenantContext.displayName, scope: tenantContext.scope, isAdmin: tenantContext.isAdmin };
       const announcement = await createAnnouncement(actor, {
         id: String(body.id ?? ""),
@@ -845,8 +922,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         severity: body.severity === "warning" || body.severity === "critical" ? body.severity : "info",
         active: body.active !== false,
         dismissible: body.dismissible === true,
-        activeFrom: String(body.activeFrom ?? nowISO()),
-        activeTo: body.activeTo ? String(body.activeTo) : null,
+        activeFrom: activeFrom ?? nowISO(),
+        activeTo,
         targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | UserPlan> : ["all"],
         targetTenantIds: Array.isArray(body.targetTenantIds) ? body.targetTenantIds as string[] : null,
         updatedAt: nowISO(),
@@ -865,14 +942,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
       if (request.method === "PUT") {
         const body = await readJsonBody<Record<string, unknown>>(request);
+        const activeFrom = body.activeFrom !== undefined ? (parseIsoDateTime(body.activeFrom, "activeFrom") ?? undefined) : undefined;
+        const activeTo = body.activeTo !== undefined ? parseIsoDateTime(body.activeTo, "activeTo") : undefined;
         const updated = await updateAnnouncement(actor, id, {
           ...(body.title !== undefined && { title: String(body.title) }),
           ...(body.body !== undefined && { body: String(body.body) }),
           ...(body.severity !== undefined && { severity: body.severity === "warning" || body.severity === "critical" ? body.severity : "info" }),
           ...(body.active !== undefined && { active: Boolean(body.active) }),
           ...(body.dismissible !== undefined && { dismissible: Boolean(body.dismissible) }),
-          ...(body.activeFrom !== undefined && { activeFrom: String(body.activeFrom) }),
-          ...(body.activeTo !== undefined && { activeTo: body.activeTo ? String(body.activeTo) : null }),
+          ...(activeFrom !== undefined && { activeFrom }),
+          ...(activeTo !== undefined && { activeTo }),
           ...(body.targetPlans !== undefined && { targetPlans: Array.isArray(body.targetPlans) ? body.targetPlans as Array<"all" | UserPlan> : ["all"] }),
           ...(body.targetTenantIds !== undefined && { targetTenantIds: Array.isArray(body.targetTenantIds) ? body.targetTenantIds as string[] : null }),
         });
@@ -885,6 +964,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         if (!deleted) return jsonResponse({ ok: false, error: "Announcement not found" }, 404);
         return jsonResponse({ ok: true, deleted: true });
       }
+
+      return jsonResponse({ ok: false, error: "Method not allowed" }, 405);
     }
 
     if (url.pathname === "/api/admin/support/tickets" && request.method === "GET") {
@@ -966,7 +1047,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
-      const records = await exportAppliedJobRecords(env, tenantContext.tenantId);
+      const requestedUserId = url.searchParams.get("userId")?.trim() ?? "";
+      const requestedTenantId = url.searchParams.get("tenantId")?.trim() ?? "";
+      let exportTenantId = requestedTenantId;
+      if (!exportTenantId && requestedUserId) {
+        const profile = await loadUserProfile(requestedUserId);
+        exportTenantId = profile?.tenantId ?? "";
+      }
+      if (!exportTenantId) {
+        return jsonResponse({ ok: false, error: "tenantId or userId is required" }, 400);
+      }
+      await recordEvent(tenantContext, "ADMIN_ACTION", { action: "export_applied_jobs", targetTenantId: exportTenantId, targetUserId: requestedUserId || null });
+      const records = await exportAppliedJobRecords(env, exportTenantId);
       return new Response(toNdjson(records), {
         headers: { "Content-Type": "application/x-ndjson", "Content-Disposition": "attachment; filename=\"jobs.ndjson\"" },
       });
@@ -1167,6 +1259,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!email || !code || !newPassword) {
         return jsonResponse({ ok: false, error: "Email, code, and new password are required" }, 400);
       }
+      const forwardedFor = request.headers.get("x-forwarded-for") || request.headers.get("x-real-ip") || "";
+      const requestIp = forwardedFor.split(",")[0]?.trim() || "unknown-ip";
+      if (!(await recordPasswordResetConfirmAttempt(email, scope ?? "user", requestIp))) {
+        return jsonResponse({ ok: false, error: "Too many reset attempts. Please wait a minute and try again." }, 429);
+      }
       try {
         await confirmPasswordReset(env, email, code, newPassword, scope);
         return jsonResponse({ ok: true });
@@ -1202,19 +1299,21 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           error: `Company '${invalidCompany.company}' has source '${invalidCompany.source}' but the board URL or ATS identifiers could not be parsed. Check the URL and try again.`,
         }, 422);
       }
-      try {
-        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
-        const currentEnabled = enabledCompanyKeys(currentConfig.companies);
-        const nextEnabled = enabledCompanyKeys(companies);
-        if (maxCompanies !== null && nextEnabled.size > maxCompanies) {
-          const introducedEnabledCompany = [...nextEnabled].some((key) => !currentEnabled.has(key));
-          if (introducedEnabledCompany || nextEnabled.size > currentEnabled.size) {
-            return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+      if (!tenantContext.isAdmin) {
+        try {
+          const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+          const currentEnabled = enabledCompanyKeys(currentConfig.companies);
+          const nextEnabled = enabledCompanyKeys(companies);
+          if (maxCompanies !== null && nextEnabled.size > maxCompanies) {
+            const introducedEnabledCompany = [...nextEnabled].some((key) => !currentEnabled.has(key));
+            if (introducedEnabledCompany || nextEnabled.size > currentEnabled.size) {
+              return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+            }
           }
+        } catch {
+          // Fall through on plan-config lookup failure so config saves do not
+          // become unavailable if billing config is temporarily unreadable.
         }
-      } catch {
-        // Fall through on plan-config lookup failure so config saves do not
-        // become unavailable if billing config is temporarily unreadable.
       }
       const next: RuntimeConfig = {
         companies,
@@ -1250,17 +1349,19 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         : typeof body.enabled === "boolean"
           ? !body.enabled
           : !currentPaused;
-      try {
-        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
-        const enabledCompanies = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
-        const companyKey = slugify(companyName);
-        const currentlyEnabled = enabledCompanies.has(companyKey);
-        if (maxCompanies !== null && !paused && !currentlyEnabled && enabledCompanies.size >= maxCompanies) {
-          return jsonResponse(maxCompaniesError(maxCompanies, enabledCompanies.size), 403);
+      if (!tenantContext.isAdmin) {
+        try {
+          const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+          const enabledCompanies = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
+          const companyKey = slugify(companyName);
+          const currentlyEnabled = enabledCompanies.has(companyKey);
+          if (maxCompanies !== null && !paused && !currentlyEnabled && enabledCompanies.size >= maxCompanies) {
+            return jsonResponse(maxCompaniesError(maxCompanies, enabledCompanies.size), 403);
+          }
+        } catch {
+          // Ignore temporary pricing-config lookup failures and preserve the
+          // existing toggle path rather than blocking the whole settings flow.
         }
-      } catch {
-        // Ignore temporary pricing-config lookup failures and preserve the
-        // existing toggle path rather than blocking the whole settings flow.
       }
 
       const override = await setCompanyScanOverride(env, {
@@ -1289,21 +1390,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const companies = config.companies.map((company) => company.company).filter(Boolean);
-      try {
-        const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
-        const currentEnabled = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
-        const totalEnabledIfUnpaused = enabledCompanyKeys(config.companies);
-        if (
-          maxCompanies !== null
-          && body.paused === false
-          && totalEnabledIfUnpaused.size > maxCompanies
-          && currentEnabled.size < totalEnabledIfUnpaused.size
-        ) {
-          return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+      if (!tenantContext.isAdmin) {
+        try {
+          const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+          const currentEnabled = effectiveEnabledCompanyKeys(config.companies, currentOverrides);
+          const totalEnabledIfUnpaused = enabledCompanyKeys(config.companies);
+          if (
+            maxCompanies !== null
+            && body.paused === false
+            && totalEnabledIfUnpaused.size > maxCompanies
+            && currentEnabled.size < totalEnabledIfUnpaused.size
+          ) {
+            return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+          }
+        } catch {
+          // Preserve the existing bulk-toggle path if pricing config is
+          // temporarily unavailable.
         }
-      } catch {
-        // Preserve the existing bulk-toggle path if pricing config is
-        // temporarily unavailable.
       }
       const companyScanOverrides = await setCompanyScanOverrides(env, {
         tenantId: tenantContext.tenantId,
@@ -1811,7 +1914,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
 
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const inventory = await loadInventory(env, config, tenantContext.tenantId);
       const notes = String(body.notes ?? "").trim();
       const manualJob: JobPosting = {
@@ -1877,7 +1983,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/applied-jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const inventory = await loadInventory(env, config, tenantContext.tenantId);
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
@@ -2296,14 +2405,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!tenantContext.isAdmin) {
         return jsonResponse({ ok: false, error: "Admin access required" }, 403);
       }
-      const tenantIdFilter = (url.searchParams.get("tenantId") ?? url.searchParams.get("userId") ?? "").trim();
+      const requestedTenant = (url.searchParams.get("tenantId") ?? url.searchParams.get("userId") ?? "").trim();
       const reason = (url.searchParams.get("reason") ?? "").trim();
-      if (!tenantIdFilter) {
+      if (!requestedTenant) {
         return jsonResponse({ ok: false, error: "tenantId is required for break-glass log access" }, 400);
       }
       if (reason.length < 8) {
         return jsonResponse({ ok: false, error: "reason is required for break-glass log access" }, 400);
       }
+      const tenantIdFilter = await resolveBreakGlassTenantId(requestedTenant);
       await recordEvent({
         userId: tenantContext.userId,
         tenantId: tenantContext.tenantId,
@@ -2349,11 +2459,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         storage: "kv",
         retentionHours: 6,
         companyOptions: uniqueSortedCompanies(companyOptionLogs.map((log) => log.company ?? "")),
+        runOptions: [...new Set(companyOptionLogs.map((log) => log.runId ?? "").filter(Boolean))],
         logs,
       });
     }
 
     if (url.pathname === "/api/debug/webhook-url" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
       const stored = await loadEmailWebhookConfig(env);
       return jsonResponse({
         hasWebhook: Boolean(stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL),
@@ -2566,6 +2680,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     return withSecurity(await env.ASSETS.fetch(request));
   } catch (error) {
+    if (error instanceof InvalidJsonBodyError) {
+      return jsonResponse({ ok: false, error: error.message }, 400);
+    }
+    if (error instanceof RequestValidationError) {
+      return jsonResponse({ ok: false, error: error.message }, 400);
+    }
     const message = error instanceof Error ? error.message : String(error);
     console.log("[routes] unhandled exception", JSON.stringify({ error: message, stack: error instanceof Error ? error.stack : null }));
     return jsonResponse({ ok: false, error: message }, 500);

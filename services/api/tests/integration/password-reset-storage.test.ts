@@ -3,6 +3,33 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getRowMock = vi.fn();
 const putRowMock = vi.fn();
 const deleteRowMock = vi.fn();
+const updateSendMock = vi.fn();
+
+vi.mock("@aws-sdk/client-dynamodb", () => {
+  class DynamoDBClient {
+    send = updateSendMock;
+    constructor(_input: Record<string, unknown>) {}
+  }
+
+  class UpdateItemCommand {
+    input: Record<string, unknown>;
+    constructor(input: Record<string, unknown>) {
+      this.input = input;
+    }
+  }
+
+  class ConditionalCheckFailedException extends Error {}
+
+  return {
+    DynamoDBClient,
+    UpdateItemCommand,
+    ConditionalCheckFailedException,
+  };
+});
+
+vi.mock("@aws-sdk/util-dynamodb", () => ({
+  marshall: (value: Record<string, unknown>) => value,
+}));
 
 vi.mock("../../src/aws/dynamo", () => ({
   stateTableName: vi.fn(() => "state-table"),
@@ -15,6 +42,7 @@ describe("integration password reset storage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    updateSendMock.mockResolvedValue({});
   });
 
   it("round-trips store -> verify ok -> clear -> verify invalid", async () => {
@@ -87,5 +115,39 @@ describe("integration password reset storage", () => {
       email: "user@test.com",
       scope: "user",
     }));
+  });
+
+  it("locks and clears the code after five invalid attempts", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T21:00:00.000Z"));
+    const { verifyPasswordResetCode } = await import("../../src/storage/password-reset");
+
+    getRowMock.mockResolvedValueOnce({
+      pk: "PASSWORD-RESET#user@test.com",
+      sk: "CODE",
+      email: "user@test.com",
+      scope: "user",
+      codeHash: "irrelevant",
+      expiresAt: "2026-04-27T21:15:00.000Z",
+      expiresAtEpoch: Math.floor(Date.now() / 1000) + 60,
+      attempts: 4,
+      createdAt: "2026-04-27T19:00:00.000Z",
+    });
+
+    await expect(verifyPasswordResetCode("user@test.com", "654321", "user")).resolves.toBe("locked");
+    expect(deleteRowMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("atomically consumes the code before Cognito writes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-27T21:00:00.000Z"));
+    const { storePasswordResetCode, consumePasswordResetCode } = await import("../../src/storage/password-reset");
+
+    await storePasswordResetCode("user@test.com", "user", "123456");
+    const storedRow = putRowMock.mock.calls[0]?.[1];
+    getRowMock.mockResolvedValueOnce(storedRow);
+
+    await expect(consumePasswordResetCode("user@test.com", "123456", "user")).resolves.toBe("ok");
+    expect(updateSendMock).toHaveBeenCalledTimes(1);
   });
 });

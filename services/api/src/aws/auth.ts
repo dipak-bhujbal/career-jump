@@ -49,10 +49,12 @@ function displayNameFromClaims(claims: CognitoClaims): string {
 
 export function authHeaders(origin?: string | null): HeadersInit {
   const allowedOrigin = process.env.CORS_ALLOWED_ORIGIN || "*";
-  const responseOrigin = allowedOrigin === "*" ? "*" : (origin === allowedOrigin ? allowedOrigin : allowedOrigin);
+  // Reflect the configured origin contract directly so future env tightening
+  // does not depend on a misleading tautological branch.
+  const responseOrigin = allowedOrigin === "*" ? "*" : (origin === allowedOrigin ? origin : allowedOrigin);
   return {
     "Access-Control-Allow-Origin": responseOrigin,
-    "Access-Control-Allow-Headers": "authorization,content-type",
+    "Access-Control-Allow-Headers": "authorization,content-type,x-cj-session-id,x-cj-device-fingerprint",
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Max-Age": "300",
     Vary: "Origin",
@@ -83,8 +85,11 @@ function originVerified(request: Request): boolean {
   return request.headers.get("x-origin-verify") === originVerifyHeaderValue;
 }
 
+const SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 function hasSessionHeader(request: Request): boolean {
-  return Boolean(String(request.headers.get("x-cj-session-id") ?? "").trim());
+  const sessionId = String(request.headers.get("x-cj-session-id") ?? "").trim();
+  return SESSION_ID_PATTERN.test(sessionId);
 }
 
 function requestContextHeaders(context: RequestActor): Headers {
@@ -149,10 +154,6 @@ export async function authorizeRequest(
   }
 
   const pathname = new URL(request.url).pathname;
-  if (isPublicPath(pathname)) {
-    return { response: null, request };
-  }
-
   if (strictEdgeEnforcement && !originVerified(request)) {
     return {
       response: forbidden("Requests must come through the approved edge origin", request, 403),
@@ -164,6 +165,12 @@ export async function authorizeRequest(
     return {
       response: forbidden("This application is available only in the United States", request, 451),
     };
+  }
+
+  if (isPublicPath(pathname)) {
+    // Public account-recovery routes still inherit edge/country checks so they
+    // do not become the one unaudited hole in the perimeter model.
+    return { response: null, request };
   }
 
   if ((!userVerifier && !adminVerifier) || (!clientId && !adminClientId)) {
@@ -188,7 +195,7 @@ export async function authorizeRequest(
   }
   if (strictEdgeEnforcement && !hasSessionHeader(request)) {
     return {
-      response: forbidden("Missing session identifier", request, 401),
+      response: forbidden("Missing or invalid session identifier", request, 401),
     };
   }
 

@@ -105,15 +105,16 @@ function ticketPk(ticketId: string): string {
 
 async function generateSupportTicketId(): Promise<string> {
   const day = new Date().toISOString().slice(2, 10).replace(/-/g, "");
-  for (let attempt = 0; attempt < 5; attempt += 1) {
+  for (let attempt = 0; attempt < 12; attempt += 1) {
     // Keep support IDs short and human-friendly while still checking storage
-    // for collisions before we return them.
-    const randomPart = Math.floor(1000 + Math.random() * 9000);
+    // for collisions before we return them. Use a UUID slice so the entropy
+    // stays high without making the ticket too awkward to read to support.
+    const randomPart = crypto.randomUUID().replace(/-/g, "").slice(0, 8).toUpperCase();
     const ticketId = `CJ-${day}-${randomPart}`;
     const existing = await getSupportTicket(ticketId);
     if (!existing) return ticketId;
   }
-  return `CJ-${Date.now().toString().slice(-8)}`;
+  return `CJ-${day}-${crypto.randomUUID().replace(/-/g, "").slice(0, 12).toUpperCase()}`;
 }
 
 function normalizePlan(plan?: string | null): UserPlan {
@@ -263,13 +264,28 @@ export async function ensureUserProfile(actor: RequestActor): Promise<UserProfil
   const existing = await loadUserProfileRow(actor.userId);
   const timestamp = nowISO();
   if (existing) {
+    const nextDisplayName = actor.displayName || existing.displayName;
+    const nextEmail = actor.email.toLowerCase();
+    const nextScope = normalizeScope(actor.scope);
+    const lastLoginMs = Date.parse(existing.lastLoginAt || "");
+    const shouldRefreshLastLogin = !Number.isFinite(lastLoginMs) || (Date.now() - lastLoginMs) >= (5 * 60 * 1000);
+    const changedIdentity =
+      existing.displayName !== nextDisplayName
+      || existing.email !== nextEmail
+      || existing.tenantId !== actor.tenantId
+      || existing.scope !== nextScope;
+
+    if (!changedIdentity && !shouldRefreshLastLogin) {
+      return existing;
+    }
+
     const refreshed: UserTableProfileRow = {
       ...existing,
-      displayName: actor.displayName || existing.displayName,
-      email: actor.email,
+      displayName: nextDisplayName,
+      email: nextEmail,
       tenantId: actor.tenantId,
-      scope: normalizeScope(actor.scope),
-      lastLoginAt: timestamp,
+      scope: nextScope,
+      lastLoginAt: shouldRefreshLastLogin ? timestamp : existing.lastLoginAt,
     };
     await putRow(usersTableName(), refreshed);
     return refreshed;
@@ -769,7 +785,20 @@ export async function listAdminTickets(status?: SupportTicketStatus): Promise<Su
       { indexName: "status-index", scanIndexForward: false, limit: 100 }
     );
   }
-  return scanRows<SupportTicketMetadataRow>(supportTableName(), "sk = :metadata", { ":metadata": "METADATA" }, 100);
+
+  // Query each canonical status bucket instead of scanning the entire support
+  // table so admin ticket listing stays bounded as message volume grows.
+  const grouped = await Promise.all(
+    (["open", "in_progress", "resolved", "closed"] as const).map((ticketStatus) =>
+      queryRows<SupportTicketMetadataRow>(
+        supportTableName(),
+        "gsi1pk = :status",
+        { ":status": ticketStatus },
+        { indexName: "status-index", scanIndexForward: false, limit: 100 },
+      )
+    )
+  );
+  return grouped.flat().sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).slice(0, 200);
 }
 
 export async function verifyAdminBootstrapEmail(): Promise<string | null> {

@@ -79,20 +79,21 @@ export function useAdminSummary() {
   });
 }
 
-export function useAdminUsers(query: string) {
+export function useAdminUsers(query: string, enabled = true) {
   const qs = query.trim() ? `?q=${encodeURIComponent(query.trim())}` : "";
   return useQuery({
     queryKey: ["admin-users", query],
     queryFn: () => api.get<AdminUsersEnvelope>(`/api/admin/users${qs}`),
+    enabled,
     staleTime: 10_000,
   });
 }
 
-export function useAdminUser(userId: string | null) {
+export function useAdminUser(userId: string | null, enabled = true) {
   return useQuery({
     queryKey: ["admin-user", userId],
     queryFn: () => api.get<AdminUserEnvelope>(`/api/admin/users/${userId}`),
-    enabled: Boolean(userId),
+    enabled: enabled && Boolean(userId),
     staleTime: 10_000,
   });
 }

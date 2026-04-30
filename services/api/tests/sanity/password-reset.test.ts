@@ -4,8 +4,9 @@ import type { Env } from "../../src/types";
 const cognitoSendMock = vi.fn();
 const sesSendMock = vi.fn();
 const storePasswordResetCodeMock = vi.fn();
-const verifyPasswordResetCodeMock = vi.fn();
+const consumePasswordResetCodeMock = vi.fn();
 const clearPasswordResetCodeMock = vi.fn();
+const recordPasswordResetConfirmAttemptMock = vi.fn();
 
 vi.mock("@aws-sdk/client-cognito-identity-provider", () => {
   class CognitoIdentityProviderClient {
@@ -62,8 +63,9 @@ vi.mock("../../src/storage/password-reset", async () => {
     ...actual,
     createResetCode: vi.fn(() => "123456"),
     storePasswordResetCode: storePasswordResetCodeMock,
-    verifyPasswordResetCode: verifyPasswordResetCodeMock,
+    consumePasswordResetCode: consumePasswordResetCodeMock,
     clearPasswordResetCode: clearPasswordResetCodeMock,
+    recordPasswordResetConfirmAttempt: recordPasswordResetConfirmAttemptMock,
   };
 });
 
@@ -118,8 +120,9 @@ describe("api sanity password reset", () => {
     });
     sesSendMock.mockResolvedValue({});
     storePasswordResetCodeMock.mockResolvedValue(undefined);
-    verifyPasswordResetCodeMock.mockResolvedValue("ok");
+    consumePasswordResetCodeMock.mockResolvedValue("ok");
     clearPasswordResetCodeMock.mockResolvedValue(undefined);
+    recordPasswordResetConfirmAttemptMock.mockResolvedValue(true);
   });
 
   it("stores a reset token and triggers email delivery for a known email", async () => {
@@ -164,7 +167,7 @@ describe("api sanity password reset", () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({ ok: true });
-    expect(verifyPasswordResetCodeMock).toHaveBeenCalledWith("user@test.com", "123456", "user");
+    expect(consumePasswordResetCodeMock).toHaveBeenCalledWith("user@test.com", "123456", "user");
     expect(cognitoSendMock.mock.calls.some(([command]) => command.__type === "AdminSetUserPasswordCommand")).toBe(true);
     expect(clearPasswordResetCodeMock).toHaveBeenCalledWith("user@test.com");
     expect(sesSendMock).not.toHaveBeenCalled();
@@ -182,12 +185,29 @@ describe("api sanity password reset", () => {
       ok: false,
       error: "Email, code, and new password are required",
     });
-    expect(verifyPasswordResetCodeMock).not.toHaveBeenCalled();
+    expect(consumePasswordResetCodeMock).not.toHaveBeenCalled();
     expect(clearPasswordResetCodeMock).not.toHaveBeenCalled();
   });
 
+  it("rate-limits reset confirmations when too many attempts hit the same bucket", async () => {
+    recordPasswordResetConfirmAttemptMock.mockResolvedValueOnce(false);
+
+    const response = await request(handleRequest, "/api/auth/reset/confirm", {
+      email: "user@test.com",
+      code: "123456",
+      newPassword: "StrongerPassword123!",
+    });
+
+    expect(response.status).toBe(429);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Too many reset attempts. Please wait a minute and try again.",
+    });
+    expect(consumePasswordResetCodeMock).not.toHaveBeenCalled();
+  });
+
   it("does not update the password when the reset code is expired", async () => {
-    verifyPasswordResetCodeMock.mockResolvedValueOnce("expired");
+    consumePasswordResetCodeMock.mockResolvedValueOnce("expired");
 
     const response = await request(handleRequest, "/api/auth/reset/confirm", {
       email: "user@test.com",
@@ -205,7 +225,7 @@ describe("api sanity password reset", () => {
   });
 
   it("does not update the password when the reset code is invalid or already used", async () => {
-    verifyPasswordResetCodeMock.mockResolvedValueOnce("invalid");
+    consumePasswordResetCodeMock.mockResolvedValueOnce("invalid");
 
     const response = await request(handleRequest, "/api/auth/reset/confirm", {
       email: "user@test.com",
@@ -220,5 +240,22 @@ describe("api sanity password reset", () => {
     });
     expect(cognitoSendMock.mock.calls.some(([command]) => command.__type === "AdminSetUserPasswordCommand")).toBe(false);
     expect(clearPasswordResetCodeMock).not.toHaveBeenCalled();
+  });
+
+  it("locks the reset flow after too many invalid attempts", async () => {
+    consumePasswordResetCodeMock.mockResolvedValueOnce("locked");
+
+    const response = await request(handleRequest, "/api/auth/reset/confirm", {
+      email: "user@test.com",
+      code: "999999",
+      newPassword: "StrongerPassword123!",
+    });
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toMatchObject({
+      ok: false,
+      error: "Too many invalid reset attempts. Request a new code.",
+    });
+    expect(cognitoSendMock.mock.calls.some(([command]) => command.__type === "AdminSetUserPasswordCommand")).toBe(false);
   });
 });

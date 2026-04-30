@@ -8,7 +8,7 @@ vi.mock("@tanstack/react-router", async () => {
   const actual = await vi.importActual<typeof import("@tanstack/react-router")>("@tanstack/react-router");
   return {
     ...actual,
-    createFileRoute: () => () => ({ component: AdminDocsRoute }),
+    createFileRoute: () => () => ({ component: () => null }),
     useLocation: () => ({ pathname: "/admin-docs" }),
     Link: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   };
@@ -16,6 +16,25 @@ vi.mock("@tanstack/react-router", async () => {
 
 vi.mock("@/features/session/queries", () => ({
   useMe: () => useMeMock(),
+}));
+
+vi.mock("@/components/layout/topbar", () => ({
+  Topbar: ({ title, subtitle }: { title: string; subtitle: string }) => (
+    <div>
+      <div>{title}</div>
+      <div>{subtitle}</div>
+    </div>
+  ),
+}));
+
+vi.mock("@/components/admin/admin-shell", () => ({
+  AdminPageFrame: ({ children, title, description }: { children: React.ReactNode; title: string; description: string }) => (
+    <div>
+      <div>{title}</div>
+      <div>{description}</div>
+      {children}
+    </div>
+  ),
 }));
 
 describe("AdminDocsRoute", () => {
@@ -34,7 +53,6 @@ describe("AdminDocsRoute", () => {
 
     expect(screen.getByText("Inspect the live API contract without leaving admin")).toBeInTheDocument();
     expect(screen.getByTitle("Career Jump API Docs")).toBeInTheDocument();
-    expect(screen.getByText("Open in new tab")).toBeInTheDocument();
+    expect(screen.getByText("Swagger UI")).toBeInTheDocument();
   });
 });
-

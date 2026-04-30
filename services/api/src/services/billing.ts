@@ -4,6 +4,12 @@ import { billingTableName, putRow } from "../aws/dynamo";
 import { nowISO } from "../lib/utils";
 import type { UserPlan } from "../types";
 
+const VALID_USER_PLANS: UserPlan[] = ["free", "starter", "pro", "power"];
+
+function parseUserPlan(value: unknown): UserPlan | null {
+  return VALID_USER_PLANS.includes(value as UserPlan) ? (value as UserPlan) : null;
+}
+
 function makeStripeClient(secretKey: string): Stripe {
   return new Stripe(secretKey, { apiVersion: "2025-02-24.acacia" });
 }
@@ -60,7 +66,7 @@ export async function handleStripeWebhook(
   if (event.type === "checkout.session.completed") {
     const session = event.data.object as Stripe.Checkout.Session;
     const tenantId = session.metadata?.tenantId;
-    const plan = session.metadata?.plan as UserPlan | undefined;
+    const plan = parseUserPlan(session.metadata?.plan);
     const stripeCustomerId = typeof session.customer === "string" ? session.customer : null;
     const stripeSubscriptionId = typeof session.subscription === "string" ? session.subscription : null;
 
@@ -87,11 +93,12 @@ export async function handleStripeWebhook(
         : sub.status === "trialing" ? "trialing"
         : sub.status === "active" ? "active"
         : "canceled";
+      const plan = parseUserPlan(sub.metadata?.plan) ?? "free";
       await putRow(billingTableName(), {
         pk: `USER#${tenantId}`,
         sk: "SUBSCRIPTION",
         userId: tenantId,
-        plan: (sub.metadata?.plan as UserPlan) ?? "free",
+        plan,
         status,
         provider: "stripe",
         stripeCustomerId: typeof sub.customer === "string" ? sub.customer : undefined,

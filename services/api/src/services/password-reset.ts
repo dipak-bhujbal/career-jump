@@ -7,10 +7,10 @@ import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 import type { Env } from "../types";
 import {
   clearPasswordResetCode,
+  consumePasswordResetCode,
   createResetCode,
   storePasswordResetCode,
   type PasswordResetScope,
-  verifyPasswordResetCode,
 } from "../storage/password-reset";
 
 const cognito = new CognitoIdentityProviderClient({});
@@ -129,8 +129,11 @@ export async function confirmPasswordReset(
 ): Promise<void> {
   const target = await resolvePasswordResetTarget(email, preferredScope);
   if (!target) throw new Error("Invalid or expired reset code");
-  const verification = await verifyPasswordResetCode(target.email, code, target.scope);
+  // Consume the code before the Cognito password write so duplicate submits or
+  // attacker races cannot reuse the same reset token.
+  const verification = await consumePasswordResetCode(target.email, code, target.scope);
   if (verification === "expired") throw new Error("Reset code expired. Request a new code.");
+  if (verification === "locked") throw new Error("Too many invalid reset attempts. Request a new code.");
   if (verification !== "ok") throw new Error("Invalid reset code");
   await cognito.send(new AdminSetUserPasswordCommand({
     UserPoolId: target.userPoolId,

@@ -24,7 +24,11 @@ import { Sparkles } from "lucide-react";
 const PUBLIC_PATHS = ["/login", "/signup", "/verify-email", "/forgot-password", "/privacy"];
 
 function isPublicPath(pathname: string): boolean {
-  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(p));
+  return PUBLIC_PATHS.some((p) => pathname === p || pathname.startsWith(`${p}/`));
+}
+
+function isAdminScopedPath(pathname: string): boolean {
+  return pathname === "/logs" || pathname === "/admin" || pathname.startsWith("/admin-");
 }
 
 function AppShell() {
@@ -66,7 +70,8 @@ function AuthGate() {
     if (status === "unauthenticated" && !isPublicPath(pathname)) {
       // Use a hard same-origin redirect here because the blank-screen bug
       // occurs before the SPA can reliably complete a client-side transition.
-      window.location.replace("/login");
+      const loginUrl = isAdminScopedPath(pathname) ? "/login?admin=1" : "/login";
+      window.location.replace(loginUrl);
     }
   }, [pathname, status]);
 

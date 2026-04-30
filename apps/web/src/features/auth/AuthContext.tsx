@@ -55,6 +55,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [error, setError] = useState<AuthError | null>(null);
   const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  function tokenExpiresInMs(idToken: string): number | null {
+    try {
+      const parts = idToken.split(".");
+      if (parts.length < 2) return null;
+      const payload = JSON.parse(atob(parts[1])) as { exp?: number };
+      if (!payload.exp) return null;
+      return (payload.exp * 1000) - Date.now();
+    } catch {
+      return null;
+    }
+  }
+
   function scheduleRefresh(expiresInMs: number) {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
     // Refresh 5 minutes before expiry
@@ -63,6 +75,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const refreshed = await auth.refreshSession();
       if (refreshed) {
         setUser(refreshed);
+        const nextExpiresInMs = tokenExpiresInMs(refreshed.idToken);
+        if (nextExpiresInMs !== null) scheduleRefresh(nextExpiresInMs);
       } else {
         setUser(null);
         setStatus("unauthenticated");
@@ -78,14 +92,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(existing);
         setStatus("authenticated");
         // Schedule proactive refresh
-        const t = existing.idToken;
-        try {
-          const parts = t.split(".");
-          if (parts.length >= 2) {
-            const payload = JSON.parse(atob(parts[1])) as { exp?: number };
-            if (payload.exp) scheduleRefresh((payload.exp * 1000) - Date.now());
-          }
-        } catch { /* ignore parse errors on mock tokens */ }
+        const expiresInMs = tokenExpiresInMs(existing.idToken);
+        if (expiresInMs !== null) scheduleRefresh(expiresInMs);
         return;
       }
       // No valid token — try silent refresh
@@ -93,6 +101,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (refreshed) {
         setUser(refreshed);
         setStatus("authenticated");
+        const expiresInMs = tokenExpiresInMs(refreshed.idToken);
+        if (expiresInMs !== null) scheduleRefresh(expiresInMs);
       } else {
         setStatus("unauthenticated");
       }
@@ -107,6 +117,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const u = await auth.signIn(email, password, rememberMe, scope);
       setUser(u);
       setStatus("authenticated");
+      const expiresInMs = tokenExpiresInMs(u.idToken);
+      if (expiresInMs !== null) scheduleRefresh(expiresInMs);
     } catch (e) {
       setError(e as AuthError);
       throw e;
@@ -165,6 +177,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const signOut = useCallback(() => {
     auth.signOut();
+    if (refreshTimer.current) clearTimeout(refreshTimer.current);
     setUser(null);
     setStatus("unauthenticated");
     setError(null);

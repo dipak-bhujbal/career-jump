@@ -15,17 +15,20 @@ export const Route = createFileRoute("/admin-users")({ component: AdminUsersRout
 
 const PLAN_OPTIONS = ["free", "starter", "pro", "power"] as const;
 
-function AdminUsersRoute() {
+export function AdminUsersRoute() {
   const { data: me } = useMe();
   const location = useLocation();
   const [query, setQuery] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
-  const { data } = useAdminUsers(query);
-  const { data: selected } = useAdminUser(selectedUserId);
+  const isAdmin = me?.actor?.isAdmin === true;
+  // Keep the admin-user queries dormant until the session is confirmed to be
+  // an admin so non-admin visits do not spray avoidable 403 traffic.
+  const { data } = useAdminUsers(query, isAdmin);
+  const { data: selected } = useAdminUser(selectedUserId, isAdmin);
   const setStatus = useSetAdminUserStatus(selectedUserId);
   const setPlan = useSetAdminUserPlan(selectedUserId);
 
-  if (!me?.actor?.isAdmin) {
+  if (!isAdmin) {
     return (
       <>
         <Topbar title="Users" subtitle="Admin access required" />

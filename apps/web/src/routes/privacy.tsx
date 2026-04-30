@@ -50,7 +50,7 @@ function PrivacyRoute() {
             <p><strong className="text-[hsl(var(--foreground))]">Account information:</strong> Email address, display name, and encrypted password (handled by AWS Cognito — we never see your raw password).</p>
             <p><strong className="text-[hsl(var(--foreground))]">Job tracking data:</strong> Job listings you view or apply to, application status, interview notes, and action plan entries. This data is yours and isolated to your account.</p>
             <p><strong className="text-[hsl(var(--foreground))]">Usage data:</strong> Application logs retained for 6 hours for debugging. No long-term behavioral analytics.</p>
-            <p><strong className="text-[hsl(var(--foreground))]">Device data:</strong> Browser preferences (theme, density) stored in your browser's local storage only — not transmitted to our servers.</p>
+            <p><strong className="text-[hsl(var(--foreground))]">Device and session data:</strong> Browser preferences (theme, density) stay in local storage, while a session identifier and coarse device-security fingerprint are sent with API requests to help us detect broken sessions, protect accounts, and debug sign-in issues.</p>
           </Section>
 
           <Section title="3. How We Use Your Information">
@@ -87,14 +87,14 @@ function PrivacyRoute() {
           </Section>
 
           <Section title="7. Email Communications">
-            <p>We send transactional emails (verification, password reset) and optional notification emails (new jobs, weekly digest, status updates) via Amazon SES. You can manage notification preferences from Settings → Email Notifications. Transactional emails cannot be opted out of as they are required for account security.</p>
+            <p>We send transactional emails (verification, password reset) and optional notification emails (new jobs, weekly digest, status updates) through our configured delivery providers, which can include AWS SES and an admin-managed webhook relay. You can manage notification preferences from Settings → Email Notifications. Transactional emails cannot be opted out of as they are required for account security.</p>
           </Section>
 
           <Section title="8. Third-Party Services">
             <ul className="list-disc list-inside space-y-1">
               <li><strong className="text-[hsl(var(--foreground))]">AWS Cognito</strong> — authentication and identity management (US)</li>
               <li><strong className="text-[hsl(var(--foreground))]">AWS DynamoDB</strong> — data storage, encrypted at rest (US-East-1)</li>
-              <li><strong className="text-[hsl(var(--foreground))]">AWS SES</strong> — email delivery (US)</li>
+              <li><strong className="text-[hsl(var(--foreground))]">AWS SES and admin-managed mail relays</strong> — transactional and notification email delivery (US)</li>
               <li><strong className="text-[hsl(var(--foreground))]">AWS CloudFront / S3</strong> — static asset hosting (US CDN)</li>
             </ul>
             <p>All third parties are AWS services subject to AWS's compliance certifications (SOC2, ISO 27001, HIPAA-eligible).</p>

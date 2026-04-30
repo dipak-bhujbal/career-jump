@@ -9,6 +9,7 @@ const sesSendMock = vi.fn();
 const putRowMock = vi.fn();
 const getRowMock = vi.fn();
 const deleteRowMock = vi.fn();
+const updateSendMock = vi.fn();
 
 vi.mock("@aws-sdk/client-cognito-identity-provider", () => {
   class CognitoIdentityProviderClient {
@@ -40,6 +41,26 @@ vi.mock("@aws-sdk/client-sesv2", () => {
   }
   return { SESv2Client, SendEmailCommand };
 });
+
+vi.mock("@aws-sdk/client-dynamodb", () => {
+  class DynamoDBClient {
+    send = updateSendMock;
+    constructor(_input: Record<string, unknown>) {}
+  }
+
+  class UpdateItemCommand {
+    input: Record<string, unknown>;
+    constructor(input: Record<string, unknown>) { this.input = input; }
+  }
+
+  class ConditionalCheckFailedException extends Error {}
+
+  return { DynamoDBClient, UpdateItemCommand, ConditionalCheckFailedException };
+});
+
+vi.mock("@aws-sdk/util-dynamodb", () => ({
+  marshall: (value: Record<string, unknown>) => value,
+}));
 
 vi.mock("../../src/aws/dynamo", () => ({
   stateTableName: vi.fn(() => "state-table"),
@@ -101,6 +122,7 @@ describe("e2e password reset flow", () => {
     deleteRowMock.mockImplementation(async (_table: string, keys: Record<string, unknown>) => {
       dynamo.delete(`${keys.pk}#${keys.sk}`);
     });
+    updateSendMock.mockResolvedValue({});
 
     // Cognito: user exists in the user pool
     cognitoSendMock.mockImplementation(async (command: { __type?: string; input?: Record<string, unknown> }) => {

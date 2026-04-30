@@ -56,6 +56,14 @@ const SUPPORT_CATEGORIES = [
   { value: "other", label: "Other" },
 ] as const;
 
+function isProfileSection(value: string | undefined): value is Section {
+  return value === "account"
+    || value === "subscription"
+    || value === "password"
+    || value === "support"
+    || value === "danger";
+}
+
 function supportCategoryLabel(tag?: string | null): string {
   return SUPPORT_CATEGORIES.find((option) => option.value === tag)?.label ?? "General";
 }
@@ -876,9 +884,16 @@ function ProfileRoute() {
   const initial = (displayName[0] ?? "U").toUpperCase();
 
   useEffect(() => {
-    if (search.tab === "subscription") {
-      setActiveSection("subscription");
+    // Keep profile deep-links stable across every supported sidebar section
+    // instead of only honoring the subscription tab.
+    if (isProfileSection(search.tab)) {
+      setActiveSection(search.tab);
+      return;
     }
+
+    // Unknown tab values should fall back to the default account section
+    // rather than leaving the page on a stale previously selected section.
+    setActiveSection("account");
   }, [search.tab]);
 
   useEffect(() => {
