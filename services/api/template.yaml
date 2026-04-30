@@ -58,6 +58,7 @@ Globals:
         ADMIN_COGNITO_USER_POOL_ID: !Ref AdminUserPool
         ADMIN_COGNITO_CLIENT_ID: !Ref AdminUserPoolClient
         AWS_STATE_TABLE: !Ref StateTable
+        AWS_CONFIG_TABLE: !Ref ConfigTable
         AWS_REGISTRY_TABLE: !Ref RegistryTable
         AWS_RAW_SCANS_TABLE: !Ref RawScansTable
         AWS_USERS_TABLE: !Ref UsersTable
@@ -92,6 +93,27 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
         Enabled: true
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  ConfigTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-config"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
       Tags:
         - Key: app
           Value: !Ref AppName
@@ -744,6 +766,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
         # Admin analytics caches and a few registry-backed admin flows persist
         # lightweight state into the shared registry table, so the API needs
         # write access here rather than read-only access.
@@ -805,6 +829,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
         # Workday scan-state persistence and custom-company promotion both
         # write registry rows during scan execution, so read-only access is not
         # sufficient here.
@@ -858,6 +884,8 @@ Resources:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
         - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
+        - DynamoDBCrudPolicy:
             TableName: !Ref RegistryTable
         # Manual scans fan out through this worker, and the quota-aware scan
         # path atomically consumes daily live-scan slots from BillingTable.
@@ -898,6 +926,8 @@ Resources:
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref StateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
         - DynamoDBReadPolicy:
             TableName: !Ref RegistryTable
         # Email delivery loads feature flags from the shared support table
@@ -1412,6 +1442,9 @@ Outputs:
   StateTableName:
     Description: DynamoDB state table.
     Value: !Ref StateTable
+  ConfigTableName:
+    Description: DynamoDB tenant config table.
+    Value: !Ref ConfigTable
   RegistryTableName:
     Description: DynamoDB registry table.
     Value: !Ref RegistryTable

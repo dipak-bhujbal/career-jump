@@ -1,5 +1,6 @@
 import { CONFIG_KEY } from "./constants";
 import { inferAtsIdFromUrl, normalizeAtsId } from "./ats/shared/normalize";
+import { getRow, putRow } from "./aws/dynamo";
 import { hyphenSlug, nowISO, slugify } from "./lib/utils";
 import { configStoreKv } from "./lib/bindings";
 import { tenantScopedKey } from "./lib/tenant";
@@ -7,6 +8,68 @@ import { getByCompany, loadRegistryCache } from "./storage/registry-cache";
 import { loadCompanyScanOverrides } from "./storage";
 import type { CompanyInput, DetectedConfig, Env, JobTitleConfig, RuntimeConfig, Source } from "./types";
 import { typedSeedCompanies, typedSeedJobtitles } from "./types";
+
+const RUNTIME_CONFIG_ROW_SK = "RUNTIME_CONFIG";
+const DEFAULT_CONFIG_TENANT_ID = "__default__";
+
+type RuntimeConfigTableRow = {
+  pk: string;
+  sk: string;
+  tenantId: string;
+  config?: RuntimeConfig;
+  updatedAt?: string;
+  updatedByUserId?: string;
+};
+
+function runtimeConfigTableName(): string | null {
+  const value = process.env.AWS_CONFIG_TABLE?.trim();
+  return value || null;
+}
+
+function runtimeConfigTenantKey(tenantId?: string): string {
+  return tenantId?.trim() || DEFAULT_CONFIG_TENANT_ID;
+}
+
+function runtimeConfigPartitionKey(tenantId?: string): string {
+  return `TENANT#${runtimeConfigTenantKey(tenantId)}`;
+}
+
+function runtimeConfigSortKey(): string {
+  return RUNTIME_CONFIG_ROW_SK;
+}
+
+async function loadRuntimeConfigRow(tenantId?: string): Promise<RuntimeConfigTableRow | null> {
+  const tableName = runtimeConfigTableName();
+  if (!tableName) return null;
+  // Dedicated tenant config rows live outside the generic KV shim so config
+  // reads/writes can be isolated from noisy runtime-state traffic.
+  return getRow<RuntimeConfigTableRow>(tableName, {
+    pk: runtimeConfigPartitionKey(tenantId),
+    sk: runtimeConfigSortKey(),
+  }, true);
+}
+
+async function saveRuntimeConfigRow(
+  config: RuntimeConfig,
+  tenantId?: string,
+  updatedByUserId?: string,
+): Promise<void> {
+  const tableName = runtimeConfigTableName();
+  if (!tableName) return;
+  await putRow(tableName, {
+    pk: runtimeConfigPartitionKey(tenantId),
+    sk: runtimeConfigSortKey(),
+    tenantId: runtimeConfigTenantKey(tenantId),
+    config,
+    updatedAt: config.updatedAt,
+    updatedByUserId,
+  });
+}
+
+function runtimeConfigFromTableRow(row: RuntimeConfigTableRow | null): RuntimeConfig | null {
+  if (!row?.config || typeof row.config !== "object") return null;
+  return row.config;
+}
 
 function sanitizeStringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -572,13 +635,15 @@ export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<Ru
   const kv = configStoreKv(env);
   const scopedKey = tenantScopedKey(tenantId, CONFIG_KEY);
   const legacyKey = tenantScopedKey(undefined, CONFIG_KEY);
+  const tableConfig = runtimeConfigFromTableRow(await loadRuntimeConfigRow(tenantId));
   const scopedRaw = await kv.get(scopedKey, "json");
-  const legacyRaw = !scopedRaw && tenantId
+  const legacyRaw = !tableConfig && !scopedRaw && tenantId
     // Migrate legacy single-tenant configs forward so existing users keep
     // their saved company lists when tenant scoping is enabled.
     ? await kv.get(legacyKey, "json")
     : null;
-  const raw = scopedRaw ?? legacyRaw;
+  const raw = tableConfig ?? scopedRaw ?? legacyRaw;
+  const usedTableConfig = Boolean(tableConfig);
   const usedLegacyFallback = !scopedRaw && Boolean(legacyRaw);
 
   if (!raw || typeof raw !== "object") {
@@ -596,8 +661,17 @@ export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<Ru
   };
   const serializedRaw = JSON.stringify(raw);
   const serializedNormalized = JSON.stringify(normalized);
-  if (serializedNormalized !== serializedRaw) {
-    // Persist only when normalization actually repaired or enriched stored config.
+  if (usedTableConfig) {
+    if (serializedNormalized !== serializedRaw) {
+      // Persist only when normalization actually repaired or enriched stored
+      // config, otherwise keep read traffic side-effect free.
+      await saveRuntimeConfigRow(normalized, tenantId);
+    }
+  } else if (runtimeConfigTableName()) {
+    // Copy forward legacy KV-backed configs into the dedicated tenant config
+    // table so future reads stay isolated from generic CONFIG_STORE traffic.
+    await saveRuntimeConfigRow(normalized, tenantId);
+  } else if (serializedNormalized !== serializedRaw) {
     await kv.put(scopedKey, serializedNormalized);
   } else if (tenantId && usedLegacyFallback) {
     // Copy unchanged legacy configs into the tenant key on first read so later
@@ -612,7 +686,7 @@ export async function saveRuntimeConfig(
   env: Env,
   config: RuntimeConfig,
   tenantId?: string,
-  _createdByUserId?: string
+  createdByUserId?: string
 ): Promise<void> {
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(config.companies));
   const normalized: RuntimeConfig = {
@@ -620,6 +694,11 @@ export async function saveRuntimeConfig(
     jobtitles: sanitizeJobtitles(config.jobtitles),
     updatedAt: nowISO(),
   };
+
+  if (runtimeConfigTableName()) {
+    await saveRuntimeConfigRow(normalized, tenantId, createdByUserId);
+    return;
+  }
 
   await configStoreKv(env).put(tenantScopedKey(tenantId, CONFIG_KEY), JSON.stringify(normalized));
 }
