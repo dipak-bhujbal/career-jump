@@ -4,7 +4,7 @@ import { getRow, putRow } from "./aws/dynamo";
 import { hyphenSlug, nowISO, slugify } from "./lib/utils";
 import { configStoreKv } from "./lib/bindings";
 import { tenantScopedKey } from "./lib/tenant";
-import { getByCompany, loadRegistryCache } from "./storage/registry-cache";
+import { getByCompany, listAll, loadRegistryCache } from "./storage/registry-cache";
 import { loadCompanyScanOverrides } from "./storage";
 import type { CompanyInput, DetectedConfig, Env, JobTitleConfig, RuntimeConfig, Source } from "./types";
 import { typedSeedCompanies, typedSeedJobtitles } from "./types";
@@ -553,6 +553,65 @@ export function sanitizeCompanies(input: unknown): CompanyInput[] {
     .map(normalizeCompany);
 }
 
+function registryEntryToCompanyInput(entry: {
+  company: string;
+  ats: string | null;
+  board_url: string | null;
+  sample_url?: string | null;
+  tier: string;
+}): CompanyInput | null {
+  if (!entry.board_url) return null;
+  return normalizeCompany({
+    company: entry.company,
+    enabled: true,
+    source: normalizeSource(entry.ats) ?? inferSourceFromUrl(entry.board_url || entry.sample_url || undefined),
+    boardUrl: entry.board_url,
+    sampleUrl: entry.sample_url ?? entry.board_url,
+    isRegistry: true,
+    registryAts: entry.ats ?? undefined,
+    registryTier: entry.tier,
+  });
+}
+
+export async function expandAdminRuntimeConfigCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
+  await loadRegistryCache();
+  const registryCompanies = listAll()
+    .map(registryEntryToCompanyInput)
+    .filter((company): company is CompanyInput => Boolean(company));
+
+  if (!registryCompanies.length) return companies;
+
+  const registryByKey = new Map(registryCompanies.map((company) => [slugify(company.company), company]));
+  const merged = companies.map((company) => {
+    const registryCompany = registryByKey.get(slugify(company.company));
+    if (!registryCompany) return company;
+
+    // Preserve admin-local enablement and aliases while forcing canonical
+    // registry ATS metadata so super-user accounts always stay aligned with
+    // the latest registry board URLs.
+    return normalizeCompany({
+      ...company,
+      ...registryCompany,
+      enabled: company.enabled !== false,
+      aliases: company.aliases ?? [],
+      isRegistry: true,
+      registryAts: registryCompany.registryAts ?? company.registryAts,
+      registryTier: registryCompany.registryTier ?? company.registryTier,
+    } as unknown as Record<string, unknown>);
+  });
+
+  const existingKeys = new Set(merged.map((company) => slugify(company.company)));
+  for (const registryCompany of registryCompanies) {
+    const key = slugify(registryCompany.company);
+    if (!existingKeys.has(key)) {
+      merged.push(registryCompany);
+      existingKeys.add(key);
+    }
+  }
+
+  return merged;
+}
+
 async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
   const needsRegistryHydration = companies.some((company) => {
     const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
@@ -631,7 +690,11 @@ export function sanitizeJobtitles(input: unknown): JobTitleConfig {
   };
 }
 
-export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<RuntimeConfig> {
+export async function loadRuntimeConfig(
+  env: Env,
+  tenantId?: string,
+  options: { isAdmin?: boolean; updatedByUserId?: string } = {},
+): Promise<RuntimeConfig> {
   const kv = configStoreKv(env);
   const scopedKey = tenantScopedKey(tenantId, CONFIG_KEY);
   const legacyKey = tenantScopedKey(undefined, CONFIG_KEY);
@@ -654,8 +717,11 @@ export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<Ru
 
   const obj = raw as Record<string, unknown>;
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(obj.companies));
+  const effectiveCompanies = options.isAdmin
+    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies)
+    : hydratedCompanies;
   const normalized = {
-    companies: hydratedCompanies,
+    companies: effectiveCompanies,
     jobtitles: sanitizeJobtitles(obj.jobtitles),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
   };
@@ -665,12 +731,12 @@ export async function loadRuntimeConfig(env: Env, tenantId?: string): Promise<Ru
     if (serializedNormalized !== serializedRaw) {
       // Persist only when normalization actually repaired or enriched stored
       // config, otherwise keep read traffic side-effect free.
-      await saveRuntimeConfigRow(normalized, tenantId);
+      await saveRuntimeConfigRow(normalized, tenantId, options.updatedByUserId);
     }
   } else if (runtimeConfigTableName()) {
     // Copy forward legacy KV-backed configs into the dedicated tenant config
     // table so future reads stay isolated from generic CONFIG_STORE traffic.
-    await saveRuntimeConfigRow(normalized, tenantId);
+    await saveRuntimeConfigRow(normalized, tenantId, options.updatedByUserId);
   } else if (serializedNormalized !== serializedRaw) {
     await kv.put(scopedKey, serializedNormalized);
   } else if (tenantId && usedLegacyFallback) {
@@ -686,11 +752,15 @@ export async function saveRuntimeConfig(
   env: Env,
   config: RuntimeConfig,
   tenantId?: string,
-  createdByUserId?: string
+  createdByUserId?: string,
+  options: { isAdmin?: boolean } = {},
 ): Promise<void> {
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(config.companies));
+  const effectiveCompanies = options.isAdmin
+    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies)
+    : hydratedCompanies;
   const normalized: RuntimeConfig = {
-    companies: hydratedCompanies,
+    companies: effectiveCompanies,
     jobtitles: sanitizeJobtitles(config.jobtitles),
     updatedAt: nowISO(),
   };

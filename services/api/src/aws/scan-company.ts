@@ -21,6 +21,7 @@ type ScanCompanyEvent = {
   runId: string;
   tenantId?: string;
   companyName: string;
+  isAdmin?: boolean;
 };
 
 const lambda = new LambdaClient({});
@@ -86,7 +87,11 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
 
   let failed = false;
   try {
-    const config = await loadRuntimeConfig(env, tenantId);
+    const meta = await getRunMeta(runId);
+    const config = await loadRuntimeConfig(env, tenantId, {
+      isAdmin: event.isAdmin === true || meta?.isAdmin === true,
+      updatedByUserId: meta?.userId,
+    });
     const company = config.companies.find((entry) => entry.company === companyName);
     if (!company) throw new Error(`Company ${companyName} was not found in runtime config`);
 

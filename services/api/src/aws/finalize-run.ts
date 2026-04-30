@@ -173,7 +173,14 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
       return { ok: false, runId, resultCount: meta.completedCompanies + meta.failedCompanies };
     }
 
-    const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantId), tenantId);
+    const config = await applyCompanyScanOverrides(
+      env,
+      await loadRuntimeConfig(env, tenantId, {
+        isAdmin: meta.isAdmin === true,
+        updatedByUserId: meta.userId,
+      }),
+      tenantId,
+    );
     const previousInventory = await loadPreviousInventory(tenantId);
     const results = await listCompanyResults(runId);
     const failedResults = await listFailedCompanyResults(runId);

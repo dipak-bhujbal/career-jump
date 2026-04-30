@@ -1,6 +1,5 @@
 function doPost(e) {
   var sharedSecret = PropertiesService.getScriptProperties().getProperty("SHARED_SECRET");
-  var configuredRecipient = PropertiesService.getScriptProperties().getProperty("TO_EMAIL");
   var body = parseRequestBody(e);
   var requestSecret = body.sharedSecret || "";
 
@@ -52,13 +51,15 @@ function doPost(e) {
   if (updatedJobs.length) subjectParts.push(updatedJobs.length + " updated job" + (updatedJobs.length === 1 ? "" : "s"));
 
   /**
-   * Multi-user delivery must use the webhook payload recipient. Falling back
-   * to script properties or Session.* would always send to the script owner
-   * instead of the user who actually triggered the scan.
+   * Multi-user delivery must use the webhook payload recipient.
+   *
+   * Never fall back to script properties or Session.* here. Those values refer
+   * to the script owner/execution identity and can silently route mail to the
+   * wrong person even when the scan belongs to a different user.
    */
-  var recipient = resolveRecipientEmail(body.recipient, configuredRecipient);
+  var recipient = resolveRecipientEmail(body.recipient);
   if (!recipient) {
-    throw new Error("No recipient email configured. Provide payload.recipient or set script property TO_EMAIL as a fallback.");
+    throw new Error("Missing payload.recipient. Refusing to send email without an explicit recipient.");
   }
 
   var subject = String(body.subject || "").trim() || ("Career Jump: " + subjectParts.join(" · "));
@@ -94,31 +95,11 @@ function parsePostedAtMillis(value) {
   return isNaN(ms) ? 0 : ms;
 }
 
-function resolveRecipientEmail(payloadRecipient, configuredRecipient) {
+function resolveRecipientEmail(payloadRecipient) {
   if (payloadRecipient && String(payloadRecipient).trim()) {
     return String(payloadRecipient).trim();
   }
-
-  if (configuredRecipient && String(configuredRecipient).trim()) {
-    return String(configuredRecipient).trim();
-  }
-
-  var effectiveEmail = "";
-  var activeEmail = "";
-
-  try {
-    effectiveEmail = Session.getEffectiveUser().getEmail() || "";
-  } catch (err) {
-    effectiveEmail = "";
-  }
-
-  try {
-    activeEmail = Session.getActiveUser().getEmail() || "";
-  } catch (err) {
-    activeEmail = "";
-  }
-
-  return effectiveEmail || activeEmail || "";
+  return "";
 }
 
 function buildHtmlEmail(appName, runAt, newJobs, updatedJobs) {

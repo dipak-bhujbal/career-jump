@@ -1474,6 +1474,7 @@ export async function findNewJobs(
 
   const newJobs: JobPosting[] = [];
   const duplicateFingerprintJobs: JobPosting[] = [];
+  const repeatedSeenJobs: JobPosting[] = [];
   const firstSeenToPersist = new Map<string, string>();
   const firstSeenFingerprintsThisRun = new Set<string>();
   const firstSeenJobKeysThisRun = options.firstSeenJobKeysThisRun;
@@ -1497,6 +1498,18 @@ export async function findNewJobs(
 
     if (firstSeenFingerprintsThisRun.has(fingerprint)) {
       duplicateFingerprintJobs.push(job);
+      continue;
+    }
+
+    // Jobs can come back with a fresh ATS id or URL while still referring to
+    // the same underlying role. Consult both the durable first-seen
+    // fingerprint and the explicit seen markers before re-alerting the user.
+    const [firstSeenAt, alreadySeen] = await Promise.all([
+      getJobFirstSeenAt(env, job, tenantId),
+      isJobAlreadySeen(env, job, tenantId),
+    ]);
+    if (firstSeenAt || alreadySeen) {
+      repeatedSeenJobs.push(job);
       continue;
     }
 
@@ -1525,7 +1538,7 @@ export async function findNewJobs(
         previousMatched: previousInventory?.stats.totalJobsMatched ?? 0,
         newJobCount: newJobs.length,
         rawNewJobCount: rawNewJobs.length,
-        repeatedSeenJobCount: 0,
+        repeatedSeenJobCount: repeatedSeenJobs.length,
         duplicateFingerprintJobCount: duplicateFingerprintJobs.length,
       },
     });

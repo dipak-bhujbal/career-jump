@@ -140,7 +140,7 @@ function LogsRoute() {
     limit: 200,
   });
 
-  const { data, isLoading } = useLogsQuery(filter);
+  const { data, isLoading, error } = useLogsQuery(filter);
 
   const logs = data?.logs ?? [];
   const total = data?.total ?? 0;
@@ -150,7 +150,8 @@ function LogsRoute() {
 
   const DEFAULT_FILTER: LogsFilter = { q: "", tenantId: "", reason: "", level: "", type: "", runId: "", companies: [], limit: 200 };
   const hasActiveFilter = Boolean(filter.q || filter.tenantId || filter.reason || filter.level || filter.type || filter.runId || (filter.companies?.length ?? 0) > 0);
-  const breakGlassReady = Boolean(filter.tenantId?.trim()) && Boolean(filter.reason?.trim());
+  const breakGlassReady = Boolean(filter.tenantId?.trim()) && (filter.reason?.trim().length ?? 0) >= 8;
+  const reasonTooShort = Boolean(filter.reason?.trim()) && (filter.reason?.trim().length ?? 0) < 8;
 
   function clearAll() { setFilter(DEFAULT_FILTER); }
 
@@ -265,7 +266,17 @@ function LogsRoute() {
             </div>
             {!breakGlassReady && (
               <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-[hsl(var(--muted-foreground))]">
-                Enter a customer `userId` or `tenantId` and a short reason to unlock this log view.
+                Enter a customer `userId` or `tenantId` and a reason with at least 8 characters to unlock this log view.
+              </div>
+            )}
+            {reasonTooShort && (
+              <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-3 text-sm text-[hsl(var(--muted-foreground))]">
+                Use a longer justification so the backend can record a valid break-glass access reason.
+              </div>
+            )}
+            {error && (
+              <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-700">
+                {error instanceof Error ? error.message : "Failed to load logs."}
               </div>
             )}
             {/* Row 2: level + companies + limit + clear all */}

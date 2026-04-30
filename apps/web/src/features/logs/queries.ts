@@ -63,7 +63,9 @@ export function useLogsQuery(filter: LogsFilter) {
   return useQuery({
     queryKey: logsKey(filter),
     queryFn: () => api.get<LogsEnvelope>(`/api/logs${buildLogsParams(filter)}`),
-    enabled: Boolean(filter.tenantId?.trim()) && Boolean(filter.reason?.trim()),
+    // Match the backend break-glass contract so the UI does not silently poll
+    // with a reason that the server will reject as too short.
+    enabled: Boolean(filter.tenantId?.trim()) && (filter.reason?.trim().length ?? 0) >= 8,
     staleTime: 10_000,
     refetchInterval: 30_000,
   });

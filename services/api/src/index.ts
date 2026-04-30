@@ -75,7 +75,14 @@ export default {
         runId,
         route: "/scheduled",
       });
-      const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
       const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
       const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
       await ensureActiveRunOwnership(env, runId);
@@ -126,7 +133,7 @@ export default {
         blobs: [runId],
         doubles: [inventory.stats.totalJobsMatched, newJobs.length, updatedJobs.length, inventory.stats.totalFetched],
       });
-      if (notificationJobs.newJobs.length > 0 && env.APPS_SCRIPT_WEBHOOK_URL) {
+      if (notificationJobs.newJobs.length > 0 && emailResult.status === "sent") {
         await ensureActiveRunOwnership(env, runId);
         await markJobsAsSeen(env, notificationJobs.newJobs, inventory.runAt, runId, tenantContext.tenantId);
       }

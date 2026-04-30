@@ -266,6 +266,7 @@ describe("email notifications", () => {
         "content-type": "application/json",
         "x-cj-webhook-secret": "top-secret",
       }),
+      body: expect.stringContaining("\"sharedSecret\":\"top-secret\""),
     }));
     expect(sesSendMock).not.toHaveBeenCalled();
   });
@@ -281,5 +282,33 @@ describe("email notifications", () => {
         Destination: { ToAddresses: ["person@example.com"] },
       }),
     }));
+  });
+
+  it("skips notification delivery for system-owned scheduled runs", async () => {
+    const { maybeSendEmail } = await import("../../src/services/email");
+
+    const result = await maybeSendEmail(
+      env,
+      [{
+        source: "workday",
+        company: "Adobe Inc",
+        id: "job-1",
+        title: "Manager",
+        location: "Remote, US",
+        url: "https://example.com/jobs/1",
+        postedAt: "2026-04-30T00:00:00.000Z",
+      }],
+      [],
+      "2026-04-30T00:00:00.000Z",
+      "scheduled-1",
+      "system-career-jump",
+    );
+
+    expect(result).toEqual({
+      status: "skipped",
+      skipReason: "system-owned runs do not send user notification emails",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(sesSendMock).not.toHaveBeenCalled();
   });
 });

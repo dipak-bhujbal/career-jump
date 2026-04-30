@@ -716,10 +716,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         listAdminTickets(),
       ]);
       if (!profile) return jsonResponse({ ok: false, error: "User not found" }, 404);
+      const runtimeConfig = await loadRuntimeConfig(env, profile.tenantId, {
+        isAdmin: profile.scope === "admin",
+        updatedByUserId: tenantContext.userId,
+      });
       return jsonResponse({
         ok: true,
         profile,
-        settings,
+        settings: {
+          ...settings,
+          // The admin user panel should report the tenant's actual runtime
+          // company list, not the lightweight settings row that only stores
+          // notification preferences.
+          trackedCompanies: runtimeConfig.companies.map((company) => company.company),
+        },
         billing,
         tickets: tickets.filter((ticket) => ticket.userId === userId),
       });
@@ -1131,7 +1141,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       return jsonResponse({ ok: true, config, companyScanOverrides });
     }
@@ -1167,7 +1180,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
       const companies = sanitizeCompanies(body.companies ?? []);
-      const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       await loadRegistryCache();
       const duplicateRegistryCompany = companies.find((company) =>
         company.isRegistry !== true && Boolean(getByCompany(company.company))
@@ -1205,8 +1221,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         jobtitles: sanitizeJobtitles(body.jobtitles ?? {}),
         updatedAt: nowISO(),
       };
-      await saveRuntimeConfig(env, next, tenantContext.tenantId, tenantContext.userId);
-      return jsonResponse({ ok: true, config: next });
+      const persistedConfig = next;
+      await saveRuntimeConfig(env, persistedConfig, tenantContext.tenantId, tenantContext.userId, {
+        isAdmin: tenantContext.isAdmin,
+      });
+      const savedConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
+      return jsonResponse({ ok: true, config: savedConfig });
     }
 
     const companyToggleMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/toggle$/);
@@ -1216,7 +1239,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!companyName) return jsonResponse({ ok: false, error: "company name is required" }, 400);
 
       const body = await readJsonBody<Record<string, unknown>>(request);
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const currentPaused = currentOverrides[slugify(companyName)]?.paused === true;
       const paused = typeof body.paused === "boolean"
@@ -1257,7 +1283,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const body = await readJsonBody<Record<string, unknown>>(request);
       if (typeof body.paused !== "boolean") return jsonResponse({ ok: false, error: "paused boolean is required" }, 400);
 
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const companies = config.companies.map((company) => company.company).filter(Boolean);
       try {
@@ -1293,7 +1322,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config/apply" && request.method === "POST") {
       const tenantContext = await getTenantContext();
-      const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
       await clearATSCache(env, config.companies);
       const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId);
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOBS_COUNT_KEY), "0");
@@ -1306,7 +1342,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/cache/clear" && request.method === "POST") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       await clearATSCache(env, config.companies);
       const emptyInventory = buildEmptyInventory(config);
 
@@ -1323,7 +1362,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/data/clear" && request.method === "POST") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, "seen:"));
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, FIRST_SEEN_PREFIX));
       // Store an explicit empty tenant value instead of deleting the key.
@@ -1400,7 +1442,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         doubles: [],
       });
       try {
-        const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+        const config = await applyCompanyScanOverrides(
+          env,
+          await loadRuntimeConfig(env, tenantContext.tenantId, {
+            isAdmin: tenantContext.isAdmin,
+            updatedByUserId: tenantContext.userId,
+          }),
+          tenantContext.tenantId,
+        );
         const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
         const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
 
@@ -1599,7 +1648,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs/remove-broken-links" && request.method === "POST") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const inventory = await loadInventory(env, config, tenantContext.tenantId);
       const cleanup = await removeBrokenAvailableJobs(env, inventory, {
         tenantId: tenantContext.tenantId,
@@ -1650,7 +1702,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const [{ inventory, state: inventoryState }, billing] = await Promise.all([
         loadInventoryWithState(env, config, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
@@ -1863,7 +1918,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
       const tenantContext = await getTenantContext();
       const [config, appliedJobsForLimit, billingForLimit] = await Promise.all([
-        loadRuntimeConfig(env, tenantContext.tenantId),
+        loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
         loadAppliedJobs(env, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
       ]);
@@ -1999,7 +2057,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const inventory = await loadInventory(env, config, tenantContext.tenantId);
       const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
       if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
@@ -2166,7 +2227,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantContext.tenantId);
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       return jsonResponse({ ok: true, ...(await buildDashboardPayload(env, inventory, appliedJobs, tenantContext.tenantId, inventoryState)) });
@@ -2257,7 +2321,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         tenantId: tenantContext.tenantId,
         tenantIdFilter,
         allTenants: true,
-        event: url.searchParams.get("event") ?? "",
+        // Keep the older `type` query param working so the admin logs UI can
+        // filter rows even if the browser is still using the pre-event alias.
+        event: url.searchParams.get("event") ?? url.searchParams.get("type") ?? "",
         query: url.searchParams.get("query") ?? url.searchParams.get("q") ?? "",
         level: url.searchParams.get("level") ?? "",
         source: url.searchParams.get("source") ?? "",
@@ -2333,7 +2399,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const detected = await resolveWorkdayForCompany(env, companyName, tenantContext.tenantId);
       if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const jobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
       return jsonResponse({ ok: true, detected, includeKeywords: config.jobtitles.includeKeywords, count: jobs.length, firstFive: jobs.slice(0, 5) });
     }
@@ -2342,7 +2411,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const companyName = url.searchParams.get("company")?.trim();
       if (!companyName) return jsonResponse({ ok: false, error: "company query parameter is required" }, 400);
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId);
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const detected = await resolveWorkdayForCompany(env, companyName, tenantContext.tenantId);
       if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);
       const rawJobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);

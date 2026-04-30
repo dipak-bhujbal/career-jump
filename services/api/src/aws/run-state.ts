@@ -20,6 +20,7 @@ export type AwsRunMeta = {
   tenantId?: string;
   email?: string;
   displayName?: string;
+  isAdmin?: boolean;
   expectedCompanies: number;
   completedCompanies: number;
   failedCompanies: number;
@@ -70,6 +71,7 @@ export async function createRunMeta(input: {
   tenantId?: string;
   email?: string;
   displayName?: string;
+  isAdmin?: boolean;
 }): Promise<void> {
   const now = new Date().toISOString();
   await client.send(new PutItemCommand({
@@ -82,6 +84,7 @@ export async function createRunMeta(input: {
       tenantId: input.tenantId,
       email: input.email,
       displayName: input.displayName,
+      isAdmin: input.isAdmin === true,
       expectedCompanies: input.expectedCompanies,
       completedCompanies: 0,
       failedCompanies: 0,

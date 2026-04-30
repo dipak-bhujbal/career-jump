@@ -19,6 +19,10 @@ export type EmailAttemptResult =
   | { status: "skipped"; skipReason: string }
   | { status: "failed"; skipReason: null };
 
+function isSystemOwnedUser(userId?: string): boolean {
+  return Boolean(userId?.startsWith("system-"));
+}
+
 function postedAtSortValue(job: JobPosting): number {
   if (!job.postedAt) return 0;
   const ms = new Date(job.postedAt).getTime();
@@ -83,6 +87,11 @@ async function sendNotificationWebhook(
 ): Promise<void> {
   // Keep the notification payload explicit so the shared Apps Script endpoint
   // can evolve independently from the SES text-only email body.
+  //
+  // Apps Script web apps do not reliably expose custom request headers to
+  // doPost(). Include the shared secret in both places so the current Google
+  // Apps Script deployment can validate `body.sharedSecret`, while older
+  // webhook consumers that still read the header continue to work unchanged.
   const response = await fetch(input.webhookUrl, {
     method: "POST",
     headers: {
@@ -91,6 +100,7 @@ async function sendNotificationWebhook(
     },
     body: JSON.stringify({
       type: "job_notification_email",
+      sharedSecret: input.sharedSecret,
       recipient: input.recipient,
       sender: input.sender,
       subject: input.subject,
@@ -129,6 +139,19 @@ export async function maybeSendEmail(
       runId,
       route: "scan",
       details: { skipReason, newJobs: 0, updatedJobs: 0 },
+    });
+    return { status: "skipped", skipReason };
+  }
+
+  if (isSystemOwnedUser(userId)) {
+    const skipReason = "system-owned runs do not send user notification emails";
+    await recordAppLog(env, {
+      level: "info",
+      event: "email_skipped",
+      message: `Skipped email because ${skipReason}`,
+      runId,
+      route: "scan",
+      details: { skipReason, newJobs: newJobs.length, updatedJobs: updatedJobs.length, userId },
     });
     return { status: "skipped", skipReason };
   }
@@ -215,7 +238,13 @@ export async function maybeSendEmail(
     message: `Sending email for ${sortedNewJobs.length} new jobs and ${sortedUpdatedJobs.length} updated jobs`,
     runId,
     route: "scan",
-    details: { newJobs: sortedNewJobs.length, updatedJobs: sortedUpdatedJobs.length, totalJobs: sortedNewJobs.length + sortedUpdatedJobs.length },
+    details: {
+      newJobs: sortedNewJobs.length,
+      updatedJobs: sortedUpdatedJobs.length,
+      totalJobs: sortedNewJobs.length + sortedUpdatedJobs.length,
+      recipient,
+      deliveryMode: webhookUrl ? "webhook" : "ses",
+    },
   });
 
   const subject = `[${EMAIL_APP_NAME}] ${sortedNewJobs.length} new jobs and ${sortedUpdatedJobs.length} updated jobs`;
@@ -288,7 +317,13 @@ export async function maybeSendEmail(
     message: `Email sent for ${sortedNewJobs.length} new jobs and ${sortedUpdatedJobs.length} updated jobs`,
     runId,
     route: "scan",
-    details: { newJobs: sortedNewJobs.length, updatedJobs: sortedUpdatedJobs.length, totalJobs: sortedNewJobs.length + sortedUpdatedJobs.length },
+    details: {
+      newJobs: sortedNewJobs.length,
+      updatedJobs: sortedUpdatedJobs.length,
+      totalJobs: sortedNewJobs.length + sortedUpdatedJobs.length,
+      recipient,
+      deliveryMode: webhookUrl ? "webhook" : "ses",
+    },
   });
 
   return { status: "sent", skipReason: null };

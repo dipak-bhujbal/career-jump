@@ -60,7 +60,14 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
 
   try {
     const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
-    const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
+    const config = await applyCompanyScanOverrides(
+      env,
+      await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      }),
+      tenantContext.tenantId,
+    );
     const companies = config.companies.filter((company) => company.enabled !== false);
     // Persist the triggering actor on the run meta so the async finalize step
     // can still send notifications to the right user after fan-out completes.
@@ -72,6 +79,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
       tenantId: tenantContext.tenantId,
       email: tenantContext.email,
       displayName: tenantContext.displayName,
+      isAdmin: tenantContext.isAdmin,
     });
 
     await logAppEvent(env, {
@@ -96,6 +104,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
         runId,
         tenantId: tenantContext.tenantId,
         companyName: company.company,
+        isAdmin: tenantContext.isAdmin,
       })),
     }))));
 
