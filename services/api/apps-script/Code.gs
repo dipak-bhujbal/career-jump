@@ -1,21 +1,18 @@
 function doPost(e) {
   var sharedSecret = PropertiesService.getScriptProperties().getProperty("SHARED_SECRET");
   var configuredRecipient = PropertiesService.getScriptProperties().getProperty("TO_EMAIL");
-  var requestSecret = "";
+  var body = parseRequestBody(e);
+  var requestSecret = body.sharedSecret || "";
 
-  try {
-    requestSecret = e && e.postData && e.postData.contents
-      ? JSON.parse(e.postData.contents).sharedSecret || ""
-      : "";
-  } catch (err) {
-    requestSecret = "";
+  /**
+   * Apps Script web apps do not reliably expose arbitrary HTTP headers to
+   * doPost(), so the shared secret must be present in the JSON payload if
+   * this deployment wants to enforce it.
+   */
+  if (sharedSecret && (!requestSecret || sharedSecret !== requestSecret)) {
+    return jsonResponse({ ok: false, error: "unauthorized" });
   }
 
-  if (sharedSecret && requestSecret && sharedSecret !== requestSecret) {
-    return ContentService.createTextOutput("unauthorized").setMimeType(ContentService.MimeType.TEXT);
-  }
-
-  var body = JSON.parse(e.postData.contents);
   var newJobs = Array.isArray(body.newJobs) ? body.newJobs.slice() : [];
   var updatedJobs = Array.isArray(body.updatedJobs) ? body.updatedJobs.slice() : [];
   var jobs = Array.isArray(body.jobs) ? body.jobs.slice() : [];
@@ -55,23 +52,40 @@ function doPost(e) {
   if (updatedJobs.length) subjectParts.push(updatedJobs.length + " updated job" + (updatedJobs.length === 1 ? "" : "s"));
 
   /**
-   * Prefer an explicit script property for the recipient so webhook-triggered
-   * executions do not depend on whichever Google identity Apps Script exposes
-   * as the active user for the deployment.
+   * Multi-user delivery must use the webhook payload recipient. Falling back
+   * to script properties or Session.* would always send to the script owner
+   * instead of the user who actually triggered the scan.
    */
-  var recipient = resolveRecipientEmail(configuredRecipient);
+  var recipient = resolveRecipientEmail(body.recipient, configuredRecipient);
   if (!recipient) {
-    throw new Error("No recipient email configured. Set script property TO_EMAIL or run under an account with a readable email.");
+    throw new Error("No recipient email configured. Provide payload.recipient or set script property TO_EMAIL as a fallback.");
   }
+
+  var subject = String(body.subject || "").trim() || ("Career Jump: " + subjectParts.join(" · "));
 
   MailApp.sendEmail({
     to: recipient,
-    subject: "Career Jump: " + subjectParts.join(" · "),
+    subject: subject,
     htmlBody: html,
     name: appName
   });
 
-  return ContentService.createTextOutput("ok").setMimeType(ContentService.MimeType.TEXT);
+  return jsonResponse({ ok: true, recipient: recipient });
+}
+
+function parseRequestBody(e) {
+  if (!e || !e.postData || !e.postData.contents) return {};
+  try {
+    return JSON.parse(e.postData.contents);
+  } catch (err) {
+    throw new Error("Invalid JSON request body");
+  }
+}
+
+function jsonResponse(payload) {
+  return ContentService
+    .createTextOutput(JSON.stringify(payload))
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function parsePostedAtMillis(value) {
@@ -80,7 +94,11 @@ function parsePostedAtMillis(value) {
   return isNaN(ms) ? 0 : ms;
 }
 
-function resolveRecipientEmail(configuredRecipient) {
+function resolveRecipientEmail(payloadRecipient, configuredRecipient) {
+  if (payloadRecipient && String(payloadRecipient).trim()) {
+    return String(payloadRecipient).trim();
+  }
+
   if (configuredRecipient && String(configuredRecipient).trim()) {
     return String(configuredRecipient).trim();
   }
