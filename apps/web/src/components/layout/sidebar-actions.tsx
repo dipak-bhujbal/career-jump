@@ -14,7 +14,7 @@ import { Button } from "@/components/ui/button";
 import {
   useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks, useLatestRunResult, useScanQuota,
 } from "@/features/run/queries";
-import { formatLastRunSummary, formatRunCompletionToast, formatScanQuotaHint } from "@/features/run/presentation";
+import { formatLastRunSummary, formatRunCompletionToast, formatScanQuotaHint, isQueuedRunPending } from "@/features/run/presentation";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -29,7 +29,8 @@ export function SidebarActions() {
   const qc = useQueryClient();
   const prevActive = useRef(false);
 
-  const active = status.data?.active === true || startRun.isPending;
+  const queuedPending = isQueuedRunPending(latestRun.data);
+  const active = status.data?.active === true || startRun.isPending || queuedPending;
   const busy = abortRun.isPending || clearCache.isPending || removeBroken.isPending;
 
   useEffect(() => {
@@ -61,8 +62,8 @@ export function SidebarActions() {
           onClick={() => {
             toast("Scan starting", "info");
             startRun.mutate(undefined, {
-            onSuccess: (result) => toast(formatRunCompletionToast(result)),
-            onError: (e) => toast(e instanceof Error ? e.message : "Start failed", "error"),
+              onSuccess: (result) => toast(formatRunCompletionToast(result)),
+              onError: (e) => toast(e instanceof Error ? e.message : "Start failed", "error"),
             });
           }}
           disabled={busy}

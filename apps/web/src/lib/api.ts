@@ -409,21 +409,29 @@ export type RunScanMeta = {
   liveFetchCompanies: number;
   quotaBlockedCompanies: string[];
   remainingLiveScansToday: number | null;
+  filteredOutCompanies?: number;
+  filteredOutJobs?: number;
 };
 
 export type RunStartResponse = {
   ok: boolean;
-  runAt: string;
-  totalNewMatches: number;
-  totalUpdatedMatches: number;
-  totalMatched: number;
-  totalFetched: number;
-  byCompany: Record<string, number>;
-  emailedJobs: Array<{ company: string; title: string; id: string }>;
-  emailedUpdatedJobs: Array<{ company: string; title: string; id: string }>;
-  emailStatus: "sent" | "skipped" | "failed";
-  emailError: string | null;
-  scanMeta: RunScanMeta;
+  // Manual scans in AWS are accepted asynchronously before the worker fanout
+  // finishes. Keep the response type broad enough to model both the initial
+  // accepted envelope and the later completed run summary shape.
+  status?: "accepted";
+  runId?: string;
+  queuedAt?: string;
+  runAt?: string;
+  totalNewMatches?: number;
+  totalUpdatedMatches?: number;
+  totalMatched?: number;
+  totalFetched?: number;
+  byCompany?: Record<string, number>;
+  emailedJobs?: Array<{ company: string; title: string; id: string }>;
+  emailedUpdatedJobs?: Array<{ company: string; title: string; id: string }>;
+  emailStatus?: "sent" | "skipped" | "failed";
+  emailError?: string | null;
+  scanMeta?: RunScanMeta;
 };
 
 export type ScanQuotaEnvelope = {

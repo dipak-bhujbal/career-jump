@@ -3,18 +3,16 @@ import type { JobPosting } from "../../types";
 /**
  * iCIMS ATS adapter.
  *
- * iCIMS does NOT publish a public JSON API for posting lists. Strategy:
- *  1. The careers portal at https://{slug}.icims.com/jobs/search?ss=1 returns
- *     a paginated HTML list.
- *  2. Each <a class="iCIMS_JobsTable_..."> has the job title + URL + iCIMS job id.
- *  3. Total count is exposed in the page header text "of N jobs".
+ * Modern iCIMS boards often render a lightweight wrapper page first and then
+ * load the real listing UI inside an iframe with `in_iframe=1`. The older
+ * slug-only implementation fetched the wrapper page directly, which worked for
+ * a narrow subset of boards but missed current sites like Celanese.
  *
- * For this initial cut we just parse the search results page. For full content
- * fetch each job's `/jobs/{id}/` page individually.
- *
- * Slug forms seen in the wild:
- *   https://{slug}.icims.com/jobs/search?ss=1
- *   https://careers-{slug}.icims.com/jobs/search?ss=1
+ * The adapter now uses the canonical board URL directly so it can:
+ *   1. normalize `intro` / `login` / `dashboard` URLs back to `/jobs/search`
+ *   2. follow the iframe handoff when the first page is only a wrapper shell
+ *   3. follow the server-provided `rel="next"` pagination links instead of
+ *      guessing page parameters that vary across tenants
  */
 
 const HEADERS = {
@@ -22,94 +20,169 @@ const HEADERS = {
   Accept: "text/html,application/xhtml+xml",
 };
 
-function pageUrl(slug: string, host: "primary" | "careers", page = 1): string {
-  const sub = host === "careers" ? `careers-${slug}` : slug;
-  return `https://${sub}.icims.com/jobs/search?ss=1&searchPage=${page}`;
-}
+function normalizeIcimsBoardUrl(boardUrl: string): string | null {
+  try {
+    const url = new URL(boardUrl);
+    if (!/\.icims\.com$/i.test(url.hostname)) return null;
 
-async function tryHosts(slug: string, page = 1): Promise<{ host: "primary" | "careers"; html: string } | null> {
-  for (const host of ["primary", "careers"] as const) {
-    try {
-      const r = await fetch(pageUrl(slug, host, page), { headers: HEADERS });
-      if (!r.ok) continue;
-      const html = await r.text();
-      // Heuristic check: must contain iCIMS markup
-      if (/icims/i.test(html)) return { host, html };
-    } catch {
-      // fall through
+    // Saved registry rows often point at landing pages like `/jobs/intro` or
+    // `/jobs/dashboard`. Normalize those back to the canonical search route so
+    // the parser always starts from the jobs listing entrypoint.
+    if (!/\/jobs\/search$/i.test(url.pathname)) {
+      url.pathname = "/jobs/search";
+      url.search = "";
     }
+
+    url.searchParams.set("ss", url.searchParams.get("ss") || "1");
+    url.searchParams.delete("searchPage");
+    return url.toString();
+  } catch {
+    return null;
   }
-  return null;
 }
 
-export async function validateIcimsSlug(
-  companySlug: string
-): Promise<{ source: "icims"; companySlug: string; host: "primary" | "careers" } | null> {
-  const result = await tryHosts(companySlug, 1);
+function stripHtml(value: string): string {
+  return value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractIframeUrl(html: string, pageUrl: string): string | null {
+  const iframeMatch =
+    html.match(/<iframe[^>]+src="([^"]*in_iframe=1[^"]*)"/i) ||
+    html.match(/<iframe[^>]+src='([^']*in_iframe=1[^']*)'/i);
+  if (!iframeMatch?.[1]) return null;
+  try {
+    return new URL(iframeMatch[1].replace(/&amp;/g, "&"), pageUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function extractNextPageUrl(html: string, pageUrl: string): string | null {
+  const nextMatch =
+    html.match(/<link[^>]+rel="next"[^>]+href="([^"]+)"/i) ||
+    html.match(/<a[^>]+href="([^"]+)"[^>]*>\s*(?:Next|›|&gt;)\s*<\/a>/i);
+  if (!nextMatch?.[1]) return null;
+  try {
+    return new URL(nextMatch[1].replace(/&amp;/g, "&"), pageUrl).toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseCount(html: string): number {
+  const match =
+    html.match(/of\s*([\d,]+)\s*Jobs/i) ||
+    html.match(/(\d+)\s*Open\s*(?:Position|Job)/i) ||
+    html.match(/Total\s*:\s*([\d,]+)/i);
+  return match ? Number(match[1].replace(/,/g, "")) : 0;
+}
+
+function parseJobsFromHtml(html: string, companyName: string, pageUrl: string): JobPosting[] {
+  const jobs: JobPosting[] = [];
+  const seen = new Set<string>();
+  const anchorRegex = /<a[^>]+href="([^"]*\/jobs\/(\d+)\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let match: RegExpExecArray | null;
+
+  while ((match = anchorRegex.exec(html)) !== null) {
+    const href = match[1];
+    const id = match[2];
+    const title = stripHtml(match[3]);
+    if (!id || !title || seen.has(id)) continue;
+
+    let url = href;
+    try {
+      url = new URL(href.replace(/&amp;/g, "&"), pageUrl).toString();
+    } catch {
+      // Keep the raw href when URL construction fails; the job id/title are
+      // still useful for parser coverage and logging.
+    }
+
+    seen.add(id);
+    jobs.push({
+      id,
+      title,
+      company: companyName,
+      location: "",
+      url,
+      source: "icims" as never,
+    } as JobPosting);
+  }
+
+  return jobs;
+}
+
+async function fetchIcimsPage(pageUrl: string): Promise<{ html: string; resolvedPageUrl: string } | null> {
+  try {
+    const response = await fetch(pageUrl, { headers: HEADERS });
+    if (!response.ok) return null;
+    let html = await response.text();
+    let resolvedPageUrl = pageUrl;
+
+    // Wrapper pages hand off the actual job-listing UI to an iframe. Follow it
+    // once so downstream parsing only sees the real listing markup.
+    const iframeUrl = extractIframeUrl(html, pageUrl);
+    if (iframeUrl && !/in_iframe=1/i.test(pageUrl)) {
+      const iframeResponse = await fetch(iframeUrl, { headers: HEADERS });
+      if (!iframeResponse.ok) return null;
+      html = await iframeResponse.text();
+      resolvedPageUrl = iframeUrl;
+    }
+
+    return { html, resolvedPageUrl };
+  } catch {
+    return null;
+  }
+}
+
+export async function validateIcimsSlug(boardUrl: string): Promise<{ source: "icims"; boardUrl: string } | null> {
+  const normalizedUrl = normalizeIcimsBoardUrl(boardUrl);
+  if (!normalizedUrl) return null;
+  const result = await fetchIcimsPage(normalizedUrl);
   if (!result) return null;
-  return { source: "icims", companySlug, host: result.host };
+  return /icims/i.test(result.html) ? { source: "icims", boardUrl: normalizedUrl } : null;
 }
 
-export async function countIcimsJobs(companySlug: string): Promise<number> {
-  const result = await tryHosts(companySlug, 1);
+export async function countIcimsJobs(boardUrl: string): Promise<number> {
+  const normalizedUrl = normalizeIcimsBoardUrl(boardUrl);
+  if (!normalizedUrl) return 0;
+  const result = await fetchIcimsPage(normalizedUrl);
   if (!result) return 0;
-  // "Showing 1 - 25 of 132 Jobs" or "of N jobs"
-  const m =
-    result.html.match(/of\s*([\d,]+)\s*Jobs/i) ||
-    result.html.match(/(\d+)\s*Open\s*(?:Position|Job)/i) ||
-    result.html.match(/Total\s*:\s*([\d,]+)/i);
-  return m ? Number(m[1].replace(/,/g, "")) : 0;
+  return parseCount(result.html);
 }
 
 export async function fetchIcimsJobs(
-  companySlug: string,
+  boardUrl: string,
   companyName: string,
   options: { maxPages?: number } = {}
 ): Promise<JobPosting[]> {
+  const normalizedUrl = normalizeIcimsBoardUrl(boardUrl);
+  if (!normalizedUrl) return [];
+
   const maxPages = options.maxPages ?? 20;
-  const out: JobPosting[] = [];
-  let host: "primary" | "careers" = "primary";
+  const jobs: JobPosting[] = [];
+  const seen = new Set<string>();
+  let nextPageUrl: string | null = normalizedUrl;
 
-  for (let page = 1; page <= maxPages; page++) {
-    let html: string | null = null;
-    if (page === 1) {
-      const r = await tryHosts(companySlug, 1);
-      if (!r) break;
-      host = r.host;
-      html = r.html;
-    } else {
-      try {
-        const r = await fetch(pageUrl(companySlug, host, page), { headers: HEADERS });
-        if (!r.ok) break;
-        html = await r.text();
-      } catch {
-        break;
-      }
+  for (let page = 0; page < maxPages && nextPageUrl; page += 1) {
+    const result = await fetchIcimsPage(nextPageUrl);
+    if (!result) break;
+
+    const pageJobs = parseJobsFromHtml(result.html, companyName, result.resolvedPageUrl);
+    for (const job of pageJobs) {
+      if (seen.has(job.id)) continue;
+      seen.add(job.id);
+      jobs.push(job);
     }
 
-    // Anchor pattern: <a ... href="/jobs/{id}/{slug}/job">{Title}</a>
-    const re = /<a[^>]+href="(\/jobs\/(\d+)\/[A-Za-z0-9_\-]+\/job)[^"]*"[^>]*>([^<]+)<\/a>/g;
-    let m: RegExpExecArray | null;
-    let foundOnPage = 0;
-    while ((m = re.exec(html)) !== null) {
-      const path = m[1];
-      const id = m[2];
-      const title = m[3].trim();
-      const sub = host === "careers" ? `careers-${companySlug}` : companySlug;
-      const url = `https://${sub}.icims.com${path}`;
-      if (!out.some((j) => j.id === id)) {
-        out.push({
-          id,
-          title,
-          company: companyName,
-          location: "",
-          url,
-          source: "icims" as never,
-        } as JobPosting);
-        foundOnPage++;
-      }
-    }
-    if (foundOnPage === 0) break;
+    nextPageUrl = extractNextPageUrl(result.html, result.resolvedPageUrl);
   }
-  return out;
+
+  return jobs;
 }

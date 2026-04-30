@@ -153,6 +153,18 @@ function hasUSStatePattern(raw: string): boolean {
 function detectUSFromSegment(raw: string): boolean {
   const normalized = normalizeText(raw);
   if (!normalized) return false;
+
+  // Keep frontend/mock geography handling aligned with the backend so
+  // trailing ISO country codes like ", DE" and ", AR" are not mistaken for
+  // Delaware or Arkansas.
+  const trailingToken = raw
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const lastToken = trailingToken[trailingToken.length - 1]?.toLowerCase();
+  const explicitNonUsCountryCodes = new Set(["ar", "de"]);
+  if (lastToken && explicitNonUsCountryCodes.has(lastToken)) return false;
+
   return hasExplicitUSHint(normalized) || hasUSStatePattern(raw);
 }
 
@@ -163,7 +175,7 @@ function detectNonUSHint(raw: string): string | null {
     if (hasWholeHint(normalized, hint)) return hint;
   }
   const nonUsCountryCodes = new Set([
-    "at","au","be","bg","br","ch","cl","cz","de","dk","ee","es","fi","fr","gb","gr","hk","hr","hu",
+    "ar","at","au","be","bg","br","ch","cl","cz","de","dk","ee","es","fi","fr","gb","gr","hk","hr","hu",
     "ie","il","it","jp","kr","lt","lu","lv","mx","my","nl","no","nz","ph","pl","pt","ro","rs","se",
     "sg","si","sk","th","tr","tw","ua","uk","za",
   ]);

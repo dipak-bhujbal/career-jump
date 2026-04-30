@@ -1,5 +1,23 @@
 import type { RunStartResponse, ScanQuotaEnvelope } from "@/lib/api";
 
+const QUEUED_RUN_GRACE_MS = 30_000;
+
+export function isAcceptedRun(result: RunStartResponse | null | undefined): boolean {
+  return result?.status === "accepted";
+}
+
+export function isQueuedRunPending(
+  result: RunStartResponse | null | undefined,
+  now = Date.now()
+): boolean {
+  if (!isAcceptedRun(result)) return false;
+  const queuedAt = result?.queuedAt ?? result?.runAt;
+  if (!queuedAt) return true;
+  const queuedAtMs = Date.parse(queuedAt);
+  if (!Number.isFinite(queuedAtMs)) return true;
+  return now - queuedAtMs <= QUEUED_RUN_GRACE_MS;
+}
+
 function getScanMeta(result: RunStartResponse | null | undefined) {
   // Older cached run responses and partially rolled deploys may omit scanMeta.
   // Normalize them here so the sidebar/run UI never crashes while reading
@@ -9,11 +27,14 @@ function getScanMeta(result: RunStartResponse | null | undefined) {
     liveFetchCompanies: result?.scanMeta?.liveFetchCompanies ?? 0,
     quotaBlockedCompanies: result?.scanMeta?.quotaBlockedCompanies ?? [],
     remainingLiveScansToday: result?.scanMeta?.remainingLiveScansToday ?? null,
+    filteredOutCompanies: result?.scanMeta?.filteredOutCompanies ?? 0,
+    filteredOutJobs: result?.scanMeta?.filteredOutJobs ?? 0,
   };
 }
 
 export function wasRunFullyQuotaBlocked(result: RunStartResponse | null | undefined): boolean {
   if (!result) return false;
+  if (isAcceptedRun(result)) return false;
   const scanMeta = getScanMeta(result);
   return scanMeta.liveFetchCompanies === 0 && scanMeta.quotaBlockedCompanies.length > 0;
 }
@@ -26,6 +47,9 @@ export function formatScanQuotaHint(quota: ScanQuotaEnvelope | undefined): strin
 }
 
 export function formatRunCompletionToast(result: RunStartResponse): string {
+  if (isAcceptedRun(result)) {
+    return "Scan queued. Progress will appear here as soon as scanning begins.";
+  }
   const scanMeta = getScanMeta(result);
   const blocked = scanMeta.quotaBlockedCompanies.length;
   if (blocked > 0) {
@@ -38,8 +62,11 @@ export function formatRunCompletionToast(result: RunStartResponse): string {
       ? "Scan finished. 1 company was skipped because the daily live-scan quota was exhausted and no cached scan was available."
       : `Scan finished. ${blocked} companies were skipped because the daily live-scan quota was exhausted and no cached scan was available.`;
   }
-  if (result.totalNewMatches > 0 || result.totalUpdatedMatches > 0) {
-    return `Scan finished. ${result.totalNewMatches} new and ${result.totalUpdatedMatches} updated jobs found.`;
+  if ((result.totalNewMatches ?? 0) > 0 || (result.totalUpdatedMatches ?? 0) > 0) {
+    return `Scan finished. ${result.totalNewMatches ?? 0} new and ${result.totalUpdatedMatches ?? 0} updated jobs found.`;
+  }
+  if ((result.totalFetched ?? 0) > 0 && (result.totalMatched ?? 0) === 0 && scanMeta.filteredOutJobs > 0) {
+    return "Scan finished. Jobs were fetched, but none matched your current title or geography filters.";
   }
   if (scanMeta.liveFetchCompanies > 0) {
     return "Scan finished. No new changes this run.";
@@ -52,6 +79,7 @@ export function formatRunCompletionToast(result: RunStartResponse): string {
 
 export function formatLastRunSummary(result: RunStartResponse | null | undefined): string {
   if (!result) return "No completed scans in this session yet.";
+  if (isAcceptedRun(result)) return "Scan queued and waiting for scan progress.";
   const scanMeta = getScanMeta(result);
   const blocked = scanMeta.quotaBlockedCompanies.length;
   if (blocked > 0) {
@@ -63,6 +91,9 @@ export function formatLastRunSummary(result: RunStartResponse | null | undefined
     return blocked === 1
       ? "Last run skipped 1 company because quota was exhausted and no cached scan was available."
       : `Last run skipped ${blocked} companies because quota was exhausted and no cached scan was available.`;
+  }
+  if ((result.totalFetched ?? 0) > 0 && (result.totalMatched ?? 0) === 0 && scanMeta.filteredOutJobs > 0) {
+    return "Last run fetched jobs, but your current title or geography filters excluded them.";
   }
   if (scanMeta.liveFetchCompanies > 0) {
     return `Last run fetched live data for ${scanMeta.liveFetchCompanies} companies.`;

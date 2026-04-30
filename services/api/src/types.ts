@@ -498,6 +498,8 @@ export type InventorySnapshot = {
     liveFetchCompanies?: number;
     quotaBlockedCompanies?: string[];
     remainingLiveScansToday?: number;
+    filteredOutCompanies?: number;
+    filteredOutJobs?: number;
   };
 };
 

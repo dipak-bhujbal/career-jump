@@ -17,21 +17,26 @@ import {
   type ScanQuotaEnvelope,
 } from "@/lib/api";
 import type { LogsEnvelope } from "@/features/logs/queries";
+import { isAcceptedRun } from "./presentation";
 
 export const runStatusKey = ["run", "status"] as const;
 export const latestRunResultKey = ["run", "latest-result"] as const;
 export const scanQuotaKey = ["run", "scan-quota"] as const;
+export const startRunMutationKey = ["run", "start"] as const;
 
 function normalizeRunStartResponse(result: RunStartResponse): RunStartResponse {
   // Keep the client resilient during phased deploys by filling in the new
   // quota-aware fields when an older backend response shape is returned.
   return {
     ...result,
+    queuedAt: result.queuedAt ?? (isAcceptedRun(result) ? new Date().toISOString() : result.runAt),
     scanMeta: {
       cacheHits: result.scanMeta?.cacheHits ?? 0,
       liveFetchCompanies: result.scanMeta?.liveFetchCompanies ?? 0,
       quotaBlockedCompanies: result.scanMeta?.quotaBlockedCompanies ?? [],
       remainingLiveScansToday: result.scanMeta?.remainingLiveScansToday ?? null,
+      filteredOutCompanies: result.scanMeta?.filteredOutCompanies ?? 0,
+      filteredOutJobs: result.scanMeta?.filteredOutJobs ?? 0,
     },
   };
 }
@@ -84,6 +89,7 @@ export function useScanQuota() {
 export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
+    mutationKey: startRunMutationKey,
     mutationFn: async () => normalizeRunStartResponse(await api.post<RunStartResponse>("/api/run")),
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: runStatusKey });
@@ -112,9 +118,24 @@ export function useStartRun() {
       qc.removeQueries({ queryKey: runStatusKey, exact: true });
     },
     onSuccess: (result) => {
-      // Keep the latest completed run summary around so idle UI surfaces can
-      // explain whether the last run fetched live data or fell back to cache.
+      // Persist both accepted and completed responses so the UI can keep a
+      // scan in a visible queued state until the first real progress heartbeat
+      // arrives from `/api/run/status`.
       qc.setQueryData(latestRunResultKey, result);
+      if (result.status === "accepted") {
+        qc.setQueryData<RunStatus>(runStatusKey, (current) => ({
+          ok: true,
+          active: current?.active ?? true,
+          runId: result.runId ?? current?.runId,
+          triggerType: "manual",
+          startedAt: current?.startedAt ?? result.queuedAt ?? new Date().toISOString(),
+          fetchedCompanies: current?.fetchedCompanies ?? 0,
+          totalCompanies: current?.totalCompanies,
+          detail: "scan queued",
+          message: "scan queued",
+          percent: current?.percent ?? 0,
+        }));
+      }
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runStatusKey });

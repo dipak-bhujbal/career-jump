@@ -131,6 +131,27 @@ describe("buildInventory quota-gated cache enforcement", () => {
     expect(inventory.stats.liveFetchCompanies).toBe(1);
   });
 
+  it("free tier: empty cached scan is treated as a miss and escalates to live fetch", async () => {
+    const { config, env } = makeConfig("free");
+    getDetectedConfigMock.mockResolvedValueOnce(DETECTED_GREENHOUSE);
+    // First call: outer fresh check returns an empty cached row, which should
+    // not short-circuit the run. Second call: the shared-cache fetch path also
+    // misses, so the live ATS fetch should run once quota is consumed.
+    loadLatestRawScanMock
+      .mockResolvedValueOnce({ jobs: [], scannedAt: new Date().toISOString() })
+      .mockResolvedValueOnce(null);
+    tryConsumeLiveScanMock.mockResolvedValueOnce(true);
+    fetchJobsForDetectedConfigMock.mockResolvedValueOnce(LIVE_JOBS);
+
+    const { buildInventory } = await import("../../src/services/inventory");
+    const inventory = await buildInventory(env, config, null, undefined, "user-free-empty-cache");
+
+    expect(tryConsumeLiveScanMock).toHaveBeenCalledOnce();
+    expect(fetchJobsForDetectedConfigMock).toHaveBeenCalledOnce();
+    expect(inventory.stats.liveFetchCompanies).toBe(1);
+    expect(inventory.stats.cacheHits).toBe(0);
+  });
+
   it("free tier: cache miss with NO quota and no stale — returns quota_blocked and skips live fetch", async () => {
     const { config, env } = makeConfig("free");
     getDetectedConfigMock.mockResolvedValueOnce(DETECTED_GREENHOUSE);

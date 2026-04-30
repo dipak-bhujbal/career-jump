@@ -267,6 +267,8 @@ export function buildOpenApiDocument(baseUrl: string) {
                 liveFetchCompanies: { type: "integer" },
                 quotaBlockedCompanies: { type: "array", items: { type: "string" } },
                 remainingLiveScansToday: { type: "integer", nullable: true },
+                filteredOutCompanies: { type: "integer" },
+                filteredOutJobs: { type: "integer" },
               },
             },
           },

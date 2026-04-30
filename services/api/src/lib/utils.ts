@@ -286,6 +286,17 @@ function detectUSFromSegment(rawSegment: string): boolean {
   const normalized = normalizeText(rawSegment);
   if (!normalized) return false;
 
+  // ATS location feeds often end with ISO country codes like ", DE" or ", AR".
+  // Those collide with Delaware / Arkansas, so guard them before the US-state
+  // detector can classify the segment as a US location.
+  const trailingToken = rawSegment
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const lastToken = trailingToken[trailingToken.length - 1]?.toLowerCase();
+  const explicitNonUsCountryCodes = new Set(["ar", "de"]);
+  if (lastToken && explicitNonUsCountryCodes.has(lastToken)) return false;
+
   if (hasExplicitUSHint(normalized)) return true;
   if (hasUSStatePattern(rawSegment)) return true;
 
@@ -312,7 +323,7 @@ function detectNonUSHint(rawSegment: string): string | null {
   const normalizedLastToken = lastToken?.toLowerCase();
   if (lastToken && normalizedLastToken && /^[a-z]{2}$/i.test(lastToken)) {
     const nonUsCountryCodes = new Set([
-      "at", "au", "be", "bg", "br", "ch", "cl", "cz", "de", "dk", "ee", "es", "fi", "fr",
+      "ar", "at", "au", "be", "bg", "br", "ch", "cl", "cz", "de", "dk", "ee", "es", "fi", "fr",
       "gb", "gr", "hk", "hr", "hu", "ie", "il", "it", "jp", "kr", "lt", "lu", "lv", "mx",
       "my", "nl", "no", "nz", "ph", "pl", "pt", "ro", "rs", "se", "sg", "si", "sk", "th",
       "tr", "tw", "ua", "uk", "za",

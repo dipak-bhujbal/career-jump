@@ -2,9 +2,14 @@ import type { JobPosting } from "../../types";
 
 /**
  * Phenom People ATS adapter.
- * Public API: https://{slug}.phenompeople.com/api/jobs
  *
- * Slug = subdomain on phenompeople.com (e.g., unum → unum.phenompeople.com).
+ * Some companies use the legacy `*.phenompeople.com` host directly, while
+ * others publish custom-domain boards like `jobs.centene.com/us/en/jobs/`.
+ * The previous implementation collapsed custom domains to the leftmost
+ * subdomain (`jobs`) and then incorrectly queried `jobs.phenompeople.com`.
+ *
+ * The adapter now treats the full board URL as the source of truth and tries a
+ * small candidate set of same-origin API paths before giving up.
  */
 
 type PhenomJob = {
@@ -30,59 +35,114 @@ type PhenomResponse = {
   jobs?: PhenomJob[];
 };
 
+type PhenomBoardConfig = {
+  boardUrl: string;
+  apiCandidates: string[];
+};
+
 const HEADERS = { "User-Agent": "career-jump/1.0", Accept: "application/json" };
 
-function apiUrl(slug: string, from = 0, size = 50): string {
-  return `https://${slug}.phenompeople.com/api/jobs?from=${from}&size=${size}`;
-}
-
-export async function validatePhenomSlug(
-  companySlug: string
-): Promise<{ source: "phenom"; companySlug: string } | null> {
+function parsePhenomBoardUrl(boardUrl: string): PhenomBoardConfig | null {
   try {
-    const r = await fetch(apiUrl(companySlug, 0, 1), { headers: HEADERS });
-    if (!r.ok) return null;
-    const data = (await r.json()) as PhenomResponse;
-    if (typeof data.totalHits !== "number" && !Array.isArray(data.jobs)) return null;
-    return { source: "phenom", companySlug };
+    const url = new URL(boardUrl);
+    const origin = url.origin;
+    const normalizedPath = url.pathname.replace(/\/+$/, "");
+    const candidates = new Set<string>();
+
+    if (normalizedPath && normalizedPath !== "/") {
+      // Boards that end in `/jobs` often expose the API one level above.
+      if (/\/jobs$/i.test(normalizedPath)) {
+        const prefix = normalizedPath.replace(/\/jobs$/i, "");
+        if (prefix) candidates.add(`${origin}${prefix}/api/jobs`);
+      }
+      // Some tenants mount the API under the visible board path itself.
+      candidates.add(`${origin}${normalizedPath}/api/jobs`);
+    }
+
+    // Legacy hosted boards expose a root-level API on the same origin.
+    candidates.add(`${origin}/api/jobs`);
+
+    return {
+      boardUrl,
+      apiCandidates: [...candidates],
+    };
   } catch {
     return null;
   }
 }
 
-export async function countPhenomJobs(companySlug: string): Promise<number> {
-  try {
-    const r = await fetch(apiUrl(companySlug, 0, 1), { headers: HEADERS });
-    if (!r.ok) return 0;
-    const data = (await r.json()) as PhenomResponse;
-    return data.totalHits ?? data.total ?? data.jobs?.length ?? 0;
-  } catch {
-    return 0;
+function apiUrl(baseUrl: string, from = 0, size = 50): string {
+  const url = new URL(baseUrl);
+  url.searchParams.set("from", String(from));
+  url.searchParams.set("size", String(size));
+  return url.toString();
+}
+
+async function fetchPhenomResponse(
+  boardUrl: string,
+  from = 0,
+  size = 50
+): Promise<{ data: PhenomResponse; apiBaseUrl: string } | null> {
+  const parsed = parsePhenomBoardUrl(boardUrl);
+  if (!parsed) return null;
+
+  for (const candidate of parsed.apiCandidates) {
+    try {
+      const response = await fetch(apiUrl(candidate, from, size), { headers: HEADERS });
+      if (!response.ok) continue;
+      const data = (await response.json()) as PhenomResponse;
+      if (typeof data.totalHits === "number" || typeof data.total === "number" || Array.isArray(data.jobs)) {
+        return { data, apiBaseUrl: candidate };
+      }
+    } catch {
+      // Continue to the next API candidate. Custom-domain Phenom boards are
+      // inconsistent enough that we need a small fallback chain here.
+    }
   }
+
+  return null;
+}
+
+export async function validatePhenomSlug(boardUrl: string): Promise<{ source: "phenom"; boardUrl: string } | null> {
+  const result = await fetchPhenomResponse(boardUrl, 0, 1);
+  return result ? { source: "phenom", boardUrl } : null;
+}
+
+export async function countPhenomJobs(boardUrl: string): Promise<number> {
+  const result = await fetchPhenomResponse(boardUrl, 0, 1);
+  if (!result) return 0;
+  return result.data.totalHits ?? result.data.total ?? result.data.jobs?.length ?? 0;
 }
 
 export async function fetchPhenomJobs(
-  companySlug: string,
+  boardUrl: string,
   companyName: string,
   options: { pageSize?: number; maxPages?: number } = {}
 ): Promise<JobPosting[]> {
   const pageSize = options.pageSize ?? 50;
   const maxPages = options.maxPages ?? 20;
-  const out: JobPosting[] = [];
+  const jobs: JobPosting[] = [];
 
-  for (let page = 0; page < maxPages; page++) {
-    const r = await fetch(apiUrl(companySlug, page * pageSize, pageSize), { headers: HEADERS });
-    if (!r.ok) break;
-    const data = (await r.json()) as PhenomResponse;
-    const jobs = data.jobs ?? [];
-    if (!jobs.length) break;
-    for (const job of jobs) {
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await fetchPhenomResponse(boardUrl, page * pageSize, pageSize);
+    if (!result) break;
+    const pageJobs = result.data.jobs ?? [];
+    if (!pageJobs.length) break;
+
+    for (const job of pageJobs) {
       const id = String(job.jobId ?? job.jobSeqNo ?? "");
       if (!id) continue;
-      const url = job.url ?? job.applyUrl ?? `https://${companySlug}.phenompeople.com/jobs/${id}`;
+
+      let url = job.url ?? job.applyUrl ?? `${result.apiBaseUrl.replace(/\/api\/jobs$/i, "")}/jobs/${id}`;
+      try {
+        url = new URL(url, boardUrl).toString();
+      } catch {
+        // Keep the raw URL value when the ATS returns an odd relative path.
+      }
+
       const title = job.title ?? job.jobTitle ?? "";
       const location = job.location ?? [job.city, job.country].filter(Boolean).join(", ");
-      out.push({
+      jobs.push({
         id,
         title,
         company: companyName,
@@ -93,8 +153,10 @@ export async function fetchPhenomJobs(
         postedAt: job.postedDate ?? job.publishedDate,
       } as JobPosting);
     }
-    const total = data.totalHits ?? data.total ?? Number.MAX_SAFE_INTEGER;
+
+    const total = result.data.totalHits ?? result.data.total ?? Number.MAX_SAFE_INTEGER;
     if ((page + 1) * pageSize >= total) break;
   }
-  return out;
+
+  return jobs;
 }

@@ -1476,6 +1476,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
             liveFetchCompanies: inventory.stats.liveFetchCompanies ?? 0,
             quotaBlockedCompanies: inventory.stats.quotaBlockedCompanies ?? [],
             remainingLiveScansToday: inventory.stats.remainingLiveScansToday ?? null,
+            filteredOutCompanies: inventory.stats.filteredOutCompanies ?? 0,
+            filteredOutJobs: inventory.stats.filteredOutJobs ?? 0,
           },
         });
       } catch (error) {

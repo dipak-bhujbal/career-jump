@@ -208,9 +208,18 @@ const adapters: AtsAdapter[] = [
   {
     id: "phenom",
     kind: "core",
-    async validate(c) { const r = await validatePhenomSlug(subdomain(c.boardUrl)); return r !== null; },
-    async count(c) { return countPhenomJobs(subdomain(c.boardUrl)); },
-    async fetchJobs(c, company) { return fetchPhenomJobs(subdomain(c.boardUrl), company); },
+    async validate(c) {
+      // Phenom custom domains encode tenant details in the full board URL, so
+      // validation must use the canonical board URL instead of a guessed slug.
+      const r = await validatePhenomSlug(c.boardUrl);
+      return r !== null;
+    },
+    async count(c) {
+      return countPhenomJobs(c.boardUrl);
+    },
+    async fetchJobs(c, company) {
+      return fetchPhenomJobs(c.boardUrl, company);
+    },
   },
   {
     id: "jobvite",
@@ -223,20 +232,17 @@ const adapters: AtsAdapter[] = [
     id: "icims",
     kind: "core",
     async validate(c) {
-      const host = new URL(c.boardUrl).hostname;
-      const slug = host.replace(/^careers-/, "").split(".")[0];
-      const r = await validateIcimsSlug(slug);
+      // iCIMS boards frequently store `intro` / `dashboard` landing URLs in
+      // the registry. The core parser now normalizes and follows those URLs
+      // directly instead of reverse-engineering a hostname slug.
+      const r = await validateIcimsSlug(c.boardUrl);
       return r !== null;
     },
     async count(c) {
-      const host = new URL(c.boardUrl).hostname;
-      const slug = host.replace(/^careers-/, "").split(".")[0];
-      return countIcimsJobs(slug);
+      return countIcimsJobs(c.boardUrl);
     },
     async fetchJobs(c, company) {
-      const host = new URL(c.boardUrl).hostname;
-      const slug = host.replace(/^careers-/, "").split(".")[0];
-      return fetchIcimsJobs(slug, company);
+      return fetchIcimsJobs(c.boardUrl, company);
     },
   },
   {

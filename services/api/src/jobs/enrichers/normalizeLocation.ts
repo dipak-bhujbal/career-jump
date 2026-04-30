@@ -14,7 +14,9 @@ const HYBRID_RE = /\bhybrid\b/i;
 const COUNTRY_TOKENS: Record<string, string> = {
   usa: "US", "u.s.a.": "US", "u.s.": "US", us: "US", "united states": "US", america: "US",
   uk: "UK", "u.k.": "UK", "united kingdom": "UK", england: "UK",
-  canada: "Canada", germany: "Germany", india: "India", australia: "Australia",
+  // Include short ISO-like country tokens so job rows ending in ", DE" or
+  // ", AR" resolve to the intended country before US-state parsing runs.
+  canada: "Canada", germany: "Germany", de: "Germany", argentina: "Argentina", ar: "Argentina", india: "India", australia: "Australia",
   singapore: "Singapore", ireland: "Ireland", france: "France", netherlands: "Netherlands",
   mexico: "Mexico", japan: "Japan", brazil: "Brazil", china: "China",
 };

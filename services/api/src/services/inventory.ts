@@ -649,6 +649,8 @@ export async function buildInventory(
   let cacheHits = 0;
   let liveFetchCompanies = 0;
   let quotaBlockedCompanies: string[] = [];
+  let filteredOutCompanies = 0;
+  let filteredOutJobs = 0;
 
   // Plan tier only applies to user-triggered scans (tenantId present).
   // System/background scans (no tenantId) run live with no cache restrictions.
@@ -767,11 +769,16 @@ export async function buildInventory(
       let companyFetch: CompanyFetchOutcome;
       if (tenantId && planScanCacheAgeMs !== undefined) {
         const cachedScan = await loadLatestRawScan(company.company, detected, { maxAgeMs: planScanCacheAgeMs });
-        if (cachedScan) {
-          // Fresh cache hit — serve immediately, no quota consumed.
+        const usableCachedScan = cachedScan && cachedScan.jobs.length > 0 ? cachedScan : null;
+        if (usableCachedScan) {
+          // Treat empty raw-cache rows as a soft miss for user-triggered scans.
+          // A zero-job cache line can come from a transient parser problem or a
+          // prior bad fetch, and users interpret that as "nothing happened". By
+          // requiring at least one cached job here, a real cache miss can still
+          // escalate to a live fetch when quota is available.
           companyFetch = {
-            fetchedJobs: cachedScan.jobs,
-            rawScanCache: { hit: true, stale: false, scannedAt: cachedScan.scannedAt },
+            fetchedJobs: usableCachedScan.jobs,
+            rawScanCache: { hit: true, stale: false, scannedAt: usableCachedScan.scannedAt },
           };
           cacheHits += 1;
         } else {
@@ -780,10 +787,11 @@ export async function buildInventory(
           if (!consumed) {
             // Quota exhausted — serve stale cache if any, otherwise skip.
             const stale = await loadLatestRawScan(company.company, detected, { allowStale: true });
-            if (stale) {
+            const usableStaleScan = stale && stale.jobs.length > 0 ? stale : null;
+            if (usableStaleScan) {
               companyFetch = {
-                fetchedJobs: stale.jobs,
-                rawScanCache: { hit: true, stale: true, scannedAt: stale.scannedAt, reason: "quota_exhausted" },
+                fetchedJobs: usableStaleScan.jobs,
+                rawScanCache: { hit: true, stale: true, scannedAt: usableStaleScan.scannedAt, reason: "quota_exhausted" },
               };
               cacheHits += 1;
             } else {
@@ -874,6 +882,12 @@ export async function buildInventory(
       jobs.push(...matchedJobs);
       bySource[detected.source] = (bySource[detected.source] ?? 0) + matchedJobs.length;
       byCompany[company.company] = matchedJobs.length;
+      if (fetchedJobs.length > 0 && matchedJobs.length === 0) {
+        // Preserve the distinction between "the ATS returned nothing" and
+        // "jobs were fetched but then filtered out by tenant rules".
+        filteredOutCompanies += 1;
+      }
+      filteredOutJobs += excludedTitleCount + excludedGeographyCount;
 
       for (const job of matchedJobs) {
         for (const keyword of job.matchedKeywords ?? []) {
@@ -1118,6 +1132,8 @@ export async function buildInventory(
       liveFetchCompanies,
       quotaBlockedCompanies: quotaBlockedCompanies.length ? quotaBlockedCompanies : undefined,
       remainingLiveScansToday: remainingScans,
+      filteredOutCompanies: filteredOutCompanies || undefined,
+      filteredOutJobs: filteredOutJobs || undefined,
     },
   };
   const shouldPreserveUnscannedJobs = options.preserveUnscannedJobs !== false;

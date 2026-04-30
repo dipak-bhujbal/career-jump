@@ -859,6 +859,10 @@ Resources:
             TableName: !Ref StateTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RegistryTable
+        # Manual scans fan out through this worker, and the quota-aware scan
+        # path atomically consumes daily live-scan slots from BillingTable.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BillingTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RawScansTable
         - DynamoDBCrudPolicy:
