@@ -1,6 +1,6 @@
 import { type ReactNode, useState } from "react";
 import { createFileRoute, useLocation } from "@tanstack/react-router";
-import { CreditCard, Save, ShieldCheck, Tag } from "lucide-react";
+import { CreditCard, Mail, Save, ShieldCheck, Tag } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/toast";
 import { useStripeConfig, useSaveStripeConfig } from "@/features/billing/queries";
+import { useAdminEmailWebhookSettings, useSaveAdminEmailWebhook } from "@/features/support/queries";
 import { useMe } from "@/features/session/queries";
 import { planIntervalLabel, planPricePlaceholders } from "@/features/billing/plan-display";
 
@@ -20,6 +21,11 @@ type StripeFormState = {
   starterPriceId: string;
   proPriceId: string;
   powerPriceId: string;
+};
+
+type EmailWebhookFormState = {
+  webhookUrl: string;
+  sharedSecret: string;
 };
 
 function toFormState(config: {
@@ -40,8 +46,11 @@ export function AdminStripeConfigRoute() {
   const { data: me } = useMe();
   const location = useLocation();
   const { data, isLoading, error } = useStripeConfig();
+  const { data: webhookData, isLoading: webhookLoading, error: webhookError } = useAdminEmailWebhookSettings();
   const saveStripeConfig = useSaveStripeConfig();
+  const saveEmailWebhook = useSaveAdminEmailWebhook();
   const [form, setForm] = useState<StripeFormState>(() => toFormState(null));
+  const [webhookForm, setWebhookForm] = useState<EmailWebhookFormState>({ webhookUrl: "", sharedSecret: "" });
 
   if (!me?.actor?.isAdmin) {
     return (
@@ -56,9 +65,16 @@ export function AdminStripeConfigRoute() {
   const active = (form.publishableKey || form.secretKey || form.webhookSecret || form.starterPriceId || form.proPriceId || form.powerPriceId)
     ? form
     : toFormState(resolved);
+  const activeWebhook = (webhookForm.webhookUrl || webhookForm.sharedSecret)
+    ? webhookForm
+    : { webhookUrl: webhookData?.webhookUrl ?? "", sharedSecret: "" };
 
   function patch(next: Partial<StripeFormState>) {
     setForm((current) => ({ ...current, ...next }));
+  }
+
+  function patchWebhook(next: Partial<EmailWebhookFormState>) {
+    setWebhookForm((current) => ({ ...current, ...next }));
   }
 
   function save() {
@@ -79,6 +95,20 @@ export function AdminStripeConfigRoute() {
       onSuccess: () => {
         toast("Stripe config saved");
         setForm(toFormState(null));
+      },
+      onError: (mutationError) => toast(mutationError instanceof Error ? mutationError.message : "Save failed", "error"),
+    });
+  }
+
+  function saveWebhookConfig() {
+    const payload: { webhookUrl?: string; sharedSecret?: string } = {
+      webhookUrl: activeWebhook.webhookUrl.trim() || undefined,
+    };
+    if (activeWebhook.sharedSecret.trim()) payload.sharedSecret = activeWebhook.sharedSecret.trim();
+    saveEmailWebhook.mutate(payload, {
+      onSuccess: () => {
+        toast("Email webhook saved");
+        setWebhookForm({ webhookUrl: "", sharedSecret: "" });
       },
       onError: (mutationError) => toast(mutationError instanceof Error ? mutationError.message : "Save failed", "error"),
     });
@@ -136,47 +166,87 @@ export function AdminStripeConfigRoute() {
                 </div>
               </CardContent>
             </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2"><CreditCard size={16} /> Stripe checkout</CardTitle>
-                <CardDescription>
-                  Secrets are write-only. Existing secret values are never returned from the backend after save.
-                </CardDescription>
-              </CardHeader>
-              <CardContent className="space-y-6">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <Field label="Publishable key">
-                    <Input value={active.publishableKey} onChange={(event) => patch({ publishableKey: event.target.value })} placeholder="pk_live_..." />
+            <div className="space-y-4">
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><CreditCard size={16} /> Stripe checkout</CardTitle>
+                  <CardDescription>
+                    Secrets are write-only. Existing secret values are never returned from the backend after save.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="grid gap-4 md:grid-cols-2">
+                    <Field label="Publishable key">
+                      <Input value={active.publishableKey} onChange={(event) => patch({ publishableKey: event.target.value })} placeholder="pk_live_..." />
+                    </Field>
+                    <Field label="Secret key">
+                      <Input value={active.secretKey} onChange={(event) => patch({ secretKey: event.target.value })} placeholder={resolved ? "Leave blank only if replacing the full config now" : "sk_live_..."} />
+                    </Field>
+                    <Field label="Webhook secret" hint={resolved?.webhookConfigured ? "Webhook secret is configured in the backend." : "Optional until the Stripe webhook is connected."}>
+                      <Input value={active.webhookSecret} onChange={(event) => patch({ webhookSecret: event.target.value })} placeholder="whsec_..." />
+                    </Field>
+                    <Field label="Starter price ID">
+                      <Input value={active.starterPriceId} onChange={(event) => patch({ starterPriceId: event.target.value })} placeholder="price_..." />
+                      <PriceHint plan="starter" />
+                    </Field>
+                    <Field label="Pro price ID">
+                      <Input value={active.proPriceId} onChange={(event) => patch({ proPriceId: event.target.value })} placeholder="price_..." />
+                      <PriceHint plan="pro" />
+                    </Field>
+                    <Field label="Power price ID">
+                      <Input value={active.powerPriceId} onChange={(event) => patch({ powerPriceId: event.target.value })} placeholder="price_..." />
+                      <PriceHint plan="power" />
+                    </Field>
+                  </div>
+                  <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    Current status: {data?.configured ? "configured" : "not configured"} · Webhook: {resolved?.webhookConfigured ? "configured" : "missing"} · Placeholder prices are frontend-only until public pricing is exposed.
+                  </div>
+                  <div className="flex justify-end">
+                    <Button onClick={save} disabled={saveStripeConfig.isPending}>
+                      <Save size={14} /> {saveStripeConfig.isPending ? "Saving…" : "Save Stripe config"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2"><Mail size={16} /> Notification email webhook</CardTitle>
+                  <CardDescription>
+                    Configure the global outbound email webhook for the entire user base. This is the shared delivery path the app uses before any SES fallback.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {webhookLoading ? <div className="text-sm text-[hsl(var(--muted-foreground))]">Loading webhook config…</div> : null}
+                  {webhookError ? <div className="text-sm text-rose-600">Failed to load webhook config: {webhookError.message}</div> : null}
+                  <Field label="Webhook URL">
+                    <Input
+                      value={activeWebhook.webhookUrl}
+                      onChange={(event) => patchWebhook({ webhookUrl: event.target.value })}
+                      placeholder="https://script.google.com/macros/s/…/exec"
+                    />
                   </Field>
-                  <Field label="Secret key">
-                    <Input value={active.secretKey} onChange={(event) => patch({ secretKey: event.target.value })} placeholder={resolved ? "Leave blank only if replacing the full config now" : "sk_live_..."} />
+                  <Field
+                    label="Shared secret"
+                    hint={webhookData?.sharedSecretConfigured ? "A shared secret is already configured. Leave blank to keep it." : "Optional but recommended for request verification."}
+                  >
+                    <Input
+                      type="password"
+                      value={activeWebhook.sharedSecret}
+                      onChange={(event) => patchWebhook({ sharedSecret: event.target.value })}
+                      placeholder="Leave blank to keep existing"
+                    />
                   </Field>
-                  <Field label="Webhook secret" hint={resolved?.webhookConfigured ? "Webhook secret is configured in the backend." : "Optional until the Stripe webhook is connected."}>
-                    <Input value={active.webhookSecret} onChange={(event) => patch({ webhookSecret: event.target.value })} placeholder="whsec_..." />
-                  </Field>
-                  <Field label="Starter price ID">
-                    <Input value={active.starterPriceId} onChange={(event) => patch({ starterPriceId: event.target.value })} placeholder="price_..." />
-                    <PriceHint plan="starter" />
-                  </Field>
-                  <Field label="Pro price ID">
-                    <Input value={active.proPriceId} onChange={(event) => patch({ proPriceId: event.target.value })} placeholder="price_..." />
-                    <PriceHint plan="pro" />
-                  </Field>
-                  <Field label="Power price ID">
-                    <Input value={active.powerPriceId} onChange={(event) => patch({ powerPriceId: event.target.value })} placeholder="price_..." />
-                    <PriceHint plan="power" />
-                  </Field>
-                </div>
-                <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
-                  Current status: {data?.configured ? "configured" : "not configured"} · Webhook: {resolved?.webhookConfigured ? "configured" : "missing"} · Placeholder prices are frontend-only until public pricing is exposed.
-                </div>
-                <div className="flex justify-end">
-                  <Button onClick={save} disabled={saveStripeConfig.isPending}>
-                    <Save size={14} /> {saveStripeConfig.isPending ? "Saving…" : "Save Stripe config"}
-                  </Button>
-                </div>
-              </CardContent>
-            </Card>
+                  <div className="rounded-lg border border-[hsl(var(--border))] bg-[hsl(var(--muted))]/30 px-4 py-3 text-xs text-[hsl(var(--muted-foreground))]">
+                    Current status: {webhookData?.webhookUrl ? "configured" : "missing"} · Shared secret: {webhookData?.sharedSecretConfigured ? "configured" : "missing"}
+                  </div>
+                  <div className="flex justify-end">
+                    <Button variant="outline" onClick={saveWebhookConfig} disabled={saveEmailWebhook.isPending}>
+                      <Save size={14} /> {saveEmailWebhook.isPending ? "Saving…" : "Save email webhook"}
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
           </div>
         </div>
       </AdminPageFrame>

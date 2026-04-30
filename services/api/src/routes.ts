@@ -1058,6 +1058,30 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       return jsonResponse({ ok: true, config: saved });
     }
 
+    if (url.pathname === "/api/admin/email-webhook" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const stored = await loadEmailWebhookConfig(env);
+      return jsonResponse({
+        ok: true,
+        webhookUrl: stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || null,
+        sharedSecretConfigured: Boolean(stored?.sharedSecret || env.APPS_SCRIPT_SHARED_SECRET),
+      });
+    }
+
+    if (url.pathname === "/api/admin/email-webhook" && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+      const body = await readJsonBody<{ webhookUrl?: string; sharedSecret?: string } & Record<string, unknown>>(request);
+      await saveEmailWebhookConfig(env, {
+        webhookUrl: body.webhookUrl,
+        sharedSecret: body.sharedSecret,
+      });
+      return jsonResponse({ ok: true });
+    }
+
     if (url.pathname === "/api/billing/checkout" && request.method === "POST") {
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Record<string, unknown>>(request);
@@ -1769,23 +1793,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       });
 
       return jsonResponse({ ok: true, jobKey: jobKey(manualJob) });
-    }
-
-    if (url.pathname === "/api/settings/email-webhook" && request.method === "GET") {
-      const stored = await loadEmailWebhookConfig(env);
-      return jsonResponse({
-        webhookUrl: stored?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || null,
-        sharedSecretConfigured: Boolean(stored?.sharedSecret || env.APPS_SCRIPT_SHARED_SECRET),
-      });
-    }
-
-    if (url.pathname === "/api/settings/email-webhook" && request.method === "PUT") {
-      const body = await readJsonBody<{ webhookUrl?: string; sharedSecret?: string } & Record<string, unknown>>(request);
-      await saveEmailWebhookConfig(env, {
-        webhookUrl: body.webhookUrl,
-        sharedSecret: body.sharedSecret,
-      });
-      return jsonResponse({ ok: true });
     }
 
     if (url.pathname === "/api/applied-jobs/kanban" && request.method === "GET") {

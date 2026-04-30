@@ -16,6 +16,10 @@ export type AwsRunMeta = {
   sk: string;
   runId: string;
   triggerType: AwsRunTriggerType;
+  userId?: string;
+  tenantId?: string;
+  email?: string;
+  displayName?: string;
   expectedCompanies: number;
   completedCompanies: number;
   failedCompanies: number;
@@ -62,6 +66,10 @@ export async function createRunMeta(input: {
   runId: string;
   triggerType: AwsRunTriggerType;
   expectedCompanies: number;
+  userId?: string;
+  tenantId?: string;
+  email?: string;
+  displayName?: string;
 }): Promise<void> {
   const now = new Date().toISOString();
   await client.send(new PutItemCommand({
@@ -70,6 +78,10 @@ export async function createRunMeta(input: {
       ...metaKey(input.runId),
       runId: input.runId,
       triggerType: input.triggerType,
+      userId: input.userId,
+      tenantId: input.tenantId,
+      email: input.email,
+      displayName: input.displayName,
       expectedCompanies: input.expectedCompanies,
       completedCompanies: 0,
       failedCompanies: 0,

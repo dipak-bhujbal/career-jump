@@ -7,6 +7,7 @@ import {
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
   type AdminSummaryEnvelope,
+  type EmailWebhookSettings,
   type PlanConfig,
   type PlanConfigEnvelope,
   type PlanConfigsEnvelope,
@@ -255,6 +256,27 @@ export function useSaveFeatureFlag() {
       await queryClient.invalidateQueries({ queryKey: ["admin-feature-flags"] });
       await queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
       await queryClient.invalidateQueries({ queryKey: meKey });
+    },
+  });
+}
+
+export const adminEmailWebhookKey = ["admin-email-webhook"] as const;
+
+export function useAdminEmailWebhookSettings() {
+  return useQuery({
+    queryKey: adminEmailWebhookKey,
+    queryFn: () => api.get<EmailWebhookSettings>("/api/admin/email-webhook"),
+    staleTime: 30_000,
+  });
+}
+
+export function useSaveAdminEmailWebhook() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { webhookUrl?: string; sharedSecret?: string }) =>
+      api.put<{ ok: boolean }>("/api/admin/email-webhook", payload),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: adminEmailWebhookKey });
     },
   });
 }

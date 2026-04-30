@@ -220,7 +220,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
               notificationJobs.updatedJobs,
               inventory.runAt,
               runId,
-              tenantId
+              meta.userId ?? tenantId
             );
             emailStatus = emailResult.status;
             emailSkipReason = emailResult.skipReason;
@@ -238,7 +238,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
           notificationJobs.updatedJobs,
           inventory.runAt,
           runId,
-          tenantId
+          meta.userId ?? tenantId
         );
         emailStatus = emailResult.status;
         emailSkipReason = emailResult.skipReason;

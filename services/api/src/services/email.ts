@@ -1,7 +1,14 @@
 import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 import type { Env, JobPosting, UpdatedEmailJob } from "../types";
 import { formatET } from "../lib/utils";
-import { loadBillingSubscription, loadFeatureFlags, loadUserSettings, recordAppLog } from "../storage";
+import {
+  loadBillingSubscription,
+  loadEmailWebhookConfig,
+  loadFeatureFlags,
+  loadUserProfile,
+  loadUserSettings,
+  recordAppLog,
+} from "../storage";
 import { resolveSystemTenantContext } from "../lib/tenant";
 
 const EMAIL_APP_NAME = "Career Jump";
@@ -60,6 +67,51 @@ function mapUpdatedJob(job: UpdatedEmailJob) {
   };
 }
 
+async function sendNotificationWebhook(
+  input: {
+    webhookUrl: string;
+    sharedSecret: string;
+    recipient: string;
+    sender: string;
+    subject: string;
+    runAt: string;
+    runId?: string;
+    plan: string;
+    newJobs: ReturnType<typeof mapNewJob>[];
+    updatedJobs: ReturnType<typeof mapUpdatedJob>[];
+  }
+): Promise<void> {
+  // Keep the notification payload explicit so the shared Apps Script endpoint
+  // can evolve independently from the SES text-only email body.
+  const response = await fetch(input.webhookUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(input.sharedSecret ? { "x-cj-webhook-secret": input.sharedSecret } : {}),
+    },
+    body: JSON.stringify({
+      type: "job_notification_email",
+      recipient: input.recipient,
+      sender: input.sender,
+      subject: input.subject,
+      runAt: input.runAt,
+      runId: input.runId,
+      plan: input.plan,
+      summary: {
+        totalNewJobs: input.newJobs.length,
+        totalUpdatedJobs: input.updatedJobs.length,
+      },
+      newJobs: input.newJobs,
+      updatedJobs: input.updatedJobs,
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(`Webhook delivery failed: ${response.status} ${text.slice(0, 200)}`);
+  }
+}
+
 export async function maybeSendEmail(
   env: Env,
   newJobs: JobPosting[],
@@ -81,8 +133,19 @@ export async function maybeSendEmail(
     return { status: "skipped", skipReason };
   }
 
+  // Manual and async runs should both target the signed-in user's stored
+  // profile email. Falling back to a blank actor silently routed messages to
+  // the default tenant address instead of the real recipient.
+  const profile = userId ? await loadUserProfile(userId) : null;
   const actor = userId
-    ? { userId, tenantId: userId, email: "", displayName: "", scope: "user" as const, isAdmin: false }
+    ? {
+        userId,
+        tenantId: profile?.tenantId ?? userId,
+        email: profile?.email ?? "",
+        displayName: profile?.displayName ?? "",
+        scope: profile?.scope ?? ("user" as const),
+        isAdmin: profile?.scope === "admin",
+      }
     : await resolveSystemTenantContext(env);
   const [settings, subscription, flags] = userId
     ? await Promise.all([
@@ -98,6 +161,9 @@ export async function maybeSendEmail(
   const digestEnabled = flags.find((flag) => flag.flagName === "email_digest")?.enabled !== false;
   const recipient = actor.email || process.env.DEFAULT_TENANT_EMAIL || "";
   const sender = env.SES_FROM_EMAIL || process.env.SES_FROM_EMAIL || "";
+  const storedWebhook = await loadEmailWebhookConfig(env);
+  const webhookUrl = storedWebhook?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || "";
+  const webhookSecret = storedWebhook?.sharedSecret || env.APPS_SCRIPT_SHARED_SECRET || "";
 
   if (!sender) {
     const skipReason = "SES_FROM_EMAIL is not configured";
@@ -162,30 +228,58 @@ export async function maybeSendEmail(
     ...emailUpdatedJobs.map((job) => `UPDATED | ${job.company} | ${job.jobTitle} | ${job.location} | ${job.url}`),
   ].join("\n");
 
-  try {
-    await ses.send(new SendEmailCommand({
-      FromEmailAddress: sender,
-      Destination: { ToAddresses: [recipient] },
-      Content: {
-        Simple: {
-          Subject: { Data: subject },
-          Body: {
-            Text: { Data: bodyText },
+  if (webhookUrl) {
+    try {
+      await sendNotificationWebhook({
+        webhookUrl,
+        sharedSecret: webhookSecret,
+        recipient,
+        sender,
+        subject,
+        runAt,
+        runId,
+        plan: subscription.plan,
+        newJobs: emailNewJobs,
+        updatedJobs: emailUpdatedJobs,
+      });
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      await recordAppLog(env, {
+        level: "error",
+        event: "email_send_failed",
+        message: "Webhook email send failed",
+        runId,
+        route: "scan",
+        details: { responseText: text.slice(0, 500), webhookUrl, recipient },
+      });
+      throw new Error(`Webhook email failed: ${text.slice(0, 200)}`);
+    }
+  } else {
+    try {
+      await ses.send(new SendEmailCommand({
+        FromEmailAddress: sender,
+        Destination: { ToAddresses: [recipient] },
+        Content: {
+          Simple: {
+            Subject: { Data: subject },
+            Body: {
+              Text: { Data: bodyText },
+            },
           },
         },
-      },
-    }));
-  } catch (error) {
-    const text = error instanceof Error ? error.message : String(error);
-    await recordAppLog(env, {
-      level: "error",
-      event: "email_send_failed",
-      message: "SES email send failed",
-      runId,
-      route: "scan",
-      details: { responseText: text.slice(0, 500), sender, recipient },
-    });
-    throw new Error(`SES email failed: ${text.slice(0, 200)}`);
+      }));
+    } catch (error) {
+      const text = error instanceof Error ? error.message : String(error);
+      await recordAppLog(env, {
+        level: "error",
+        event: "email_send_failed",
+        message: "SES email send failed",
+        runId,
+        route: "scan",
+        details: { responseText: text.slice(0, 500), sender, recipient },
+      });
+      throw new Error(`SES email failed: ${text.slice(0, 200)}`);
+    }
   }
 
   await recordAppLog(env, {

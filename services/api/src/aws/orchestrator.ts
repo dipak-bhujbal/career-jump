@@ -62,7 +62,17 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
     const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
     const config = await applyCompanyScanOverrides(env, await loadRuntimeConfig(env, tenantContext.tenantId), tenantContext.tenantId);
     const companies = config.companies.filter((company) => company.enabled !== false);
-    await createRunMeta({ runId, triggerType, expectedCompanies: companies.length });
+    // Persist the triggering actor on the run meta so the async finalize step
+    // can still send notifications to the right user after fan-out completes.
+    await createRunMeta({
+      runId,
+      triggerType,
+      expectedCompanies: companies.length,
+      userId: tenantContext.userId,
+      tenantId: tenantContext.tenantId,
+      email: tenantContext.email,
+      displayName: tenantContext.displayName,
+    });
 
     await logAppEvent(env, {
       level: "info",

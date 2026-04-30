@@ -900,6 +900,10 @@ Resources:
             TableName: !Ref StateTable
         - DynamoDBReadPolicy:
             TableName: !Ref RegistryTable
+        # Email delivery loads feature flags from the shared support table
+        # before sending, so finalize-run needs support-table access too.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SupportTable
         - DynamoDBCrudPolicy:
             TableName: !Ref UsersTable
         - DynamoDBCrudPolicy:

@@ -36,9 +36,11 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
     include: [
-      "src/**/__tests__/**/*.test.ts",
-      "src/**/*.test.ts",
-      "tests/**/*.test.ts",
+      // Route and component tests are commonly authored in TSX, so keep the
+      // include globs broad enough that explicit React regression tests run.
+      "src/**/__tests__/**/*.test.{ts,tsx}",
+      "src/**/*.test.{ts,tsx}",
+      "tests/**/*.test.{ts,tsx}",
     ],
   },
 });

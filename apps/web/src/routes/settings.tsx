@@ -1,10 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { Bell, BellOff, Mail, Info, ExternalLink } from "lucide-react";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { useEmailWebhookSettings, useSaveEmailWebhook } from "@/features/settings/queries";
 import { toast } from "@/components/ui/toast";
 import { useAuth } from "@/features/auth/AuthContext";
 import { api } from "@/lib/api";
@@ -62,16 +60,8 @@ function NotifRow({ enabled, onToggle, title, description, badge }: {
 
 function SettingsRoute() {
   const { user } = useAuth();
-  const { data: webhookData } = useEmailWebhookSettings();
-  const saveWebhook = useSaveEmailWebhook();
   const [prefs, setPrefs] = useState<NotifPrefs>(loadPrefs);
-  const [webhookUrl, setWebhookUrl] = useState("");
-  const [sharedSecret, setSharedSecret] = useState("");
   const [savingPrefs, setSavingPrefs] = useState(false);
-
-  useEffect(() => {
-    if (webhookData?.webhookUrl != null) setWebhookUrl(webhookData.webhookUrl);
-  }, [webhookData?.webhookUrl]);
 
   function toggle(key: keyof NotifPrefs) { setPrefs((p) => ({ ...p, [key]: !p[key] })); }
 
@@ -82,15 +72,6 @@ function SettingsRoute() {
       try { await api.post("/api/user/notification-prefs", prefs); } catch { /* backend may not have this yet */ }
       toast("Notification preferences saved");
     } finally { setSavingPrefs(false); }
-  }
-
-  function handleSaveWebhook() {
-    const payload: { webhookUrl?: string; sharedSecret?: string } = { webhookUrl: webhookUrl.trim() || undefined };
-    if (sharedSecret.trim()) payload.sharedSecret = sharedSecret.trim();
-    saveWebhook.mutate(payload, {
-      onSuccess: () => { toast("Webhook saved"); setSharedSecret(""); },
-      onError: (err) => toast(err instanceof Error ? err.message : "Save failed", "error"),
-    });
   }
 
   return (
@@ -141,30 +122,6 @@ function SettingsRoute() {
             <Button size="sm" onClick={() => void handleSavePrefs()} disabled={savingPrefs} className="shrink-0">
               {savingPrefs ? "Saving…" : "Save preferences"}
             </Button>
-          </div>
-        </div>
-
-        {/* Legacy webhook */}
-        <div className="rounded-2xl border border-[hsl(var(--border))] bg-[hsl(var(--card))] overflow-hidden">
-          <div className="px-6 py-5 border-b border-[hsl(var(--border))]">
-            <div className="font-semibold text-sm">Custom webhook <span className="text-xs font-normal text-[hsl(var(--muted-foreground))]">— advanced</span></div>
-            <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">Forward scan results to any HTTPS endpoint (Google Sheets, Zapier, Make)</div>
-          </div>
-          <div className="px-6 py-5 space-y-4">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Webhook URL</label>
-              <Input value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://script.google.com/macros/s/…/exec" />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-[hsl(var(--muted-foreground))] uppercase tracking-wide">Shared secret</label>
-              <Input type="password" value={sharedSecret} onChange={(e) => setSharedSecret(e.target.value)} placeholder="Leave blank to keep existing" />
-              {webhookData?.sharedSecretConfigured && <p className="text-xs text-[hsl(var(--muted-foreground))]">A shared secret is already configured.</p>}
-            </div>
-            <div className="flex justify-end">
-              <Button variant="outline" size="sm" onClick={handleSaveWebhook} disabled={saveWebhook.isPending}>
-                {saveWebhook.isPending ? "Saving…" : "Save webhook"}
-              </Button>
-            </div>
           </div>
         </div>
 
