@@ -1,11 +1,12 @@
-import { getRow, putRow, queryRows, rawScansTableName, scanRows } from "../aws/dynamo";
+import { deleteRow, getRow, putRow, queryRows, rawScansTableName, scanRows } from "../aws/dynamo";
 import { hyphenSlug, nowISO, slugify } from "../lib/utils";
 import type { DetectedConfig, JobPosting } from "../types";
 
 const RAW_SCAN_SCHEMA_VERSION = 1;
 const RAW_SCAN_CURRENT_SK = "CURRENT";
+const RAW_SCAN_JOB_SK_PREFIX = "JOB#";
 
-type RawScanRow = {
+type RawScanCurrentRow = {
   pk: string;
   sk: string;
   gsi1pk: string;
@@ -21,6 +22,25 @@ type RawScanRow = {
   scannedAt: string;
   schemaVersion: number;
 };
+
+type RawScanJobRow = {
+  pk: string;
+  sk: string;
+  gsi1pk: string;
+  gsi1sk: string;
+  entityType: "RAW_SCAN_JOB";
+  cacheKey: string;
+  company: string;
+  companySlug: string;
+  source: DetectedConfig["source"];
+  detected: DetectedConfig;
+  jobKey: string;
+  job: JobPosting;
+  scannedAt: string;
+  schemaVersion: number;
+};
+
+type RawScanRow = RawScanCurrentRow | RawScanJobRow;
 
 function stableDetectedToken(detected: DetectedConfig): string {
   switch (detected.source) {
@@ -50,6 +70,40 @@ function rawScanPk(detected: DetectedConfig): string {
   return `RAW_SCAN#${detected.source}#${stableDetectedToken(detected)}`;
 }
 
+function rawScanJobSk(job: JobPosting): string {
+  // Stable per-job rows let us replace a single company's current inventory
+  // without scanning the entire table or relying on TTL expiry semantics.
+  const rawId = String(job.id ?? "").trim();
+  const token = rawId || `${slugify(job.title)}:${slugify(job.location)}:${slugify(job.url)}`;
+  return `${RAW_SCAN_JOB_SK_PREFIX}${encodeURIComponent(token || "unknown-job")}`;
+}
+
+function isRawScanJobRow(row: RawScanRow): row is RawScanJobRow {
+  return row.entityType === "RAW_SCAN_JOB";
+}
+
+function isRawScanCurrentRow(row: RawScanRow): row is RawScanCurrentRow {
+  return row.entityType === "RAW_SCAN_CURRENT" || row.entityType === "RAW_SCAN";
+}
+
+async function loadCurrentRowsForDetected(detected: DetectedConfig): Promise<RawScanRow[]> {
+  return queryRows<RawScanRow>(
+    rawScansTableName(),
+    "pk = :pk",
+    { ":pk": rawScanPk(detected) },
+    { consistentRead: true },
+  );
+}
+
+function sortJobsForStorage(jobs: JobPosting[]): JobPosting[] {
+  return [...jobs].sort((a, b) => {
+    const aPosted = Date.parse(a.postedAt ?? "") || 0;
+    const bPosted = Date.parse(b.postedAt ?? "") || 0;
+    if (aPosted !== bPosted) return bPosted - aPosted;
+    return rawScanJobSk(a).localeCompare(rawScanJobSk(b));
+  });
+}
+
 /**
  * Shared raw ATS fetches live outside tenant storage so later users can reuse
  * the same source payload and only re-run their own title/geography filters.
@@ -59,7 +113,7 @@ export async function loadLatestRawScan(
   detected: DetectedConfig,
   options: { allowStale?: boolean; maxAgeMs?: number } = {}
 ): Promise<{ jobs: JobPosting[]; scannedAt: string } | null> {
-  const current = await getRow<RawScanRow>(
+  const current = await getRow<RawScanCurrentRow>(
     rawScansTableName(),
     { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
     true,
@@ -67,13 +121,24 @@ export async function loadLatestRawScan(
   const currentCandidate = current?.scannedAt && Array.isArray(current.jobs) ? current : null;
   if (currentCandidate) {
     return {
-      jobs: currentCandidate.jobs,
+      jobs: sortJobsForStorage(currentCandidate.jobs),
       scannedAt: currentCandidate.scannedAt,
     };
   }
 
+  const currentRows = await loadCurrentRowsForDetected(detected);
+  const jobRows = currentRows.filter(isRawScanJobRow);
+  if (jobRows.length > 0) {
+    const scannedAt = currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
+    if (!scannedAt) return null;
+    return {
+      jobs: sortJobsForStorage(jobRows.map((row) => row.job)),
+      scannedAt,
+    };
+  }
+
   // Backward compatibility for older prod rows written as historical snapshots.
-  const rows = await queryRows<RawScanRow>(
+  const rows = await queryRows<RawScanCurrentRow>(
     rawScansTableName(),
     "pk = :pk",
     { ":pk": rawScanPk(detected) },
@@ -101,20 +166,50 @@ export async function saveRawScan(
 ): Promise<void> {
   const scannedAt = nowISO();
   const companySlug = hyphenSlug(company) || slugify(company) || "unknown-company";
-
-  await putRow(rawScansTableName(), {
-    pk: rawScanPk(detected),
-    sk: RAW_SCAN_CURRENT_SK,
+  const cacheKey = rawScanPk(detected);
+  const nextJobs = sortJobsForStorage(jobs);
+  const nextJobRows = nextJobs.map((job) => ({
+    pk: cacheKey,
+    sk: rawScanJobSk(job),
     gsi1pk: `COMPANY#${companySlug}`,
-    gsi1sk: RAW_SCAN_CURRENT_SK,
-    entityType: "RAW_SCAN_CURRENT",
-    cacheKey: rawScanPk(detected),
+    gsi1sk: rawScanJobSk(job),
+    entityType: "RAW_SCAN_JOB" as const,
+    cacheKey,
     company,
     companySlug,
     source: detected.source,
     detected,
-    jobs,
-    fetchedCount: jobs.length,
+    jobKey: rawScanJobSk(job),
+    job,
+    scannedAt,
+    schemaVersion: RAW_SCAN_SCHEMA_VERSION,
+  }));
+
+  const existingRows = await loadCurrentRowsForDetected(detected);
+  const existingJobRows = existingRows.filter(isRawScanJobRow);
+  const nextJobSkSet = new Set(nextJobRows.map((row) => row.sk));
+
+  // Replace this company's live inventory atomically enough for our read path:
+  // upsert the new per-job rows and delete jobs that disappeared from source.
+  await Promise.all(existingJobRows
+    .filter((row) => !nextJobSkSet.has(row.sk))
+    .map((row) => deleteRow(rawScansTableName(), { pk: row.pk, sk: row.sk })));
+
+  await Promise.all(nextJobRows.map((row) => putRow(rawScansTableName(), row)));
+
+  await putRow(rawScansTableName(), {
+    pk: cacheKey,
+    sk: RAW_SCAN_CURRENT_SK,
+    gsi1pk: `COMPANY#${companySlug}`,
+    gsi1sk: RAW_SCAN_CURRENT_SK,
+    entityType: "RAW_SCAN_CURRENT",
+    cacheKey,
+    company,
+    companySlug,
+    source: detected.source,
+    detected,
+    jobs: nextJobs,
+    fetchedCount: nextJobs.length,
     scannedAt,
     schemaVersion: RAW_SCAN_SCHEMA_VERSION,
   });
@@ -134,7 +229,12 @@ export async function listCurrentRawScans(): Promise<Array<{ company: string; de
   );
   if (currentRows.length > 0) {
     return currentRows
-      .filter((row) => Array.isArray(row.jobs) && typeof row.company === "string" && typeof row.scannedAt === "string")
+      .filter((row): row is RawScanCurrentRow =>
+        isRawScanCurrentRow(row) &&
+        Array.isArray(row.jobs) &&
+        typeof row.company === "string" &&
+        typeof row.scannedAt === "string"
+      )
       .map((row) => ({
         company: row.company,
         detected: row.detected,
@@ -148,9 +248,9 @@ export async function listCurrentRawScans(): Promise<Array<{ company: string; de
   // browsing works immediately after deploy instead of waiting for every board
   // to be rescanned.
   const legacyRows = await scanRows<RawScanRow>(rawScansTableName());
-  const latestByPk = new Map<string, RawScanRow>();
+  const latestByPk = new Map<string, RawScanCurrentRow>();
   for (const row of legacyRows) {
-    if (!Array.isArray(row.jobs) || typeof row.company !== "string" || typeof row.scannedAt !== "string") continue;
+    if (!isRawScanCurrentRow(row) || !Array.isArray(row.jobs) || typeof row.company !== "string" || typeof row.scannedAt !== "string") continue;
     const existing = latestByPk.get(row.pk);
     if (!existing || existing.scannedAt.localeCompare(row.scannedAt) < 0) {
       latestByPk.set(row.pk, row);

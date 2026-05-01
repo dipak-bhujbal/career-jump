@@ -91,8 +91,6 @@ Resources:
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
-      # Raw scans now act as the durable shared current inventory per company,
-      # so they must survive between hot / warm / cold refresh windows.
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
         Enabled: false
@@ -172,9 +170,12 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      # Raw scans are now the durable shared source of truth for current live
+      # company inventory, so scheduler cadence must control freshness instead
+      # of DynamoDB TTL evicting cold-company data early.
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
-        Enabled: true
+        Enabled: false
 
   UsersTable:
     Type: AWS::DynamoDB::Table
@@ -245,9 +246,12 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+      # Tenant-owned applied/action-plan records are explicitly cleared by the
+      # user via Clear Data, so they must not age out underneath preserved JD
+      # archives or admin support workflows.
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
-        Enabled: true
+        Enabled: false
 
   EventsTable:
     Type: AWS::DynamoDB::Table
