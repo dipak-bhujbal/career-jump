@@ -1163,7 +1163,10 @@ Resources:
           Type: ScheduleV2
           Properties:
             Name: !Sub "${AppName}-${Stage}-registry-scan-cron"
-            ScheduleExpression: "rate(15 minutes)"
+            # Registry-owned raw fetch scans must stay inside the same weekday
+            # ET operating window as the rest of the automated scan system.
+            ScheduleExpression: "cron(0 6,9,12,15,18,21 ? * MON-FRI *)"
+            ScheduleExpressionTimezone: "America/New_York"
             State: ENABLED
       LoggingConfig:
         LogFormat: JSON
@@ -1192,7 +1195,11 @@ Resources:
           Type: ScheduleV2
           Properties:
             Name: !Sub "${AppName}-${Stage}-registry-ops-dashboard-cron"
-            ScheduleExpression: "rate(15 minutes)"
+            # Keep the ops dashboard cadence aligned with the actual scan
+            # dispatch window so weekend snapshots do not imply background
+            # activity that operators intentionally turned off.
+            ScheduleExpression: "cron(0 6,9,12,15,18,21 ? * MON-FRI *)"
+            ScheduleExpressionTimezone: "America/New_York"
             State: ENABLED
       LoggingConfig:
         LogFormat: JSON
