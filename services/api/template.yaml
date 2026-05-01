@@ -63,6 +63,7 @@ Globals:
         AWS_RAW_SCANS_TABLE: !Ref RawScansTable
         AWS_USERS_TABLE: !Ref UsersTable
         AWS_JOBS_TABLE: !Ref JobsTable
+        AWS_JOB_ARCHIVE_BUCKET: !Ref JobArchiveBucket
         AWS_EVENTS_TABLE: !Ref EventsTable
         AWS_SUPPORT_TABLE: !Ref SupportTable
         AWS_BILLING_TABLE: !Ref BillingTable
@@ -383,6 +384,27 @@ Resources:
         BlockPublicPolicy: true
         IgnorePublicAcls: true
         RestrictPublicBuckets: true
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  JobArchiveBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${AppName}-${Stage}-${AWS::AccountId}-job-archive"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: AbortIncompleteMultipartUploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
       Tags:
         - Key: app
           Value: !Ref AppName
@@ -829,6 +851,8 @@ Resources:
             TableName: !Ref BillingTable
         - DynamoDBCrudPolicy:
             TableName: !Ref RawScansTable
+        - S3CrudPolicy:
+            BucketName: !Ref JobArchiveBucket
         - LambdaInvokePolicy:
             FunctionName: !Ref RunOrchestratorFunction
         - Statement:

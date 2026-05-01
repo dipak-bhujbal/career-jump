@@ -217,6 +217,7 @@ export async function buildAvailableJobsFromSharedInventory(
 ): Promise<InventorySnapshot> {
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
   const previousJobsByCompany = new Map<string, JobPosting[]>();
+  const discardRegistry = await loadDiscardRegistry(env, tenantId);
   for (const job of previousInventory?.jobs ?? []) {
     const key = companyIdentity(job.company);
     const rows = previousJobsByCompany.get(key) ?? [];
@@ -225,6 +226,7 @@ export async function buildAvailableJobsFromSharedInventory(
   }
 
   const jobs: JobPosting[] = [];
+  const seenJobKeys = new Set<string>();
   const bySource: Record<string, number> = {};
   const byCompany: Record<string, number> = {};
   const byCompanyFetched: Record<string, number> = {};
@@ -236,7 +238,7 @@ export async function buildAvailableJobsFromSharedInventory(
   let filteredOutCompanies = 0;
 
   if (options.isAdmin) {
-    const currentRows = await listCurrentRawScans();
+    const currentRows = process.env.AWS_RAW_SCANS_TABLE ? await listCurrentRawScans() : [];
     const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
     for (const row of currentRows) {
       if (!enabledCompanyNames.has(companyIdentity(row.company))) continue;
@@ -246,6 +248,13 @@ export async function buildAvailableJobsFromSharedInventory(
       byCompanyFetched[row.company] = row.jobs.length;
       for (const rawJob of row.jobs) {
         const enriched = enrichJob(rawJob, config.jobtitles);
+        if (isDiscarded(enriched, discardRegistry)) {
+          filteredOutJobs += 1;
+          continue;
+        }
+        const nextJobKey = jobKey(enriched);
+        if (seenJobKeys.has(nextJobKey)) continue;
+        seenJobKeys.add(nextJobKey);
         jobs.push(enriched);
         bySource[enriched.source] = (bySource[enriched.source] ?? 0) + 1;
         byCompany[enriched.company] = (byCompany[enriched.company] ?? 0) + 1;
@@ -259,7 +268,9 @@ export async function buildAvailableJobsFromSharedInventory(
       const detected = await getDetectedConfig(env, company, tenantId);
       if (!detected) continue;
 
-      const cachedScan = await loadLatestRawScan(company.company, detected, { allowStale: true });
+      const cachedScan = process.env.AWS_RAW_SCANS_TABLE
+        ? await loadLatestRawScan(company.company, detected, { allowStale: true })
+        : null;
       const sharedJobs = cachedScan?.jobs ?? previousJobsByCompany.get(companyIdentity(company.company)) ?? [];
       if (!sharedJobs.length) continue;
 
@@ -288,6 +299,13 @@ export async function buildAvailableJobsFromSharedInventory(
       }
 
       for (const matchedJob of matchedJobs) {
+        if (isDiscarded(matchedJob, discardRegistry)) {
+          filteredOutJobs += 1;
+          continue;
+        }
+        const nextJobKey = jobKey(matchedJob);
+        if (seenJobKeys.has(nextJobKey)) continue;
+        seenJobKeys.add(nextJobKey);
         jobs.push(matchedJob);
         bySource[matchedJob.source] = (bySource[matchedJob.source] ?? 0) + 1;
         byCompany[matchedJob.company] = (byCompany[matchedJob.company] ?? 0) + 1;
@@ -296,6 +314,24 @@ export async function buildAvailableJobsFromSharedInventory(
         }
       }
     }
+  }
+
+  // Manual jobs only exist in tenant state, so merge them after the shared raw
+  // company snapshots are loaded. This keeps manual entries visible without
+  // duplicating every shared job into tenant storage.
+  const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
+  for (const manualJob of previousInventory?.jobs ?? []) {
+    if (!manualJob.manualEntry) continue;
+    if (!enabledCompanyNames.has(companyIdentity(manualJob.company))) continue;
+    if (isDiscarded(manualJob, discardRegistry)) continue;
+
+    const nextJobKey = jobKey(manualJob);
+    if (seenJobKeys.has(nextJobKey)) continue;
+    seenJobKeys.add(nextJobKey);
+
+    jobs.push(manualJob);
+    bySource[manualJob.source] = (bySource[manualJob.source] ?? 0) + 1;
+    byCompany[manualJob.company] = (byCompany[manualJob.company] ?? 0) + 1;
   }
 
   return {

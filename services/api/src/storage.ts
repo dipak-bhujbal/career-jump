@@ -17,4 +17,5 @@ export * from "./storage/workday-scan-state";
 export * from "./storage/plan-config";
 export * from "./storage/stripe-config";
 export * from "./storage/data-lake";
+export * from "./storage/job-archive";
 export * from "./storage/scan-quota";

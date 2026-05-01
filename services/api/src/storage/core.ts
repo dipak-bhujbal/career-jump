@@ -340,6 +340,9 @@ function normalizeAppliedJobRecord(key: string, value: unknown): AppliedJobRecor
   return {
     jobKey: nextKey,
     job,
+    originalJobUrl: typeof row.originalJobUrl === "string" ? row.originalJobUrl : undefined,
+    archivedSnapshotKey: typeof row.archivedSnapshotKey === "string" ? row.archivedSnapshotKey : undefined,
+    archivedAt: typeof row.archivedAt === "string" ? row.archivedAt : undefined,
     notes,
     noteRecords,
     appliedAt,

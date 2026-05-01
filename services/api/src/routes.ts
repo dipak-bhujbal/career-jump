@@ -91,6 +91,9 @@ import {
   exportAppliedJobRecords,
   exportScanStateRecords,
   toNdjson,
+  archiveAppliedJobSnapshot,
+  deleteTenantArchivedJobSnapshots,
+  loadArchivedJobSnapshotHtml,
 } from "./storage";
 import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
 import { recordPasswordResetConfirmAttempt } from "./storage/password-reset";
@@ -333,6 +336,46 @@ function mergeAppliedJobsWithInventory(
   });
 }
 
+function archivedJobRoute(jobKeyValue: string): string {
+  return `/api/jobs/archive?jobKey=${encodeURIComponent(jobKeyValue)}`;
+}
+
+function applyArchivedUrlPresentation(record: AppliedJobRecord): AppliedJobRecord & {
+  displayUrl: string;
+  archivedUrl?: string;
+  originalUrl: string;
+} {
+  const originalUrl = record.originalJobUrl ?? record.job.url;
+  const archivedUrl = record.archivedSnapshotKey ? archivedJobRoute(record.jobKey) : undefined;
+  return {
+    ...record,
+    displayUrl: archivedUrl ?? record.job.url,
+    archivedUrl,
+    originalUrl,
+  };
+}
+
+async function loadDerivedAvailableInventory(
+  env: Env,
+  config: RuntimeConfig,
+  tenantId: string | undefined,
+  options: { isAdmin?: boolean } = {},
+): Promise<{
+  storedInventory: InventorySnapshot;
+  effectiveInventory: InventorySnapshot;
+  inventoryState: Awaited<ReturnType<typeof loadInventoryWithState>>["state"];
+}> {
+  const { inventory: storedInventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantId);
+  const effectiveInventory = await buildAvailableJobsFromSharedInventory(
+    env,
+    config,
+    inventoryState.inventory ?? storedInventory,
+    tenantId,
+    options,
+  );
+  return { storedInventory, effectiveInventory, inventoryState };
+}
+
 function summarizeInventoryJobs(jobs: JobPosting[], inventory: InventorySnapshot): InventorySnapshot["stats"] {
   const bySource: Record<string, number> = {};
   const byCompany: Record<string, number> = {};
@@ -491,6 +534,9 @@ function createAppliedRecord(job: JobPosting, key: string, existing?: AppliedJob
     const noteRecords = [...(existing.noteRecords ?? []), ...legacyNoteRecords];
     return {
       ...ensureBaseTimeline(existing),
+      originalJobUrl: existing.originalJobUrl ?? existing.job.url,
+      archivedSnapshotKey: existing.archivedSnapshotKey,
+      archivedAt: existing.archivedAt,
       noteRecords,
       notes: summarizeNoteRecords(noteRecords),
     };
@@ -499,6 +545,7 @@ function createAppliedRecord(job: JobPosting, key: string, existing?: AppliedJob
   return ensureBaseTimeline({
     jobKey: key,
     job,
+    originalJobUrl: job.url,
     notes: summarizeNoteRecords(legacyNoteRecords),
     noteRecords: legacyNoteRecords,
     appliedAt,
@@ -592,10 +639,14 @@ function buildActionPlanRows(rows: AppliedJobRecord[]): ActionPlanRow[] {
     .filter((row) => Array.isArray(row.interviewRounds) && row.interviewRounds.length > 0)
     .map((row) => {
       const currentRound = [...row.interviewRounds].sort((a, b) => b.roundNumber - a.roundNumber)[0];
+      const archived = applyArchivedUrlPresentation(row);
       return {
         jobKey: row.jobKey,
         company: row.job.company,
         jobTitle: row.job.title,
+        originalUrl: archived.originalUrl,
+        archivedUrl: archived.archivedUrl,
+        archiveCapturedAt: row.archivedAt,
         notes: row.notes,
         noteRecords: row.noteRecords,
         appliedAt: formatET(row.appliedAt) ?? null,
@@ -607,7 +658,7 @@ function buildActionPlanRows(rows: AppliedJobRecord[]): ActionPlanRow[] {
         currentRoundNumber: currentRound?.roundNumber ?? 0,
         interviewRounds: row.interviewRounds,
         timeline: row.timeline,
-        url: row.job.url,
+        url: archived.displayUrl,
         location: row.job.location,
         source: row.job.source,
         postedAt: row.job.postedAt,
@@ -1508,6 +1559,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       // Deleting lets loadAppliedJobs fall back to the legacy global applied
       // store, which can resurrect old applications after a user clears data.
       await saveAppliedJobsForTenant(env, {}, tenantContext.tenantId);
+      await deleteTenantArchivedJobSnapshots(tenantContext.tenantId);
       await deleteKvPrefix(atsCacheKv(env), "ats:");
       const emptyInventory = buildEmptyInventory(config);
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, INVENTORY_KEY), JSON.stringify(emptyInventory));
@@ -1516,6 +1568,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify([]));
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
+      await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, "discardedJobKeys"));
       await saveJobNotes(env, {}, tenantContext.tenantId);
       return jsonResponse({ ok: true, cleared: "inventory and pipeline state", retained: ["saved company ATS configuration", "saved filters", "logs"] });
     }
@@ -1822,8 +1875,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const inventory = await loadInventory(env, config, tenantContext.tenantId);
-      const cleanup = await removeBrokenAvailableJobs(env, inventory, {
+      const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
+      const cleanup = await removeBrokenAvailableJobs(env, effectiveInventory, {
         tenantId: tenantContext.tenantId,
         route: "/api/jobs/remove-broken-links",
       });
@@ -1843,7 +1901,19 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         });
         return jsonResponse({ ok: true, checkedCount: cleanup.checkedCount, removedCount: 0, removedJobs: [] });
       }
-      await saveInventory(env, cleanup.inventory, tenantContext.tenantId);
+      const effectiveJobsByKey = new Map(effectiveInventory.jobs.map((job) => [jobKey(job), job]));
+      await Promise.all(cleanup.brokenJobs.map(async (removedJob) => {
+        const matchedJob = effectiveJobsByKey.get(removedJob.jobKey);
+        if (!matchedJob) return;
+        await addDiscardedJobKey(env, matchedJob, tenantContext.tenantId);
+      }));
+      await saveInventory(
+        env,
+        removeInventoryJobsByKeys(storedInventory, new Set(cleanup.brokenJobs.map((job) => job.jobKey))),
+        tenantContext.tenantId,
+        undefined,
+        { skipKeyPrune: true },
+      );
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       for (const removedJob of cleanup.brokenJobs) {
         delete jobNotes[removedJob.jobKey];
@@ -1880,17 +1950,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         }),
         tenantContext.tenantId,
       );
-      const [{ inventory, state: inventoryState }, billing] = await Promise.all([
-        loadInventoryWithState(env, config, tenantContext.tenantId),
+      const [{ effectiveInventory, inventoryState }, billing] = await Promise.all([
+        loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: tenantContext.isAdmin }),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
       ]);
-      const effectiveInventory = await buildAvailableJobsFromSharedInventory(
-        env,
-        config,
-        inventoryState.inventory ?? inventory,
-        tenantContext.tenantId,
-        { isAdmin: tenantContext.isAdmin },
-      );
       const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
@@ -1998,7 +2061,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const { storedInventory } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
       const notes = String(body.notes ?? "").trim();
       const manualJob: JobPosting = {
         source: "manual",
@@ -2011,12 +2079,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         postedAt: nowISO(),
       };
       // Manual jobs should appear immediately in Available Jobs without waiting for the next scan cycle.
-      const nextJobs = [manualJob, ...inventory.jobs];
+      const nextJobs = [manualJob, ...storedInventory.jobs];
       const nextInventory = {
-        ...inventory,
+        ...storedInventory,
         runAt: nowISO(),
         jobs: nextJobs,
-        stats: summarizeInventoryJobs(nextJobs, inventory),
+        stats: summarizeInventoryJobs(nextJobs, storedInventory),
       };
 
       await saveInventory(env, nextInventory, tenantContext.tenantId);
@@ -2044,7 +2112,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       );
       const STATUSES: AppliedJobStatus[] = ["Applied", "Interview", "Negotiations", "Offered", "Rejected"];
       const columns = STATUSES.map((status) => {
-        const jobs = allRows.filter((row) => row.status === status);
+        const jobs = allRows
+          .filter((row) => row.status === status)
+          .map((row) => {
+            const archived = applyArchivedUrlPresentation(row);
+            return {
+              ...row,
+              url: archived.displayUrl,
+              originalUrl: archived.originalUrl,
+              archivedUrl: archived.archivedUrl,
+              archiveCapturedAt: row.archivedAt,
+            };
+          });
         return { status, count: jobs.length, jobs };
       });
       return jsonResponse({ ok: true, total: allRows.length, columns });
@@ -2057,6 +2136,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const rows = Object.values(appliedJobs)
         .filter((row) => slugify(row.job.company) === companySlug || row.job.company.toLowerCase() === companySlug.toLowerCase())
+        .map((row) => {
+          const archived = applyArchivedUrlPresentation(row);
+          return {
+            ...row,
+            url: archived.displayUrl,
+            originalUrl: archived.originalUrl,
+            archivedUrl: archived.archivedUrl,
+            archiveCapturedAt: row.archivedAt,
+          };
+        })
         .sort((a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime());
       return jsonResponse({ ok: true, company: companySlug, total: rows.length, jobs: rows });
     }
@@ -2067,11 +2156,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const { effectiveInventory } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       const { updatedJobKeys } = await loadLatestRunMarkers(env, tenantContext.tenantId);
-      const mergedRows = mergeAppliedJobsWithInventory(appliedJobs, inventory);
+      const mergedRows = mergeAppliedJobsWithInventory(appliedJobs, effectiveInventory);
       const companyOptions = uniqueSortedCompanies(mergedRows.map((row) => row.job.company));
       const rows = filterAppliedJobs(mergedRows, url.searchParams).sort(
         (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
@@ -2081,23 +2175,50 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         ok: true,
         total: rows.length,
         companyOptions,
-        jobs: rows.map((row) => ({
-          jobKey: row.jobKey,
-          notes: row.notes || jobNotes[row.jobKey] || "",
-          noteRecords: row.noteRecords ?? [],
-          company: row.job.company,
-          jobTitle: row.job.title,
-          appliedAt: formatET(row.appliedAt),
-          appliedAtDate: formatDateOnly(row.appliedAt),
-          postedAt: formatET(row.job.postedAt),
-          postedAtDate: formatDateOnly(row.job.postedAt),
-          url: row.job.url,
-          status: row.status,
-          isUpdated: updatedJobKeys.has(row.jobKey),
-          interviewRounds: row.interviewRounds,
-          timeline: row.timeline,
-          lastStatusChangedAt: row.lastStatusChangedAt,
-        })),
+        jobs: rows.map((row) => {
+          const archived = applyArchivedUrlPresentation(row);
+          return {
+            jobKey: row.jobKey,
+            notes: row.notes || jobNotes[row.jobKey] || "",
+            noteRecords: row.noteRecords ?? [],
+            company: row.job.company,
+            jobTitle: row.job.title,
+            appliedAt: formatET(row.appliedAt),
+            appliedAtDate: formatDateOnly(row.appliedAt),
+            postedAt: formatET(row.job.postedAt),
+            postedAtDate: formatDateOnly(row.job.postedAt),
+            url: archived.displayUrl,
+            originalUrl: archived.originalUrl,
+            archivedUrl: archived.archivedUrl,
+            archiveCapturedAt: row.archivedAt,
+            status: row.status,
+            isUpdated: updatedJobKeys.has(row.jobKey),
+            interviewRounds: row.interviewRounds,
+            timeline: row.timeline,
+            lastStatusChangedAt: row.lastStatusChangedAt,
+          };
+        }),
+      });
+    }
+
+    if (url.pathname === "/api/jobs/archive" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const requestedJobKey = String(url.searchParams.get("jobKey") ?? "").trim();
+      if (!requestedJobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+
+      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const record = appliedJobs[requestedJobKey];
+      if (!record) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
+
+      const html = await loadArchivedJobSnapshotHtml(tenantContext.tenantId, record);
+      if (!html) return jsonResponse({ ok: false, error: "Archived snapshot not found" }, 404);
+
+      return new Response(html, {
+        status: 200,
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "private, max-age=60",
+        },
       });
     }
 
@@ -2126,15 +2247,23 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           }, 402);
         }
       }
-      const inventory = await loadInventory(env, config, tenantContext.tenantId);
+      const { effectiveInventory } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
       const appliedJobs = appliedJobsForLimit;
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
-      const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
+      const job = effectiveInventory.jobs.find((row) => jobKey(row) === body.jobKey);
       if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
       const submittedNotes = String(body.notes ?? "").trim();
       const initialNotes = submittedNotes || jobNotes[body.jobKey];
 
-      appliedJobs[body.jobKey] = createAppliedRecord(job, body.jobKey, appliedJobs[body.jobKey], initialNotes);
+      appliedJobs[body.jobKey] = await archiveAppliedJobSnapshot(
+        tenantContext.tenantId,
+        createAppliedRecord(job, body.jobKey, appliedJobs[body.jobKey], initialNotes),
+      );
       delete jobNotes[body.jobKey];
       await saveJobNotes(env, jobNotes, tenantContext.tenantId);
       await saveAppliedJobsForTenant(env, appliedJobs, tenantContext.tenantId);
@@ -2250,15 +2379,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const inventory = await loadInventory(env, config, tenantContext.tenantId);
-      const job = inventory.jobs.find((row) => jobKey(row) === body.jobKey);
+      const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
+      const job = effectiveInventory.jobs.find((row) => jobKey(row) === body.jobKey);
       if (!job) return jsonResponse({ ok: false, error: "Job not found" }, 404);
 
       await addDiscardedJobKey(env, job, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       delete jobNotes[body.jobKey];
       await saveJobNotes(env, jobNotes, tenantContext.tenantId);
-      await saveInventory(env, removeInventoryJobsByKeys(inventory, new Set([body.jobKey])), tenantContext.tenantId, undefined, { skipKeyPrune: true });
+      await saveInventory(env, removeInventoryJobsByKeys(storedInventory, new Set([body.jobKey])), tenantContext.tenantId, undefined, { skipKeyPrune: true });
       writeAnalytics(env, {
         event: "job_discarded",
         indexes: [job.source, "/api/jobs/discard"],

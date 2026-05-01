@@ -16,3 +16,4 @@ export * from "./workday-scan-state";
 export * from "./plan-config";
 export * from "./stripe-config";
 export * from "./data-lake";
+export * from "./job-archive";

@@ -194,6 +194,9 @@ export type NoteRecord = {
 export type AppliedJobRecord = {
   jobKey: string;
   job: JobPosting;
+  originalJobUrl?: string;
+  archivedSnapshotKey?: string;
+  archivedAt?: string;
   notes?: string;
   noteRecords?: NoteRecord[];
   appliedAt: string;
@@ -207,6 +210,9 @@ export type ActionPlanRow = {
   jobKey: string;
   company: string;
   jobTitle: string;
+  originalUrl?: string;
+  archivedUrl?: string;
+  archiveCapturedAt?: string;
   notes?: string;
   appliedAt?: string | null;
   appliedAtDate?: string | null;

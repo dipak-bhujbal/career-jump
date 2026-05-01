@@ -31,6 +31,9 @@ type RawAppliedJob = Partial<AppliedJob> & {
   source?: string;
   location?: string;
   url?: string;
+  originalUrl?: string;
+  archivedUrl?: string;
+  archiveCapturedAt?: string;
   postedAt?: string;
   postedAtDate?: string;
   isNew?: boolean;
@@ -48,7 +51,12 @@ function normalizeAppliedJob(row: RawAppliedJob): AppliedJob {
     postedAt: nestedJob.postedAt ?? row.postedAt,
     postedAtDate: nestedJob.postedAtDate ?? row.postedAtDate,
     location: nestedJob.location ?? row.location,
-    url: nestedJob.url ?? row.url ?? "",
+    // Prefer the archived snapshot URL when present so preserved applied jobs
+    // keep opening inside Career Jump even after the source posting disappears.
+    url: row.archivedUrl ?? row.url ?? nestedJob.url ?? "",
+    originalUrl: row.originalUrl ?? nestedJob.originalUrl,
+    archivedUrl: row.archivedUrl ?? nestedJob.archivedUrl,
+    archiveCapturedAt: row.archiveCapturedAt ?? nestedJob.archiveCapturedAt,
     isNew: nestedJob.isNew ?? row.isNew,
     isUpdated: nestedJob.isUpdated ?? row.isUpdated,
   };
@@ -59,6 +67,9 @@ function normalizeAppliedJob(row: RawAppliedJob): AppliedJob {
     appliedAt: row.appliedAt ?? "",
     status: row.status ?? "Applied",
     job,
+    originalUrl: row.originalUrl ?? nestedJob.originalUrl,
+    archivedUrl: row.archivedUrl ?? nestedJob.archivedUrl,
+    archiveCapturedAt: row.archiveCapturedAt ?? nestedJob.archiveCapturedAt,
     notes: row.notes,
     noteRecords: row.noteRecords ?? [],
     interviewRounds: row.interviewRounds ?? [],

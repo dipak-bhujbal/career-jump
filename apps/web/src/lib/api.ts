@@ -282,6 +282,9 @@ export type Job = {
   postedAtDate?: string;
   location?: string;
   url: string;
+  originalUrl?: string;
+  archivedUrl?: string;
+  archiveCapturedAt?: string;
   usLikely?: boolean | null;
   detectedCountry?: string;
   isNew?: boolean;
@@ -330,6 +333,9 @@ export type AppliedJob = {
   appliedAt: string;
   status: AppliedStatus;
   job: Job;
+  originalUrl?: string;
+  archivedUrl?: string;
+  archiveCapturedAt?: string;
   notes?: string;
   noteRecords?: NoteRecord[];
   interviewRounds?: InterviewRound[];
@@ -367,6 +373,9 @@ export type ActionPlanRow = {
   jobKey: string;
   company: string;
   jobTitle: string;
+  originalUrl?: string;
+  archivedUrl?: string;
+  archiveCapturedAt?: string;
   notes?: string;
   noteRecords?: NoteRecord[];
   appliedAt?: string | null;
