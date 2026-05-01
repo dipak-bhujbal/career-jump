@@ -790,7 +790,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const q = url.searchParams.get("q") ?? undefined;
       await recordEvent(tenantContext, "ADMIN_USER_SEARCH", { query: q ?? "" });
       const users = await findUserProfiles(q);
-      return jsonResponse({ ok: true, total: users.length, users });
+      const hydratedUsers = await Promise.all(users.map(async (user) => {
+        // The admin user list should display the currently active paid tier,
+        // not the older profile row's seed/default plan field.
+        const billing = await loadBillingSubscription(user.userId).catch(() => null);
+        return {
+          ...user,
+          plan: billing?.plan ?? user.plan,
+        };
+      }));
+      return jsonResponse({ ok: true, total: hydratedUsers.length, users: hydratedUsers });
     }
 
     const adminUserMatch = url.pathname.match(/^\/api\/admin\/users\/([^/]+)$/);
@@ -812,7 +821,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       });
       return jsonResponse({
         ok: true,
-        profile,
+        profile: {
+          ...profile,
+          // Keep the detail pane aligned with the active billing tier so paid
+          // users and admins do not appear as stale "free" accounts.
+          plan: billing.plan,
+        },
         settings: {
           ...settings,
           // The admin user panel should report the tenant's actual runtime
