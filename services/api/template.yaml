@@ -90,9 +90,11 @@ Resources:
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
+      # Raw scans now act as the durable shared current inventory per company,
+      # so they must survive between hot / warm / cold refresh windows.
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
-        Enabled: true
+        Enabled: false
       Tags:
         - Key: app
           Value: !Ref AppName
@@ -438,6 +440,32 @@ Resources:
             ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; img-src 'self' data:; frame-ancestors 'none'"
             Override: true
 
+  FrontendDocsResponseHeadersPolicy:
+    Type: AWS::CloudFront::ResponseHeadersPolicy
+    Properties:
+      ResponseHeadersPolicyConfig:
+        Name: !Sub "${AppName}-${Stage}-docs-security-headers"
+        SecurityHeadersConfig:
+          StrictTransportSecurity:
+            AccessControlMaxAgeSec: 63072000
+            IncludeSubdomains: true
+            Override: true
+          ContentTypeOptions:
+            Override: true
+          FrameOptions:
+            FrameOption: SAMEORIGIN
+            Override: true
+          XSSProtection:
+            ModeBlock: true
+            Protection: true
+            Override: true
+          ContentSecurityPolicy:
+            # Docs are intentionally embeddable inside the admin route and load
+            # the Swagger UI bundle from unpkg, so they need a same-origin
+            # framing policy instead of the app-wide deny policy.
+            ContentSecurityPolicy: "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; connect-src 'self' https://*.amazoncognito.com https://cognito-idp.us-east-1.amazonaws.com; img-src 'self' data:; frame-ancestors 'self'"
+            Override: true
+
   ApiNoCachePolicy:
     Type: AWS::CloudFront::CachePolicy
     Properties:
@@ -497,7 +525,7 @@ Resources:
 
           // Keep API and health traffic untouched so backend auth/geofence
           // responses survive all the way back to the browser.
-          if (uri === "/health" || uri.indexOf("/api/") === 0) {
+          if (uri === "/health" || uri === "/docs" || uri.indexOf("/api/") === 0) {
             return request;
           }
 
@@ -555,6 +583,22 @@ Resources:
               FunctionARN: !GetAtt FrontendSpaRewriteFunction.FunctionMetadata.FunctionARN
           ResponseHeadersPolicyId: !Ref FrontendResponseHeadersPolicy
         CacheBehaviors:
+          - PathPattern: /docs
+            TargetOriginId: FrontendWebsiteOrigin
+            ViewerProtocolPolicy: redirect-to-https
+            AllowedMethods:
+              - GET
+              - HEAD
+              - OPTIONS
+            CachedMethods:
+              - GET
+              - HEAD
+            Compress: true
+            ForwardedValues:
+              QueryString: false
+              Cookies:
+                Forward: none
+            ResponseHeadersPolicyId: !Ref FrontendDocsResponseHeadersPolicy
           - PathPattern: /api/*
             TargetOriginId: ApiOrigin
             ViewerProtocolPolicy: https-only

@@ -16,7 +16,7 @@ import { updateActiveTrackers } from "./storage/registry-scan-state";
 import { scrapeOne } from "./services/registry-scraper";
 import { confirmPasswordReset, requestPasswordReset } from "./services/password-reset";
 import { writeAnalytics } from "./lib/analytics";
-import { jsonResponse, withSecurity } from "./lib/http";
+import { jsonResponse, withDocsSecurity, withSecurity } from "./lib/http";
 import { jobStateKv, atsCacheKv } from "./lib/bindings";
 import { resolveRequestTenantContext, tenantScopedKey, tenantScopedPrefix } from "./lib/tenant";
 import {
@@ -105,7 +105,7 @@ import {
 } from "./services/discovery";
 import { removeBrokenAvailableJobs } from "./services/broken-links";
 import { maybeSendEmail } from "./services/email";
-import { addDiscardedJobKey, buildInventory, getLatestRunNotificationJobs, loadInventory, loadInventoryWithState, markJobsAsSeen, removeInventoryJobsByKeys, runScan, saveInventory } from "./services/inventory";
+import { addDiscardedJobKey, buildAvailableJobsFromSharedInventory, buildInventory, getLatestRunNotificationJobs, loadInventory, loadInventoryWithState, markJobsAsSeen, removeInventoryJobsByKeys, runScan, saveInventory } from "./services/inventory";
 import { openApiJsonResponse } from "./openapi";
 import type {
   ActionPlanRow,
@@ -641,7 +641,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
 
     if (url.pathname === "/docs" && request.method === "GET") {
-      return withSecurity(await env.ASSETS.fetch(new Request(new URL("/swagger.html", request.url).toString(), request)));
+      return withDocsSecurity(await env.ASSETS.fetch(new Request(new URL("/swagger.html", request.url).toString(), request)));
     }
 
     if (url.pathname === "/api/me" && request.method === "GET") {
@@ -1884,13 +1884,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         loadInventoryWithState(env, config, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
       ]);
-      const effectiveInventory = tenantContext.isAdmin
-        ? await buildInventory(env, config, inventoryState.inventory, undefined, tenantContext.tenantId, {
-          isAdmin: true,
-          cacheOnly: true,
-          disableActiveRunHeartbeat: true,
-        })
-        : inventory;
+      const effectiveInventory = await buildAvailableJobsFromSharedInventory(
+        env,
+        config,
+        inventoryState.inventory ?? inventory,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
       const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
@@ -1899,7 +1899,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const newOnly = url.searchParams.get("newOnly") === "true";
       const updatedOnly = url.searchParams.get("updatedOnly") === "true";
       const allAvailableJobs = effectiveInventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
-      const jobCap = planCfg?.maxVisibleJobs ?? null;
+      // Admin browsing should reflect the shared registry inventory without
+      // consumer-tier visible-job caps.
+      const jobCap = tenantContext.isAdmin ? null : (planCfg?.maxVisibleJobs ?? null);
       const availableJobs = jobCap !== null ? allAvailableJobs.slice(0, jobCap) : allAvailableJobs;
       const companyOptions = uniqueSortedCompanies(availableJobs.map((job) => job.company));
       const totalNewAvailable = availableJobs.filter((job) => newJobKeys.has(jobKey(job))).length;

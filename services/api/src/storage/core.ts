@@ -2,6 +2,7 @@ import { ACTIVE_RUN_LOCK_KEY, ACTIVE_RUN_LOCK_TTL_SECONDS, ACTIVE_RUN_STALE_AFTE
 import { atsCacheKv, configStoreKv, jobStateKv } from "../lib/bindings";
 import { tenantScopedKey, tenantScopedPrefix } from "../lib/tenant";
 import { hyphenSlug, jobKey, jobStableFingerprint, normalizeAppliedStatus, normalizeText, nowISO, slugify } from "../lib/utils";
+import { deleteRow, jobsTableName, putRow, queryRows } from "../aws/dynamo";
 import type {
   AppliedJobRecord,
   AppLogEntry,
@@ -32,6 +33,25 @@ export function atsCacheKey(company: string): string {
 const APPLIED_JOB_ROW_PREFIX = `${APPLIED_KEY}:row:`;
 const JOB_NOTE_ROW_PREFIX = `${JOB_NOTES_KEY}:row:`;
 const RUN_ABORT_PREFIX = "run-abort:";
+const TENANT_JOB_ENTITY_TYPE = "TENANT_JOB";
+
+type TenantJobRow = {
+  pk: string;
+  sk: string;
+  gsi1pk: string;
+  gsi1sk: string;
+  gsi2pk: string;
+  gsi2sk: string;
+  entityType: typeof TENANT_JOB_ENTITY_TYPE;
+  tenantId: string;
+  jobKey: string;
+  status: AppliedJobRecord["status"];
+  company: string;
+  companySlug: string;
+  appliedAt: string;
+  updatedAt: string;
+  record: AppliedJobRecord;
+};
 
 export function protectedDiscoveryKey(company: string): string {
   return `${PROTECTED_DISCOVERY_PREFIX}${slugify(company)}`;
@@ -194,6 +214,72 @@ function parseRowKey(prefix: string, key: string): string {
   }
 }
 
+function tenantJobsTableEnabled(): boolean {
+  return Boolean(process.env.AWS_JOBS_TABLE);
+}
+
+function tenantJobPk(tenantId?: string): string {
+  return `TENANT#${tenantId ?? "default"}`;
+}
+
+function tenantJobSk(jobKeyValue: string): string {
+  return `JOB#${encodeURIComponent(jobKeyValue)}`;
+}
+
+async function loadAppliedJobsFromJobsTable(tenantId?: string): Promise<Record<string, AppliedJobRecord>> {
+  const rows = await queryRows<TenantJobRow>(
+    jobsTableName(),
+    "pk = :pk",
+    { ":pk": tenantJobPk(tenantId) },
+    { consistentRead: true },
+  );
+  const result: Record<string, AppliedJobRecord> = {};
+  for (const row of rows) {
+    const record = normalizeAppliedJobRecord(row.jobKey, row.record);
+    if (record) result[record.jobKey] = record;
+  }
+  return result;
+}
+
+async function saveAppliedJobsToJobsTable(tenantId: string | undefined, data: Record<string, AppliedJobRecord>): Promise<void> {
+  const existingRows = await queryRows<TenantJobRow>(
+    jobsTableName(),
+    "pk = :pk",
+    { ":pk": tenantJobPk(tenantId) },
+    { consistentRead: true },
+  );
+  const nextJobKeys = new Set(Object.keys(data));
+
+  // Synchronize the tenant-owned job set in Dynamo so applied/action-plan
+  // records remain durable even after shared raw jobs are removed.
+  await Promise.all(existingRows
+    .filter((row) => !nextJobKeys.has(row.jobKey))
+    .map((row) => deleteRow(jobsTableName(), { pk: row.pk, sk: row.sk })));
+
+  await Promise.all(Object.entries(data).map(async ([nextJobKey, record]) => {
+    const safe = normalizeAppliedJobRecord(nextJobKey, record);
+    if (!safe) return;
+    const updatedAt = safe.lastStatusChangedAt ?? safe.appliedAt;
+    await putRow(jobsTableName(), {
+      pk: tenantJobPk(tenantId),
+      sk: tenantJobSk(nextJobKey),
+      gsi1pk: `TENANT#${tenantId ?? "default"}#STATUS#${safe.status}`,
+      gsi1sk: `${updatedAt}#${tenantJobSk(nextJobKey)}`,
+      gsi2pk: `TENANT#${tenantId ?? "default"}#COMPANY#${slugify(safe.job.company) || "unknown-company"}`,
+      gsi2sk: `${updatedAt}#${tenantJobSk(nextJobKey)}`,
+      entityType: TENANT_JOB_ENTITY_TYPE,
+      tenantId: tenantId ?? "default",
+      jobKey: nextJobKey,
+      status: safe.status,
+      company: safe.job.company,
+      companySlug: slugify(safe.job.company) || "unknown-company",
+      appliedAt: safe.appliedAt,
+      updatedAt,
+      record: safe,
+    });
+  }));
+}
+
 async function listJsonRows(env: Env, prefix: string): Promise<Array<{ key: string; value: unknown }>> {
   const listOptions = { prefix: rowPrefix(prefix), limit: MAX_APP_LOG_LIMIT };
   const valueStore = kvListWithValuesStore(env);
@@ -265,6 +351,11 @@ function normalizeAppliedJobRecord(key: string, value: unknown): AppliedJobRecor
 }
 
 export async function loadAppliedJobs(env: Env, tenantId?: string): Promise<Record<string, AppliedJobRecord>> {
+  if (tenantJobsTableEnabled()) {
+    const tableRows = await loadAppliedJobsFromJobsTable(tenantId);
+    if (Object.keys(tableRows).length > 0) return tableRows;
+  }
+
   const kv = jobStateKv(env);
   const rowData = await listJsonRows(env, tenantScopedPrefix(tenantId, APPLIED_JOB_ROW_PREFIX));
   if (rowData.length) {
@@ -327,6 +418,9 @@ function summarizeNoteRecords(records: NoteRecord[]): string | undefined {
 }
 
 export async function saveAppliedJobs(env: Env, data: Record<string, AppliedJobRecord>, tenantId?: string): Promise<void> {
+  if (tenantJobsTableEnabled()) {
+    await saveAppliedJobsToJobsTable(tenantId, data);
+  }
   await replaceJsonRows(env, tenantScopedPrefix(tenantId, APPLIED_JOB_ROW_PREFIX), data);
   await jobStateKv(env).delete(tenantScopedKey(tenantId, APPLIED_KEY));
 }

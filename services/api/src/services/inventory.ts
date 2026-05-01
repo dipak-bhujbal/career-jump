@@ -22,6 +22,7 @@ import {
   loadBillingSubscription,
   loadJobNotes,
   loadLatestRawScan,
+  listCurrentRawScans,
   loadPlanConfig,
   markRegistryCompanyScanFailure,
   markRegistryCompanyScanMisconfigured,
@@ -198,6 +199,121 @@ function rebuildInventorySnapshot(inventory: InventorySnapshot, jobs: JobPosting
       bySource,
       byCompany,
       keywordCounts,
+    },
+  };
+}
+
+/**
+ * Shared raw inventory is the durable source of truth for current live jobs.
+ * Tenant available-jobs views should therefore be derived on read from the
+ * shared company snapshots instead of persisting a duplicated tenant copy.
+ */
+export async function buildAvailableJobsFromSharedInventory(
+  env: Env,
+  config: RuntimeConfig,
+  previousInventory: InventorySnapshot | null,
+  tenantId: string | undefined,
+  options: { isAdmin?: boolean } = {},
+): Promise<InventorySnapshot> {
+  const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
+  const previousJobsByCompany = new Map<string, JobPosting[]>();
+  for (const job of previousInventory?.jobs ?? []) {
+    const key = companyIdentity(job.company);
+    const rows = previousJobsByCompany.get(key) ?? [];
+    rows.push(job);
+    previousJobsByCompany.set(key, rows);
+  }
+
+  const jobs: JobPosting[] = [];
+  const bySource: Record<string, number> = {};
+  const byCompany: Record<string, number> = {};
+  const byCompanyFetched: Record<string, number> = {};
+  const keywordCounts: Record<string, number> = {};
+  let totalFetched = 0;
+  let totalCompaniesDetected = 0;
+  let cacheHits = 0;
+  let filteredOutJobs = 0;
+  let filteredOutCompanies = 0;
+
+  if (options.isAdmin) {
+    const currentRows = await listCurrentRawScans();
+    const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
+    for (const row of currentRows) {
+      if (!enabledCompanyNames.has(companyIdentity(row.company))) continue;
+      totalCompaniesDetected += 1;
+      totalFetched += row.jobs.length;
+      cacheHits += 1;
+      byCompanyFetched[row.company] = row.jobs.length;
+      for (const rawJob of row.jobs) {
+        const enriched = enrichJob(rawJob, config.jobtitles);
+        jobs.push(enriched);
+        bySource[enriched.source] = (bySource[enriched.source] ?? 0) + 1;
+        byCompany[enriched.company] = (byCompany[enriched.company] ?? 0) + 1;
+        for (const keyword of enriched.matchedKeywords ?? []) {
+          keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
+        }
+      }
+    }
+  } else {
+    for (const company of enabledCompanies) {
+      const detected = await getDetectedConfig(env, company, tenantId);
+      if (!detected) continue;
+
+      const cachedScan = await loadLatestRawScan(company.company, detected, { allowStale: true });
+      const sharedJobs = cachedScan?.jobs ?? previousJobsByCompany.get(companyIdentity(company.company)) ?? [];
+      if (!sharedJobs.length) continue;
+
+      totalCompaniesDetected += 1;
+      totalFetched += sharedJobs.length;
+      if (cachedScan) cacheHits += 1;
+      byCompanyFetched[company.company] = sharedJobs.length;
+
+      const enrichedJobs = sharedJobs.map((job) => enrichJob(job, config.jobtitles));
+      const matchedJobs = enrichedJobs.filter((job) => {
+        const titleMatched = isInterestingTitle(job.title, config.jobtitles);
+        if (!titleMatched) {
+          filteredOutJobs += 1;
+          return false;
+        }
+        const geographyMatched = shouldKeepJobForUSInventory(job.location, job.title, job.url);
+        if (!geographyMatched) {
+          filteredOutJobs += 1;
+          return false;
+        }
+        return true;
+      });
+
+      if (sharedJobs.length > 0 && matchedJobs.length === 0) {
+        filteredOutCompanies += 1;
+      }
+
+      for (const matchedJob of matchedJobs) {
+        jobs.push(matchedJob);
+        bySource[matchedJob.source] = (bySource[matchedJob.source] ?? 0) + 1;
+        byCompany[matchedJob.company] = (byCompany[matchedJob.company] ?? 0) + 1;
+        for (const keyword of matchedJob.matchedKeywords ?? []) {
+          keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
+        }
+      }
+    }
+  }
+
+  return {
+    runAt: previousInventory?.runAt ?? new Date().toISOString(),
+    jobs,
+    stats: {
+      totalJobsMatched: jobs.length,
+      totalCompaniesConfigured: enabledCompanies.length,
+      totalCompaniesDetected,
+      totalFetched,
+      bySource,
+      byCompany,
+      byCompanyFetched,
+      keywordCounts,
+      cacheHits,
+      liveFetchCompanies: 0,
+      filteredOutJobs,
+      filteredOutCompanies,
     },
   };
 }

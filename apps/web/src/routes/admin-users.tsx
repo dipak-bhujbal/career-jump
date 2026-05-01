@@ -14,12 +14,25 @@ import { toast } from "@/components/ui/toast";
 export const Route = createFileRoute("/admin-users")({ component: AdminUsersRoute });
 
 const PLAN_OPTIONS = ["free", "starter", "pro", "power"] as const;
+const USER_SCOPE_FILTERS = ["all", "user", "admin"] as const;
+
+function displayRole(scope: "user" | "admin"): string {
+  return scope === "admin" ? "Admin" : "User";
+}
+
+function displayPlanLabel(user: { scope: "user" | "admin"; plan: "free" | "starter" | "pro" | "power" }): string {
+  // Operators should be visually identified by their role first. Subscription
+  // tiers remain editable in the detail pane, but the list badge should not
+  // mislead admins into looking like ordinary paid accounts.
+  return user.scope === "admin" ? "Admin" : user.plan;
+}
 
 export function AdminUsersRoute() {
   const { data: me } = useMe();
   const location = useLocation();
   const [query, setQuery] = useState("");
   const [selectedUserId, setSelectedUserId] = useState<string | null>(null);
+  const [scopeFilter, setScopeFilter] = useState<(typeof USER_SCOPE_FILTERS)[number]>("all");
   const isAdmin = me?.actor?.isAdmin === true;
   // Keep the admin-user queries dormant until the session is confirmed to be
   // an admin so non-admin visits do not spray avoidable 403 traffic.
@@ -27,6 +40,7 @@ export function AdminUsersRoute() {
   const { data: selected } = useAdminUser(selectedUserId, isAdmin);
   const setStatus = useSetAdminUserStatus(selectedUserId);
   const setPlan = useSetAdminUserPlan(selectedUserId);
+  const visibleUsers = (data?.users ?? []).filter((user) => scopeFilter === "all" || user.scope === scopeFilter);
 
   if (!isAdmin) {
     return (
@@ -51,12 +65,31 @@ export function AdminUsersRoute() {
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2"><Search size={16} /> Search Users</CardTitle>
-              <CardDescription>{data?.total ?? 0} result(s)</CardDescription>
+              <CardDescription>{visibleUsers.length} result(s)</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               <Input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search email or user ID" />
+              <div className="flex flex-wrap gap-2">
+                {USER_SCOPE_FILTERS.map((filter) => {
+                  const active = scopeFilter === filter;
+                  return (
+                    <button
+                      key={filter}
+                      type="button"
+                      className={`rounded-full border px-3 py-1 text-xs font-medium uppercase tracking-[0.16em] transition-colors ${
+                        active
+                          ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70"
+                          : "border-[hsl(var(--border))] hover:bg-[hsl(var(--accent))]/35"
+                      }`}
+                      onClick={() => setScopeFilter(filter)}
+                    >
+                      {filter === "all" ? "All" : `${filter}s`}
+                    </button>
+                  );
+                })}
+              </div>
               <div className="space-y-2">
-                {(data?.users ?? []).map((user) => (
+                {visibleUsers.map((user) => (
                   <button
                     key={user.userId}
                     type="button"
@@ -67,10 +100,11 @@ export function AdminUsersRoute() {
                       <div>
                         <div className="font-medium">{user.displayName}</div>
                         <div className="text-xs text-[hsl(var(--muted-foreground))]">{user.email}</div>
+                        <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">{displayRole(user.scope)}</div>
                       </div>
                       <div className="text-right">
                         <div className="text-xs uppercase text-[hsl(var(--muted-foreground))]">{user.accountStatus}</div>
-                        <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">{user.plan}</div>
+                        <div className="mt-1 text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">{displayPlanLabel(user)}</div>
                       </div>
                     </div>
                   </button>
@@ -92,9 +126,9 @@ export function AdminUsersRoute() {
                   <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
                     <AdminStatCard
                       icon={<Crown size={15} />}
-                      label="Current plan"
-                      value={selected.billing.plan}
-                      hint={`Provider: ${selected.billing.provider}`}
+                      label={selected.profile.scope === "admin" ? "Account role" : "Current plan"}
+                      value={selected.profile.scope === "admin" ? "Admin" : selected.billing.plan}
+                      hint={selected.profile.scope === "admin" ? "Administrative operator account" : `Provider: ${selected.billing.provider}`}
                     />
                     <AdminStatCard
                       icon={<UserCheck size={15} />}
@@ -118,7 +152,8 @@ export function AdminUsersRoute() {
                   <div className="grid gap-4 md:grid-cols-2">
                     <div className="rounded-lg border border-[hsl(var(--border))] p-4">
                       <div className="text-xs uppercase text-[hsl(var(--muted-foreground))]">Account</div>
-                      <div className="mt-2 text-sm">Plan: {selected.profile.plan}</div>
+                      <div className="mt-2 text-sm">Role: {displayRole(selected.profile.scope)}</div>
+                      <div className="text-sm">Plan: {selected.profile.scope === "admin" ? "Admin" : selected.profile.plan}</div>
                       <div className="text-sm">Billing plan: {selected.billing.plan}</div>
                       <div className="text-sm">Status: {selected.profile.accountStatus}</div>
                       <div className="text-sm">Joined: {relativeTime(selected.profile.joinedAt)}</div>

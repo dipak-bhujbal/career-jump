@@ -1,16 +1,16 @@
-import { putRow, queryRows, rawScansTableName } from "../aws/dynamo";
+import { getRow, putRow, queryRows, rawScansTableName, scanRows } from "../aws/dynamo";
 import { hyphenSlug, nowISO, slugify } from "../lib/utils";
 import type { DetectedConfig, JobPosting } from "../types";
 
-const RAW_SCAN_CACHE_HOURS = 4;
 const RAW_SCAN_SCHEMA_VERSION = 1;
+const RAW_SCAN_CURRENT_SK = "CURRENT";
 
 type RawScanRow = {
   pk: string;
   sk: string;
   gsi1pk: string;
   gsi1sk: string;
-  entityType: "RAW_SCAN";
+  entityType: "RAW_SCAN_CURRENT" | "RAW_SCAN";
   cacheKey: string;
   company: string;
   companySlug: string;
@@ -19,7 +19,6 @@ type RawScanRow = {
   jobs: JobPosting[];
   fetchedCount: number;
   scannedAt: string;
-  expiresAtEpoch: number;
   schemaVersion: number;
 };
 
@@ -60,6 +59,20 @@ export async function loadLatestRawScan(
   detected: DetectedConfig,
   options: { allowStale?: boolean; maxAgeMs?: number } = {}
 ): Promise<{ jobs: JobPosting[]; scannedAt: string } | null> {
+  const current = await getRow<RawScanRow>(
+    rawScansTableName(),
+    { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
+    true,
+  );
+  const currentCandidate = current?.scannedAt && Array.isArray(current.jobs) ? current : null;
+  if (currentCandidate) {
+    return {
+      jobs: currentCandidate.jobs,
+      scannedAt: currentCandidate.scannedAt,
+    };
+  }
+
+  // Backward compatibility for older prod rows written as historical snapshots.
   const rows = await queryRows<RawScanRow>(
     rawScansTableName(),
     "pk = :pk",
@@ -70,7 +83,7 @@ export async function loadLatestRawScan(
   if (!latest?.scannedAt || !Array.isArray(latest.jobs)) return null;
 
   const scannedAtMs = Date.parse(latest.scannedAt);
-  const maxAgeMs = options.maxAgeMs ?? RAW_SCAN_CACHE_HOURS * 60 * 60 * 1000;
+  const maxAgeMs = options.maxAgeMs ?? Number.POSITIVE_INFINITY;
   if (!options.allowStale && (!Number.isFinite(scannedAtMs) || (Date.now() - scannedAtMs) > maxAgeMs)) {
     return null;
   }
@@ -87,15 +100,14 @@ export async function saveRawScan(
   jobs: JobPosting[]
 ): Promise<void> {
   const scannedAt = nowISO();
-  const scannedAtMs = Date.parse(scannedAt);
   const companySlug = hyphenSlug(company) || slugify(company) || "unknown-company";
 
   await putRow(rawScansTableName(), {
     pk: rawScanPk(detected),
-    sk: `SCAN#${scannedAt}`,
+    sk: RAW_SCAN_CURRENT_SK,
     gsi1pk: `COMPANY#${companySlug}`,
-    gsi1sk: scannedAt,
-    entityType: "RAW_SCAN",
+    gsi1sk: RAW_SCAN_CURRENT_SK,
+    entityType: "RAW_SCAN_CURRENT",
     cacheKey: rawScanPk(detected),
     company,
     companySlug,
@@ -104,7 +116,50 @@ export async function saveRawScan(
     jobs,
     fetchedCount: jobs.length,
     scannedAt,
-    expiresAtEpoch: Math.floor((scannedAtMs + (RAW_SCAN_CACHE_HOURS * 60 * 60 * 1000)) / 1000),
     schemaVersion: RAW_SCAN_SCHEMA_VERSION,
   });
+}
+
+/**
+ * Admin browsing needs a shared inventory read path that does not require
+ * one query per configured company when the operator is effectively viewing
+ * the whole registry. The current-row scan keeps that read path simple while
+ * the table remains bounded to one live row per company/source.
+ */
+export async function listCurrentRawScans(): Promise<Array<{ company: string; detected: DetectedConfig; jobs: JobPosting[]; scannedAt: string }>> {
+  const currentRows = await scanRows<RawScanRow>(
+    rawScansTableName(),
+    "entityType = :entityType",
+    { ":entityType": "RAW_SCAN_CURRENT" },
+  );
+  if (currentRows.length > 0) {
+    return currentRows
+      .filter((row) => Array.isArray(row.jobs) && typeof row.company === "string" && typeof row.scannedAt === "string")
+      .map((row) => ({
+        company: row.company,
+        detected: row.detected,
+        jobs: row.jobs,
+        scannedAt: row.scannedAt,
+      }));
+  }
+
+  // Transitional fallback for prod rows written before the durable CURRENT
+  // format existed. We keep the latest row per shared raw-scan key so admin
+  // browsing works immediately after deploy instead of waiting for every board
+  // to be rescanned.
+  const legacyRows = await scanRows<RawScanRow>(rawScansTableName());
+  const latestByPk = new Map<string, RawScanRow>();
+  for (const row of legacyRows) {
+    if (!Array.isArray(row.jobs) || typeof row.company !== "string" || typeof row.scannedAt !== "string") continue;
+    const existing = latestByPk.get(row.pk);
+    if (!existing || existing.scannedAt.localeCompare(row.scannedAt) < 0) {
+      latestByPk.set(row.pk, row);
+    }
+  }
+  return [...latestByPk.values()].map((row) => ({
+    company: row.company,
+    detected: row.detected,
+    jobs: row.jobs,
+    scannedAt: row.scannedAt,
+  }));
 }
