@@ -63,10 +63,42 @@ type SchedulerResult = {
   byQueue: { workday: number; enterprise: number; publicApi: number };
 };
 
+const ET_WEEKDAY_WINDOW = {
+  startHour: 6,
+  endHourExclusive: 23,
+};
+
+function currentEtParts(now: Date): { weekday: string; hour: number } {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    weekday: "short",
+    hour: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+  const weekday = parts.find((part) => part.type === "weekday")?.value ?? "";
+  const hour = Number(parts.find((part) => part.type === "hour")?.value ?? "-1");
+  return { weekday, hour };
+}
+
+function isEtWeekdayDispatchWindow(now: Date): boolean {
+  const { weekday, hour } = currentEtParts(now);
+  const isWeekday = weekday !== "Sat" && weekday !== "Sun";
+  const isInsideHourWindow = hour >= ET_WEEKDAY_WINDOW.startHour && hour < ET_WEEKDAY_WINDOW.endHourExclusive;
+  return isWeekday && isInsideHourWindow;
+}
+
 export async function handler(): Promise<SchedulerResult> {
   const scansEnabled = await loadSystemRegistryScanFlag();
   if (!scansEnabled) {
     console.log("[registry-scheduler] registry_scans_enabled=false — all scans paused by admin");
+    return { dispatched: 0, skipped: 0, byQueue: { workday: 0, enterprise: 0, publicApi: 0 } };
+  }
+
+  // Hot / warm / cold still control nextScanAt spacing. This guard only blocks
+  // dispatch outside the allowed ET business window so companies become due at
+  // night/weekend and then release on the next valid weekday morning.
+  if (!isEtWeekdayDispatchWindow(new Date())) {
+    console.log("[registry-scheduler] outside ET weekday dispatch window — skipping scan fanout");
     return { dispatched: 0, skipped: 0, byQueue: { workday: 0, enterprise: 0, publicApi: 0 } };
   }
 

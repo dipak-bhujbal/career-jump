@@ -47,7 +47,8 @@ function makeState(overrides: {
 describe("registry-scheduler", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.useRealTimers();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-01T14:00:00.000Z"));
     process.env.WORKDAY_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/cj-queue-workday";
     process.env.ENTERPRISE_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/cj-queue-enterprise";
     process.env.PUBLIC_API_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/cj-queue-public-api";
@@ -175,6 +176,38 @@ describe("registry-scheduler", () => {
 
   it("short-circuits when the registry scan flag is disabled", async () => {
     loadSystemRegistryScanFlagMock.mockResolvedValueOnce(false);
+    const { handler } = await import("../../src/aws/registry-scheduler");
+    const result = await handler();
+
+    expect(result).toEqual({
+      dispatched: 0,
+      skipped: 0,
+      byQueue: { workday: 0, enterprise: 0, publicApi: 0 },
+    });
+    expect(queryDueRegistryCompaniesMock).not.toHaveBeenCalled();
+    expect(sendSqsBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips dispatch outside the ET weekday time window", async () => {
+    // 2026-05-01T06:30:00Z => 2:30 AM ET on a weekday, so the registry cadence
+    // should wait rather than dispatching due companies overnight.
+    vi.setSystemTime(new Date("2026-05-01T06:30:00.000Z"));
+    const { handler } = await import("../../src/aws/registry-scheduler");
+    const result = await handler();
+
+    expect(result).toEqual({
+      dispatched: 0,
+      skipped: 0,
+      byQueue: { workday: 0, enterprise: 0, publicApi: 0 },
+    });
+    expect(queryDueRegistryCompaniesMock).not.toHaveBeenCalled();
+    expect(sendSqsBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("skips dispatch on weekends even when companies are due", async () => {
+    // 2026-05-02T14:00:00Z => Saturday 10:00 AM ET, inside the hour window but
+    // outside the allowed weekday set, so nothing should fan out.
+    vi.setSystemTime(new Date("2026-05-02T14:00:00.000Z"));
     const { handler } = await import("../../src/aws/registry-scheduler");
     const result = await handler();
 
