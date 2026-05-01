@@ -14,14 +14,25 @@ import { Button } from "@/components/ui/button";
 import {
   useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks, useLatestRunResult, useScanQuota,
 } from "@/features/run/queries";
-import { formatLastRunSummary, formatRunCompletionToast, formatScanQuotaHint, isQueuedRunPending } from "@/features/run/presentation";
+import {
+  confirmLargeScanStart,
+  enabledCompanyCountForScan,
+  formatLastRunSummary,
+  formatRunCompletionToast,
+  formatScanQuotaHint,
+  isQueuedRunPending,
+} from "@/features/run/presentation";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
+import { useConfig } from "@/features/companies/queries";
+import { useMe } from "@/features/session/queries";
 
 export function SidebarActions() {
   const status = useRunStatus();
   const quota = useScanQuota();
   const latestRun = useLatestRunResult();
+  const config = useConfig();
+  const { data: me } = useMe();
   const startRun = useStartRun();
   const abortRun = useAbortRun();
   const clearCache = useClearCache();
@@ -33,6 +44,11 @@ export function SidebarActions() {
   const active = status.data?.active === true || startRun.isPending || queuedPending;
   const busy = abortRun.isPending || clearCache.isPending || removeBroken.isPending;
   const abortableRunId = status.data?.runId ?? latestRun.data?.runId ?? null;
+  const enabledCompanyCount = enabledCompanyCountForScan(
+    config.data?.config.companies,
+    config.data?.companyScanOverrides,
+  );
+  const isAdmin = me?.actor.isAdmin === true;
 
   useEffect(() => {
     if (prevActive.current && !active) {
@@ -61,8 +77,9 @@ export function SidebarActions() {
       ) : (
         <Button
           onClick={() => {
+            if (!confirmLargeScanStart(enabledCompanyCount, isAdmin)) return;
             toast("Scan starting", "info");
-            startRun.mutate(undefined, {
+            startRun.mutate({ confirmLargeScan: enabledCompanyCount > 20 }, {
               onSuccess: (result) => toast(formatRunCompletionToast(result)),
               onError: (e) => toast(e instanceof Error ? e.message : "Start failed", "error"),
             });

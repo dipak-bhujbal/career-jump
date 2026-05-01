@@ -129,6 +129,7 @@ export type RuntimeConfig = {
   companies: CompanyConfig[];
   jobtitles: { includeKeywords: string[]; excludeKeywords: string[] };
   updatedAt?: string;
+  adminRegistryMode?: "all" | "none";
 };
 
 export type ConfigEnvelope = {
@@ -432,6 +433,9 @@ export type RunStartResponse = {
   emailStatus?: "sent" | "skipped" | "failed";
   emailError?: string | null;
   scanMeta?: RunScanMeta;
+  requiresConfirmation?: boolean;
+  enabledCompanyCount?: number;
+  threshold?: number;
 };
 
 export type ScanQuotaEnvelope = {

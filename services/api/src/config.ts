@@ -543,6 +543,10 @@ export function seedRuntimeConfig(): RuntimeConfig {
   };
 }
 
+function normalizeAdminRegistryMode(input: unknown): RuntimeConfig["adminRegistryMode"] {
+  return input === "none" ? "none" : "all";
+}
+
 export function sanitizeCompanies(input: unknown): CompanyInput[] {
   if (!Array.isArray(input)) throw new Error("Companies must be an array");
 
@@ -573,7 +577,14 @@ function registryEntryToCompanyInput(entry: {
   });
 }
 
-export async function expandAdminRuntimeConfigCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
+export async function expandAdminRuntimeConfigCompanies(
+  companies: CompanyInput[],
+  mode: RuntimeConfig["adminRegistryMode"] = "all",
+): Promise<CompanyInput[]> {
+  // "Remove all" for admins should collapse the registry-backed defaults
+  // without persisting thousands of disabled rows into the tenant config.
+  if (mode === "none") return companies;
+
   await loadRegistryCache();
   const registryCompanies = listAll()
     .map(registryEntryToCompanyInput)
@@ -612,7 +623,14 @@ export async function expandAdminRuntimeConfigCompanies(companies: CompanyInput[
   return merged;
 }
 
-export async function compactAdminRuntimeConfigCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
+export async function compactAdminRuntimeConfigCompanies(
+  companies: CompanyInput[],
+  mode: RuntimeConfig["adminRegistryMode"] = "all",
+): Promise<CompanyInput[]> {
+  // In explicit-subset mode every stored row is intentional, so do not strip
+  // registry-backed defaults away during compaction.
+  if (mode === "none") return companies;
+
   await loadRegistryCache();
 
   return companies.filter((company) => {
@@ -754,27 +772,30 @@ export async function loadRuntimeConfig(
     const seeded = seedRuntimeConfig();
     await saveRuntimeConfig(env, seeded, tenantId, options.updatedByUserId, { isAdmin: options.isAdmin });
     return options.isAdmin
-      ? { ...seeded, companies: await expandAdminRuntimeConfigCompanies(seeded.companies) }
+      ? { ...seeded, adminRegistryMode: "all", companies: await expandAdminRuntimeConfigCompanies(seeded.companies, "all") }
       : seeded;
   }
 
   const obj = raw as Record<string, unknown>;
+  const adminRegistryMode = options.isAdmin ? normalizeAdminRegistryMode(obj.adminRegistryMode) : undefined;
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(obj.companies));
   const storedCompanies = options.isAdmin
-    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies)
+    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
     : hydratedCompanies;
   const effectiveCompanies = options.isAdmin
-    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies)
+    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
     : hydratedCompanies;
   const normalized = {
     companies: effectiveCompanies,
     jobtitles: sanitizeJobtitles(obj.jobtitles),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
+    adminRegistryMode,
   };
   const normalizedForStorage = {
     companies: storedCompanies,
     jobtitles: sanitizeJobtitles(obj.jobtitles),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
+    adminRegistryMode,
   };
   const serializedRaw = JSON.stringify(raw);
   const serializedNormalized = JSON.stringify(normalizedForStorage);
@@ -807,13 +828,15 @@ export async function saveRuntimeConfig(
   options: { isAdmin?: boolean } = {},
 ): Promise<void> {
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(config.companies));
+  const adminRegistryMode = options.isAdmin ? normalizeAdminRegistryMode(config.adminRegistryMode) : undefined;
   const storedCompanies = options.isAdmin
-    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies)
+    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
     : hydratedCompanies;
   const normalized: RuntimeConfig = {
     companies: storedCompanies,
     jobtitles: sanitizeJobtitles(config.jobtitles),
     updatedAt: nowISO(),
+    adminRegistryMode,
   };
 
   if (runtimeConfigTableName()) {

@@ -80,6 +80,14 @@ export type RuntimeConfig = {
   jobtitles: JobTitleConfig;
   updatedAt: string;
   /**
+   * Admin-only registry presentation mode.
+   *
+   * `all` keeps the full registry auto-expanded. `none` preserves only the
+   * explicitly saved subset so admins can temporarily clear the giant catalog
+   * without writing thousands of disabled rows.
+   */
+  adminRegistryMode?: "all" | "none";
+  /**
    * Phase 2: tenant scoping. When unset, behavior is single-tenant (current
    * deploy). When set, downstream storage keys, filters, and pipeline
    * decisions can be tenant-isolated.

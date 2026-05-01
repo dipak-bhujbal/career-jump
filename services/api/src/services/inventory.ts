@@ -633,6 +633,7 @@ export async function buildInventory(
     metadata?: BuildInventoryMetadata;
     disableActiveRunHeartbeat?: boolean;
     isAdmin?: boolean;
+    cacheOnly?: boolean;
   } = {}
 ): Promise<InventorySnapshot> {
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
@@ -773,7 +774,32 @@ export async function buildInventory(
       // For user-triggered scans: check if the shared cache has a fresh enough
       // result first. If not (cache miss), gate the live fetch on daily quota.
       let companyFetch: CompanyFetchOutcome;
-      if (tenantId && planScanCacheAgeMs !== undefined) {
+      if (options.cacheOnly) {
+        const cachedScan = await loadLatestRawScan(company.company, detected, { allowStale: true });
+        if (cachedScan) {
+          companyFetch = {
+            fetchedJobs: cachedScan.jobs,
+            rawScanCache: { hit: true, stale: true, scannedAt: cachedScan.scannedAt },
+          };
+          cacheHits += 1;
+        } else {
+          const previousJobsForCompany = (previousInventory?.jobs ?? []).filter((job) => job.company === company.company);
+          // Admin job browsing should reflect the shared raw-scan cache
+          // without triggering live fetches. When a company has not produced a
+          // shared cache record yet, keep the previous tenant snapshot for that
+          // company so the Available Jobs page does not flicker empty while the
+          // registry scheduler catches up.
+          companyFetch = {
+            fetchedJobs: previousJobsForCompany,
+            rawScanCache: {
+              hit: previousJobsForCompany.length > 0,
+              stale: true,
+              reason: previousJobsForCompany.length > 0 ? "previous_inventory_fallback" : "no_cache",
+            },
+          };
+          if (previousJobsForCompany.length > 0) cacheHits += 1;
+        }
+      } else if (tenantId && planScanCacheAgeMs !== undefined) {
         const cachedScan = await loadLatestRawScan(company.company, detected, { maxAgeMs: planScanCacheAgeMs });
         const usableCachedScan = cachedScan && cachedScan.jobs.length > 0 ? cachedScan : null;
         if (usableCachedScan) {

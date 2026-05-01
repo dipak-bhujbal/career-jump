@@ -90,7 +90,8 @@ export function useStartRun() {
   const qc = useQueryClient();
   return useMutation({
     mutationKey: startRunMutationKey,
-    mutationFn: async () => normalizeRunStartResponse(await api.post<RunStartResponse>("/api/run")),
+    mutationFn: async (payload?: { confirmLargeScan?: boolean }) =>
+      normalizeRunStartResponse(await api.post<RunStartResponse>("/api/run", payload)),
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: runStatusKey });
       const previousStatus = qc.getQueryData<RunStatus>(runStatusKey);

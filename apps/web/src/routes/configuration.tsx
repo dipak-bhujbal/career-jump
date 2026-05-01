@@ -99,6 +99,7 @@ function ConfigurationRoute() {
   const [statusFilter, setStatusFilter] = useState<"" | "enabled" | "paused">();
   const [editingKeywords, setEditingKeywords] = useState(false);
   const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
+  const [adminRegistryMode, setAdminRegistryMode] = useState<"all" | "none">("all");
 
   // Reset draft when server config arrives, but only when the draft is
   // still in sync with the server (no unsaved local additions/edits).
@@ -124,6 +125,7 @@ function ConfigurationRoute() {
       return current;
     });
     setDraftKeywords(config.data?.config?.jobtitles ?? { includeKeywords: [], excludeKeywords: [] });
+    setAdminRegistryMode(config.data?.config?.adminRegistryMode === "none" ? "none" : "all");
   }, [config.data]);
 
   const baseline = useMemo(() => config.data?.config?.companies ?? [], [config.data]);
@@ -136,8 +138,9 @@ function ConfigurationRoute() {
   const isDirty = useMemo(
     () =>
       JSON.stringify(normalize(baseline)) !== JSON.stringify(normalize(draftCompanies)) ||
+      ((config.data?.config?.adminRegistryMode === "none" ? "none" : "all") !== adminRegistryMode) ||
       JSON.stringify(baselineKeywords) !== JSON.stringify(draftKeywords),
-    [baseline, draftCompanies, baselineKeywords, draftKeywords],
+    [baseline, draftCompanies, baselineKeywords, config.data, adminRegistryMode, draftKeywords],
   );
 
   // A company is "auto-tracked" if it came from the registry picker.
@@ -241,10 +244,15 @@ function ConfigurationRoute() {
     );
   }
 
-  function handleSave(options?: { onSuccess?: () => void }) {
+  function saveDraft(
+    nextCompanies: CompanyConfig[],
+    nextKeywords: { includeKeywords: string[]; excludeKeywords: string[] },
+    nextAdminRegistryMode: "all" | "none",
+    options?: { onSuccess?: () => void; successMessage?: string },
+  ) {
     // Validation: registry rows skip board-url/source checks since registry
     // resolves them; custom rows must supply both.
-    for (const row of draftCompanies) {
+    for (const row of nextCompanies) {
       if (!row.company.trim()) {
         toast("Company name is required for every row", "error");
         return;
@@ -256,8 +264,9 @@ function ConfigurationRoute() {
     }
     saveConfig.mutate(
       {
-        companies: draftCompanies,
-        jobtitles: draftKeywords,
+        companies: nextCompanies,
+        jobtitles: nextKeywords,
+        adminRegistryMode: me?.actor.isAdmin ? nextAdminRegistryMode : undefined,
       },
       {
         onSuccess: (result) => {
@@ -267,7 +276,8 @@ function ConfigurationRoute() {
             registryAts: company.registryAts || (company.source ? formatAtsLabel(company.source) : ""),
           })));
           setDraftKeywords(result.config.jobtitles);
-          toast("Companies saved");
+          setAdminRegistryMode(result.config.adminRegistryMode === "none" ? "none" : "all");
+          toast(options?.successMessage ?? "Companies saved");
           options?.onSuccess?.();
         },
         onError: (err) => toast(err instanceof Error ? err.message : "Save failed", "error"),
@@ -275,9 +285,14 @@ function ConfigurationRoute() {
     );
   }
 
+  function handleSave(options?: { onSuccess?: () => void }) {
+    saveDraft(draftCompanies, draftKeywords, adminRegistryMode, options);
+  }
+
   function handleCancel() {
     setDraftCompanies(baseline.map((c) => ({ ...c })));
     setDraftKeywords({ ...baselineKeywords });
+    setAdminRegistryMode(config.data?.config?.adminRegistryMode === "none" ? "none" : "all");
     setEditingKeywords(false);
   }
 
@@ -288,6 +303,14 @@ function ConfigurationRoute() {
 
   function handleSaveKeywordEdits() {
     handleSave({ onSuccess: () => setEditingKeywords(false) });
+  }
+
+  function handleAdminAddAllCompanies() {
+    saveDraft(draftCompanies, draftKeywords, "all", { successMessage: "All registry companies added" });
+  }
+
+  function handleAdminRemoveAllCompanies() {
+    saveDraft([], draftKeywords, "none", { successMessage: "All companies removed" });
   }
 
   return (
@@ -325,9 +348,21 @@ function ConfigurationRoute() {
           activeTabIndex={tab === "all" ? 0 : tab === "registry" ? 1 : 2}
           onTabChange={(i) => setTab(["all", "registry", "custom"][i] as typeof tab)}
           rightSlot={
-            <Button onClick={() => setPickerOpen(true)}>
-              <Plus size={14} /> Add company
-            </Button>
+            <div className="flex items-center gap-2">
+              {me?.actor.isAdmin ? (
+                <>
+                  <Button variant="outline" onClick={handleAdminAddAllCompanies} disabled={saveConfig.isPending}>
+                    Add all companies
+                  </Button>
+                  <Button variant="outline" onClick={handleAdminRemoveAllCompanies} disabled={saveConfig.isPending}>
+                    Remove all companies
+                  </Button>
+                </>
+              ) : null}
+              <Button onClick={() => setPickerOpen(true)}>
+                <Plus size={14} /> Add company
+              </Button>
+            </div>
           }
         />
 

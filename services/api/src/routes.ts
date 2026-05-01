@@ -278,6 +278,20 @@ function maxCompaniesError(limit: number, current: number) {
   };
 }
 
+const LARGE_SCAN_CONFIRMATION_THRESHOLD = 20;
+
+function largeScanConfirmationError(enabledCompanyCount: number, isAdmin: boolean) {
+  return {
+    ok: false,
+    error: isAdmin
+      ? `This admin scan will refresh ${enabledCompanyCount} companies. Confirm before starting such a large manual scan.`
+      : `This scan will check ${enabledCompanyCount} companies and may take a while. Confirm before starting.`,
+    requiresConfirmation: true,
+    enabledCompanyCount,
+    threshold: LARGE_SCAN_CONFIRMATION_THRESHOLD,
+  };
+}
+
 function validateSupportTextFields(subject: string, body: string): string | null {
   if (!subject.trim() || !body.trim()) return "subject and body are required";
   if (subject.length > MAX_SUPPORT_TICKET_SUBJECT_LENGTH) {
@@ -1278,6 +1292,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
       const companies = sanitizeCompanies(body.companies ?? []);
+      const adminRegistryMode = tenantContext.isAdmin && body.adminRegistryMode === "none" ? "none" : "all";
       const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
@@ -1320,6 +1335,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         companies,
         jobtitles: sanitizeJobtitles(body.jobtitles ?? {}),
         updatedAt: nowISO(),
+        adminRegistryMode: tenantContext.isAdmin ? adminRegistryMode : undefined,
       };
       const persistedConfig = next;
       await saveRuntimeConfig(env, persistedConfig, tenantContext.tenantId, tenantContext.userId, {
@@ -1492,6 +1508,24 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/run" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request).catch(() => null);
+      const confirmLargeScan = body?.confirmLargeScan === true;
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
+      const enabledCompanyCount = effectiveEnabledCompanyKeys(
+        config.companies,
+        await loadCompanyScanOverrides(env, tenantContext.tenantId),
+      ).size;
+      if (enabledCompanyCount > LARGE_SCAN_CONFIRMATION_THRESHOLD && !confirmLargeScan) {
+        return jsonResponse(largeScanConfirmationError(enabledCompanyCount, tenantContext.isAdmin), 409);
+      }
+
       const runId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       const lockResult = await acquireActiveRunLock(env, { runId, triggerType: "manual" });
       if (!lockResult.ok) {
@@ -1548,14 +1582,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         doubles: [],
       });
       try {
-        const config = await applyCompanyScanOverrides(
-          env,
-          await loadRuntimeConfig(env, tenantContext.tenantId, {
-            isAdmin: tenantContext.isAdmin,
-            updatedByUserId: tenantContext.userId,
-          }),
-          tenantContext.tenantId,
-        );
         const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(
           env,
           config,
@@ -1832,14 +1858,25 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
-        isAdmin: tenantContext.isAdmin,
-        updatedByUserId: tenantContext.userId,
-      });
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
       const [{ inventory, state: inventoryState }, billing] = await Promise.all([
         loadInventoryWithState(env, config, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
       ]);
+      const effectiveInventory = tenantContext.isAdmin
+        ? await buildInventory(env, config, inventoryState.inventory, undefined, tenantContext.tenantId, {
+          isAdmin: true,
+          cacheOnly: true,
+          disableActiveRunHeartbeat: true,
+        })
+        : inventory;
       const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
@@ -1847,7 +1884,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const updatedJobKeys = new Set(inventoryState.lastUpdatedJobKeys);
       const newOnly = url.searchParams.get("newOnly") === "true";
       const updatedOnly = url.searchParams.get("updatedOnly") === "true";
-      const allAvailableJobs = inventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
+      const allAvailableJobs = effectiveInventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
       const jobCap = planCfg?.maxVisibleJobs ?? null;
       const availableJobs = jobCap !== null ? allAvailableJobs.slice(0, jobCap) : allAvailableJobs;
       const companyOptions = uniqueSortedCompanies(availableJobs.map((job) => job.company));
@@ -1891,7 +1928,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
       return jsonResponse({
         ok: true,
-        runAt: inventory.runAt,
+        runAt: effectiveInventory.runAt,
         total: jobs.length,
         pagination: {
           offset,

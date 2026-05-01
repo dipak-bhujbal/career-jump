@@ -83,7 +83,11 @@ export function useRegistrySearch(q: { search?: string; ats?: string; tier?: str
 export function useSaveConfig() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { companies: CompanyConfig[]; jobtitles: { includeKeywords: string[]; excludeKeywords: string[] } }) =>
+    mutationFn: (payload: {
+      companies: CompanyConfig[];
+      jobtitles: { includeKeywords: string[]; excludeKeywords: string[] };
+      adminRegistryMode?: "all" | "none";
+    }) =>
       api.post<ConfigEnvelope>("/api/config/save", payload),
     onSuccess: async (result) => {
       // Update the local cache immediately so Save/Cancel controls disappear as

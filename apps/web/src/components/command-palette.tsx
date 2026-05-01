@@ -20,11 +20,13 @@ import {
 import { useHotkey } from "@/lib/hotkeys";
 import { useTheme } from "@/lib/theme";
 import { useStartRun, useClearCache } from "@/features/run/queries";
-import { formatRunCompletionToast } from "@/features/run/presentation";
+import { confirmLargeScanStart, enabledCompanyCountForScan, formatRunCompletionToast } from "@/features/run/presentation";
 import { useRegistrySearch } from "@/features/companies/queries";
+import { useConfig } from "@/features/companies/queries";
 import { useJobs } from "@/features/jobs/queries";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import { useMe } from "@/features/session/queries";
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -54,9 +56,16 @@ export function CommandPalette() {
   const { theme, toggle: toggleTheme } = useTheme();
   const startRun = useStartRun();
   const clearCache = useClearCache();
+  const config = useConfig();
+  const { data: me } = useMe();
 
   const registry = useRegistrySearch({ search: debounced, enabled: open && debounced.length >= 2 });
   const jobs = useJobs({ keyword: debounced, limit: 8 });
+  const enabledCompanyCount = enabledCompanyCountForScan(
+    config.data?.config.companies,
+    config.data?.companyScanOverrides,
+  );
+  const isAdmin = me?.actor.isAdmin === true;
 
   const go = (to: string) => () => { setOpen(false); navigate({ to }); };
   const action = (fn: () => void) => () => { setOpen(false); fn(); };
@@ -133,8 +142,9 @@ export function CommandPalette() {
           <Command.Group heading="Actions" className="text-[12px] uppercase tracking-wide text-[hsl(var(--muted-foreground))] px-2 pt-2 pb-1">
             <Item
               onSelect={action(() => {
+                if (!confirmLargeScanStart(enabledCompanyCount, isAdmin)) return;
                 toast("Scan starting", "info");
-                startRun.mutate(undefined, {
+                startRun.mutate({ confirmLargeScan: enabledCompanyCount > 20 }, {
                   onSuccess: (result) => toast(formatRunCompletionToast(result)),
                   onError: (error) => toast(error instanceof Error ? error.message : "Start failed", "error"),
                 });

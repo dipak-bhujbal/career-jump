@@ -1,4 +1,5 @@
-import type { RunStartResponse, ScanQuotaEnvelope } from "@/lib/api";
+import type { CompanyConfig, RunStartResponse, ScanQuotaEnvelope } from "@/lib/api";
+import { companyKey } from "@/lib/utils";
 
 const QUEUED_RUN_GRACE_MS = 30_000;
 
@@ -117,4 +118,23 @@ export function formatFullyBlockedBanner(result: RunStartResponse | null | undef
     return `${quotaHint} The last scan reused cached data where possible, but ${companies} had no cached scan and were skipped.`;
   }
   return `${quotaHint} The last scan could not perform a live fetch for ${companies}, and no cached scan was available.`;
+}
+
+export function enabledCompanyCountForScan(
+  companies: CompanyConfig[] | undefined,
+  overrides: Record<string, { paused?: boolean }> | undefined,
+): number {
+  if (!companies?.length) return 0;
+  return companies
+    .filter((company) => company.enabled !== false)
+    .filter((company) => !overrides?.[companyKey(company.company)]?.paused)
+    .length;
+}
+
+export function confirmLargeScanStart(enabledCompanyCount: number, isAdmin: boolean, threshold = 20): boolean {
+  if (enabledCompanyCount <= threshold) return true;
+  const message = isAdmin
+    ? `This manual admin scan will refresh ${enabledCompanyCount} companies and can take a while. Continue?`
+    : `This scan will check ${enabledCompanyCount} companies and may take a while. Continue?`;
+  return window.confirm(message);
 }
