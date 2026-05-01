@@ -13,7 +13,7 @@ import {
   pruneInventoryForStorage,
   saveInventory,
 } from "../services/inventory";
-import { markFirstScanAtIfUnset, recordEvent, releaseActiveRunLock, reserveEmailSendAttempt, updateEmailSendAttempt } from "../storage";
+import { clearRunAbortRequest, markFirstScanAtIfUnset, recordEvent, releaseActiveRunLock, reserveEmailSendAttempt, updateEmailSendAttempt } from "../storage";
 import type { InventorySnapshot, JobPosting, RequestActor } from "../types";
 import { makeAwsEnv } from "./env";
 import { companyResultPrefix, getRunMeta, markFinalized } from "./run-state";
@@ -309,6 +309,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
     });
 
     await markFinalized(runId);
+    await clearRunAbortRequest(env, runId);
     await releaseActiveRunLock(env, runId);
     return { ok: true, runId, resultCount: results.length };
   } catch (error) {
@@ -321,6 +322,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
       route: "aws/finalize-run",
       error,
     });
+    await clearRunAbortRequest(env, runId);
     await releaseActiveRunLock(env, runId);
     throw error;
   }

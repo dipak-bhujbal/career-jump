@@ -112,7 +112,8 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
       {
         preserveUnscannedJobs: false,
         // The shared AWS run lock is updated from run meta counters instead of
-        // the local single-company loop so progress stays 0/N -> N/N.
+        // the local single-company loop so progress stays 0/N -> N/N while
+        // ownership checks can still stop work immediately after an abort.
         disableActiveRunHeartbeat: true,
       }
     );

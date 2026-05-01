@@ -105,7 +105,9 @@ describe("api smoke invalid body validation", () => {
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toMatchObject({
       ok: false,
-      error: "subject and body are required",
+      // Hardened body parsing should fail fast on malformed JSON instead of
+      // falling through to field-level validation.
+      error: "Invalid JSON body",
     });
   });
 });

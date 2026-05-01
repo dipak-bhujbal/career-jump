@@ -147,8 +147,17 @@ export function useStartRun() {
 export function useAbortRun() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: () => api.post<{ ok: boolean }>("/api/run/abort"),
-    onSuccess: () => qc.invalidateQueries({ queryKey: runStatusKey }),
+    mutationFn: (payload?: { runId?: string | null }) => api.post<{ ok: boolean; cleared?: boolean; aborted?: boolean; runId?: string | null }>("/api/run/abort", payload),
+    onSuccess: () => {
+      // Clear both the queued banner snapshot and the optimistic active status
+      // immediately so aborting a just-queued run feels responsive on click.
+      qc.setQueryData(latestRunResultKey, null);
+      qc.setQueryData<RunStatus>(runStatusKey, {
+        ok: true,
+        active: false,
+      });
+      qc.invalidateQueries({ queryKey: runStatusKey });
+    },
   });
 }
 

@@ -685,8 +685,10 @@ export async function buildInventory(
     const company = enabledCompanies[index];
     let registryAdapterId: string | null = company.source ?? null;
     let fetchStartedAt = Date.now();
-    if (runId && !options.disableActiveRunHeartbeat) {
+    if (runId) {
       await ensureActiveRunOwnership(env, runId);
+    }
+    if (runId && !options.disableActiveRunHeartbeat) {
       // Publish a heartbeat before each company so the UI can show live scan
       // progress instead of only a one-time "scan started" toast.
       await heartbeatActiveRun(env, runId, {
@@ -749,6 +751,9 @@ export async function buildInventory(
           route: "scan",
           details: { progress: { current: index + 1, total: enabledCompanies.length } },
         });
+        if (runId) {
+          await ensureActiveRunOwnership(env, runId);
+        }
         if (runId && !options.disableActiveRunHeartbeat) {
           await heartbeatActiveRun(env, runId, {
             totalCompanies: enabledCompanies.length,
@@ -1000,6 +1005,9 @@ export async function buildInventory(
           progress: { current: index + 1, total: enabledCompanies.length },
         },
       });
+      if (runId) {
+        await ensureActiveRunOwnership(env, runId);
+      }
       if (runId && !options.disableActiveRunHeartbeat) {
         await heartbeatActiveRun(env, runId, {
           totalCompanies: enabledCompanies.length,

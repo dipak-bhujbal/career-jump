@@ -612,6 +612,47 @@ export async function expandAdminRuntimeConfigCompanies(companies: CompanyInput[
   return merged;
 }
 
+export async function compactAdminRuntimeConfigCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
+  await loadRegistryCache();
+
+  return companies.filter((company) => {
+    const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
+    if (!isRegistryBacked) return true;
+
+    const entry = getByCompany(company.company);
+    if (!entry?.board_url) return true;
+
+    const canonicalSource =
+      normalizeSource(entry.ats) ??
+      inferSourceFromUrl(entry.board_url || entry.sample_url || undefined) ??
+      company.source;
+    if (!canonicalSource) return true;
+
+    const parsed = parseConfiguredAts(canonicalSource, entry.board_url || entry.sample_url || undefined);
+    const canonicalCompany = buildCanonicalCompanyInput(
+      company.company,
+      canonicalSource,
+      entry.board_url || undefined,
+      entry.sample_url || undefined,
+      parsed,
+    );
+
+    const normalizedStored = normalizeCompany(company as unknown as Record<string, unknown>);
+    const normalizedCanonical = normalizeCompany({
+      ...canonicalCompany,
+      enabled: true,
+      aliases: [],
+      isRegistry: true,
+      registryAts: entry.ats ?? undefined,
+      registryTier: entry.tier ?? undefined,
+    } as unknown as Record<string, unknown>);
+
+    // Persist only meaningful overrides/customizations. Pure registry-default
+    // rows can be regenerated on every admin read without bloating DynamoDB.
+    return JSON.stringify(normalizedStored) !== JSON.stringify(normalizedCanonical);
+  });
+}
+
 async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promise<CompanyInput[]> {
   const needsRegistryHydration = companies.some((company) => {
     const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
@@ -711,12 +752,17 @@ export async function loadRuntimeConfig(
 
   if (!raw || typeof raw !== "object") {
     const seeded = seedRuntimeConfig();
-    await saveRuntimeConfig(env, seeded, tenantId);
-    return seeded;
+    await saveRuntimeConfig(env, seeded, tenantId, options.updatedByUserId, { isAdmin: options.isAdmin });
+    return options.isAdmin
+      ? { ...seeded, companies: await expandAdminRuntimeConfigCompanies(seeded.companies) }
+      : seeded;
   }
 
   const obj = raw as Record<string, unknown>;
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(obj.companies));
+  const storedCompanies = options.isAdmin
+    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies)
+    : hydratedCompanies;
   const effectiveCompanies = options.isAdmin
     ? await expandAdminRuntimeConfigCompanies(hydratedCompanies)
     : hydratedCompanies;
@@ -725,18 +771,23 @@ export async function loadRuntimeConfig(
     jobtitles: sanitizeJobtitles(obj.jobtitles),
     updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
   };
+  const normalizedForStorage = {
+    companies: storedCompanies,
+    jobtitles: sanitizeJobtitles(obj.jobtitles),
+    updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : nowISO(),
+  };
   const serializedRaw = JSON.stringify(raw);
-  const serializedNormalized = JSON.stringify(normalized);
+  const serializedNormalized = JSON.stringify(normalizedForStorage);
   if (usedTableConfig) {
     if (serializedNormalized !== serializedRaw) {
       // Persist only when normalization actually repaired or enriched stored
       // config, otherwise keep read traffic side-effect free.
-      await saveRuntimeConfigRow(normalized, tenantId, options.updatedByUserId);
+      await saveRuntimeConfigRow(normalizedForStorage, tenantId, options.updatedByUserId);
     }
   } else if (runtimeConfigTableName()) {
     // Copy forward legacy KV-backed configs into the dedicated tenant config
     // table so future reads stay isolated from generic CONFIG_STORE traffic.
-    await saveRuntimeConfigRow(normalized, tenantId, options.updatedByUserId);
+    await saveRuntimeConfigRow(normalizedForStorage, tenantId, options.updatedByUserId);
   } else if (serializedNormalized !== serializedRaw) {
     await kv.put(scopedKey, serializedNormalized);
   } else if (tenantId && usedLegacyFallback) {
@@ -756,11 +807,11 @@ export async function saveRuntimeConfig(
   options: { isAdmin?: boolean } = {},
 ): Promise<void> {
   const hydratedCompanies = await hydrateRegistryBackedCompanies(sanitizeCompanies(config.companies));
-  const effectiveCompanies = options.isAdmin
-    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies)
+  const storedCompanies = options.isAdmin
+    ? await compactAdminRuntimeConfigCompanies(hydratedCompanies)
     : hydratedCompanies;
   const normalized: RuntimeConfig = {
-    companies: effectiveCompanies,
+    companies: storedCompanies,
     jobtitles: sanitizeJobtitles(config.jobtitles),
     updatedAt: nowISO(),
   };

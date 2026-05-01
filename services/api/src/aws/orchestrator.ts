@@ -2,7 +2,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { applyCompanyScanOverrides, loadRuntimeConfig } from "../config";
 import { resolveSystemTenantContext, type AuthenticatedTenantContext } from "../lib/tenant";
 import { logAppEvent, logErrorEvent } from "../lib/logger";
-import { acquireActiveRunLock, releaseActiveRunLock } from "../storage";
+import { acquireActiveRunLock, isRunAbortRequested, releaseActiveRunLock } from "../storage";
 import { makeAwsEnv } from "./env";
 import { createRunMeta, type AwsRunTriggerType } from "./run-state";
 
@@ -42,6 +42,17 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
   const scanFunctionName = process.env.SCAN_COMPANY_FUNCTION_NAME;
   if (!scanFunctionName) throw new Error("SCAN_COMPANY_FUNCTION_NAME is not configured");
 
+  if (await isRunAbortRequested(env, runId)) {
+    await logAppEvent(env, {
+      level: "warn",
+      event: "aws_run_aborted_before_start",
+      message: "AWS run was aborted before orchestration started",
+      runId,
+      route: "aws/orchestrator",
+    });
+    return { ok: false, runId };
+  }
+
   const lockResult = await acquireActiveRunLock(env, { runId, triggerType });
   if (!lockResult.ok) {
     await logAppEvent(env, {
@@ -59,6 +70,11 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
   }
 
   try {
+    if (await isRunAbortRequested(env, runId)) {
+      await releaseActiveRunLock(env, runId);
+      return { ok: false, runId };
+    }
+
     const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
     const config = await applyCompanyScanOverrides(
       env,

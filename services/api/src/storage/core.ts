@@ -31,6 +31,7 @@ export function atsCacheKey(company: string): string {
 
 const APPLIED_JOB_ROW_PREFIX = `${APPLIED_KEY}:row:`;
 const JOB_NOTE_ROW_PREFIX = `${JOB_NOTES_KEY}:row:`;
+const RUN_ABORT_PREFIX = "run-abort:";
 
 export function protectedDiscoveryKey(company: string): string {
   return `${PROTECTED_DISCOVERY_PREFIX}${slugify(company)}`;
@@ -787,7 +788,33 @@ export async function clearActiveRunLock(env: Env): Promise<void> {
   await jobStateKv(env).delete(ACTIVE_RUN_LOCK_KEY);
 }
 
+function runAbortKey(runId: string): string {
+  return `${RUN_ABORT_PREFIX}${runId}`;
+}
+
+export async function requestRunAbort(env: Env, runId: string): Promise<void> {
+  // Keep abort requests alive long enough for queued orchestrator events or
+  // already-fanned-out workers to observe the stop signal.
+  await jobStateKv(env).put(runAbortKey(runId), JSON.stringify({
+    runId,
+    requestedAt: nowISO(),
+  }), {
+    expirationTtl: 60 * 60,
+  });
+}
+
+export async function isRunAbortRequested(env: Env, runId: string): Promise<boolean> {
+  return Boolean(await jobStateKv(env).get(runAbortKey(runId)));
+}
+
+export async function clearRunAbortRequest(env: Env, runId: string): Promise<void> {
+  await jobStateKv(env).delete(runAbortKey(runId));
+}
+
 export async function ensureActiveRunOwnership(env: Env, runId: string): Promise<void> {
+  if (await isRunAbortRequested(env, runId)) {
+    throw new ActiveRunOwnershipError(runId, null);
+  }
   const existing = await loadActiveRunLock(env);
   if (!existing || existing.runId !== runId || isRunLockExpired(existing)) {
     throw new ActiveRunOwnershipError(runId, existing?.runId ?? null);

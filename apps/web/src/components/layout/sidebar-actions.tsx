@@ -32,6 +32,7 @@ export function SidebarActions() {
   const queuedPending = isQueuedRunPending(latestRun.data);
   const active = status.data?.active === true || startRun.isPending || queuedPending;
   const busy = abortRun.isPending || clearCache.isPending || removeBroken.isPending;
+  const abortableRunId = status.data?.runId ?? latestRun.data?.runId ?? null;
 
   useEffect(() => {
     if (prevActive.current && !active) {
@@ -48,7 +49,7 @@ export function SidebarActions() {
       {active ? (
         <Button
           variant="destructive"
-          onClick={() => abortRun.mutate(undefined, {
+          onClick={() => abortRun.mutate({ runId: abortableRunId }, {
             onSuccess: () => toast("Scan aborted", "info"),
             onError: (e) => toast(e instanceof Error ? e.message : "Abort failed", "error"),
           })}

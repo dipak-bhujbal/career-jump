@@ -74,6 +74,7 @@ import {
   recordEvent,
   recordErrorLog,
   releaseActiveRunLock,
+  requestRunAbort,
   reserveEmailSendAttempt,
   saveFeatureFlag,
   saveEmailWebhookConfig,
@@ -1726,27 +1727,38 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/run/abort" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const requestedRunId = String(body.runId ?? "").trim();
       const activeRun = await loadActiveRunLock(env);
-      if (!activeRun) {
-        return jsonResponse({ ok: true, cleared: false, activeRun: null });
+      if (!activeRun && !requestedRunId) {
+        return jsonResponse({ ok: true, cleared: false, activeRun: null, runId: null });
       }
 
-      await clearActiveRunLock(env);
+      const runIdToAbort = requestedRunId || activeRun?.runId || "";
+      if (runIdToAbort) {
+        // Queue-aware aborts need a durable marker because the AWS
+        // orchestrator may not have acquired the shared run lock yet.
+        await requestRunAbort(env, runIdToAbort);
+      }
+      if (activeRun) {
+        await clearActiveRunLock(env);
+      }
       await recordAppLog(env, {
         level: "warn",
         event: "manual_run_aborted",
         message: "Active scan was aborted manually",
         tenantId: tenantContext.tenantId,
         route: "/api/run/abort",
-        runId: activeRun.runId,
+        runId: runIdToAbort || activeRun?.runId,
         details: {
-          activeRunId: activeRun.runId,
-          activeTriggerType: activeRun.triggerType,
-          activeStartedAt: activeRun.startedAt,
+          activeRunId: activeRun?.runId ?? runIdToAbort,
+          activeTriggerType: activeRun?.triggerType ?? "manual",
+          activeStartedAt: activeRun?.startedAt ?? null,
+          queuedOnly: !activeRun,
         },
       });
 
-      return jsonResponse({ ok: true, cleared: true, activeRun });
+      return jsonResponse({ ok: true, cleared: Boolean(activeRun), aborted: Boolean(runIdToAbort), activeRun, runId: runIdToAbort || null });
     }
 
     if (url.pathname === "/api/jobs/remove-broken-links" && request.method === "POST") {

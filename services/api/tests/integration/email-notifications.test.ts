@@ -101,6 +101,7 @@ vi.mock("../../src/lib/bindings", () => ({
     get: jobStateGetMock,
     list: jobStateListMock,
     put: vi.fn(async () => undefined),
+    delete: vi.fn(async () => undefined),
   })),
 }));
 
