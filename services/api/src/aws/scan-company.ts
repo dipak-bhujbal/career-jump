@@ -115,6 +115,7 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
         // the local single-company loop so progress stays 0/N -> N/N while
         // ownership checks can still stop work immediately after an abort.
         disableActiveRunHeartbeat: true,
+        isAdmin: event.isAdmin === true || meta?.isAdmin === true,
       }
     );
 

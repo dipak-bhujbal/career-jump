@@ -1435,7 +1435,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         tenantContext.tenantId,
       );
       await clearATSCache(env, config.companies);
-      const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId);
+      const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+      });
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOBS_COUNT_KEY), "0");
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify([]));
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
@@ -1554,7 +1556,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           }),
           tenantContext.tenantId,
         );
-        const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
+        const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(
+          env,
+          config,
+          runId,
+          tenantContext.tenantId,
+          { isAdmin: tenantContext.isAdmin },
+        );
         const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
 
         let emailStatus: "sent" | "skipped" | "failed" = "skipped";
@@ -1699,9 +1707,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const [usage, remaining] = await Promise.all([
         loadScanQuotaUsage(tenantContext.tenantId),
-        remainingLiveScans(tenantContext.tenantId),
+        remainingLiveScans(tenantContext.tenantId, undefined, { isAdmin: tenantContext.isAdmin }),
       ]);
-      return jsonResponse({ ok: true, liveScansUsed: usage.liveScansUsed, remainingLiveScansToday: remaining, lastLiveScanAt: usage.lastLiveScanAt, date: usage.date });
+      return jsonResponse({
+        ok: true,
+        liveScansUsed: tenantContext.isAdmin ? 0 : usage.liveScansUsed,
+        remainingLiveScansToday: tenantContext.isAdmin ? null : remaining,
+        lastLiveScanAt: tenantContext.isAdmin ? null : usage.lastLiveScanAt,
+        date: usage.date,
+        unlimited: tenantContext.isAdmin,
+      });
     }
 
     if (url.pathname === "/api/run/status" && request.method === "GET") {
@@ -2491,13 +2506,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     if (url.pathname === "/api/debug/schedule" && request.method === "GET") {
       return jsonResponse({
         ok: true,
-        triggerCronUtc: [
-          "0 6,9,12,15,18,21 * * MON-FRI",
-        ],
-        effectiveScheduleEt: {
-          weekdays: ["Mon", "Tue", "Wed", "Thu", "Fri"],
-          hoursEt: ["6 AM", "9 AM", "12 PM", "3 PM", "6 PM", "9 PM"],
-          note: "EventBridge Scheduler uses America/New_York and skips weekends plus the 11 PM to 6 AM ET window.",
+        registryScheduler: {
+          cron: "rate(15 minutes)",
+          note: "The registry scheduler wakes every 15 minutes and dispatches only companies whose registry-level nextScanAt is due.",
+        },
+        cadenceByPool: {
+          hot: "every 3 hours",
+          warm: "every 6 hours",
+          cold: "every 12 hours",
+        },
+        tenantScheduler: {
+          enabled: false,
+          note: "Tenant-level background scheduling is disabled. Scheduled scanning is now owned by registry-level hot/warm/cold cadence.",
         },
       });
     }

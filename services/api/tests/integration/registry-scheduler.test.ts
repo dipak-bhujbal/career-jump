@@ -1,14 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const scanAllRowsMock = vi.fn();
 const sendSqsBatchMock = vi.fn();
+const queryDueRegistryCompaniesMock = vi.fn();
+const loadSystemRegistryScanFlagMock = vi.fn();
 
-vi.mock("../../src/aws/dynamo", () => ({
-  ConditionalCheckFailedException: class extends Error {},
-  registryTableName: vi.fn(() => "registry-table"),
-  getRow: vi.fn(),
-  putRow: vi.fn(),
-  scanAllRows: scanAllRowsMock,
+vi.mock("../../src/storage/registry-scan-state", () => ({
+  queryDueRegistryCompanies: queryDueRegistryCompaniesMock,
+}));
+
+vi.mock("../../src/storage/accounts", () => ({
+  loadSystemRegistryScanFlag: loadSystemRegistryScanFlagMock,
 }));
 
 vi.mock("../../src/aws/sqs", () => ({
@@ -29,7 +30,7 @@ function makeState(overrides: {
     companySlug: overrides.companySlug,
     adapterId: overrides.adapterId ?? null,
     status: overrides.status ?? "healthy",
-    scanPool: overrides.scanPool ?? "low",
+    scanPool: overrides.scanPool ?? "cold",
     priority: overrides.priority ?? "normal",
     nextScanAt: overrides.nextScanAt ?? "2026-04-28T10:00:00.000Z",
     staleAfterAt: "2026-04-29T02:00:00.000Z",
@@ -51,10 +52,11 @@ describe("registry-scheduler", () => {
     process.env.ENTERPRISE_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/cj-queue-enterprise";
     process.env.PUBLIC_API_QUEUE_URL = "https://sqs.us-east-1.amazonaws.com/123/cj-queue-public-api";
     sendSqsBatchMock.mockResolvedValue(undefined);
+    loadSystemRegistryScanFlagMock.mockResolvedValue(true);
   });
 
   it("routes workday companies to the workday queue", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Stripe", companySlug: "stripe", adapterId: "workday" }),
     ]);
     const { handler } = await import("../../src/aws/registry-scheduler");
@@ -71,7 +73,7 @@ describe("registry-scheduler", () => {
   });
 
   it("routes enterprise ATS companies to the enterprise queue", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Oracle Corp", companySlug: "oraclecorp", adapterId: "oracle" }),
       makeState({ company: "SAP Co", companySlug: "sapco", adapterId: "successfactors" }),
     ]);
@@ -90,7 +92,7 @@ describe("registry-scheduler", () => {
   });
 
   it("routes all other ATS companies to the public-api queue", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Airbnb", companySlug: "airbnb", adapterId: "greenhouse" }),
       makeState({ company: "Figma", companySlug: "figma", adapterId: "lever" }),
       makeState({ company: "Custom Co", companySlug: "customco", adapterId: "custom-jsonld" }),
@@ -103,7 +105,7 @@ describe("registry-scheduler", () => {
   });
 
   it("marks paused companies as isReprobe=true when dispatching", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       { ...makeState({ company: "Broken Co", companySlug: "brokenco", adapterId: "greenhouse", status: "paused" }), status: "paused" },
     ]);
     const { handler } = await import("../../src/aws/registry-scheduler");
@@ -119,7 +121,7 @@ describe("registry-scheduler", () => {
 
   it("skips companies when no queue URL is configured", async () => {
     delete process.env.WORKDAY_QUEUE_URL;
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Stripe", companySlug: "stripe", adapterId: "workday" }),
     ]);
     const { handler } = await import("../../src/aws/registry-scheduler");
@@ -134,7 +136,7 @@ describe("registry-scheduler", () => {
   });
 
   it("routes companies with null adapterId to the public-api queue", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Unknown Co", companySlug: "unknownco", adapterId: null }),
     ]);
     const { handler } = await import("../../src/aws/registry-scheduler");
@@ -145,7 +147,7 @@ describe("registry-scheduler", () => {
   });
 
   it("fans out mixed-ATS batches to the correct queues in parallel", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([
       makeState({ company: "Workday Inc", companySlug: "workdayinc", adapterId: "workday" }),
       makeState({ company: "Oracle Corp", companySlug: "oraclecorp", adapterId: "oracle" }),
       makeState({ company: "Stripe", companySlug: "stripe", adapterId: "greenhouse" }),
@@ -162,12 +164,26 @@ describe("registry-scheduler", () => {
   });
 
   it("returns zero dispatched when no companies are due", async () => {
-    scanAllRowsMock.mockResolvedValueOnce([]);
+    queryDueRegistryCompaniesMock.mockResolvedValueOnce([]);
     const { handler } = await import("../../src/aws/registry-scheduler");
     const result = await handler();
 
     expect(result.dispatched).toBe(0);
     expect(result.skipped).toBe(0);
+    expect(sendSqsBatchMock).not.toHaveBeenCalled();
+  });
+
+  it("short-circuits when the registry scan flag is disabled", async () => {
+    loadSystemRegistryScanFlagMock.mockResolvedValueOnce(false);
+    const { handler } = await import("../../src/aws/registry-scheduler");
+    const result = await handler();
+
+    expect(result).toEqual({
+      dispatched: 0,
+      skipped: 0,
+      byQueue: { workday: 0, enterprise: 0, publicApi: 0 },
+    });
+    expect(queryDueRegistryCompaniesMock).not.toHaveBeenCalled();
     expect(sendSqsBatchMock).not.toHaveBeenCalled();
   });
 });

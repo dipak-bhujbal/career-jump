@@ -551,7 +551,7 @@ export type WorkdayScanState = {
   updatedAt: string;
 };
 
-export type RegistryScanPool = "hot" | "warm" | "low";
+export type RegistryScanPool = "hot" | "warm" | "cold";
 
 export type RegistryScanPriority = "low" | "normal" | "high";
 

@@ -632,6 +632,7 @@ export async function buildInventory(
     preserveUnscannedJobs?: boolean;
     metadata?: BuildInventoryMetadata;
     disableActiveRunHeartbeat?: boolean;
+    isAdmin?: boolean;
   } = {}
 ): Promise<InventorySnapshot> {
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
@@ -788,7 +789,7 @@ export async function buildInventory(
           cacheHits += 1;
         } else {
           // Cache miss — atomically consume quota before allowing live fetch.
-          const consumed = await tryConsumeLiveScan(tenantId, runId ?? "no-run-id");
+          const consumed = await tryConsumeLiveScan(tenantId, runId ?? "no-run-id", undefined, { isAdmin: options.isAdmin });
           if (!consumed) {
             // Quota exhausted — serve stale cache if any, otherwise skip.
             const stale = await loadLatestRawScan(company.company, detected, { allowStale: true });
@@ -1107,7 +1108,9 @@ export async function buildInventory(
     }
   }
 
-  const remainingScans = tenantId ? await remainingLiveScans(tenantId).catch(() => undefined) : undefined;
+  const remainingScans = tenantId
+    ? await remainingLiveScans(tenantId, undefined, { isAdmin: options.isAdmin }).catch(() => undefined)
+    : undefined;
 
   // Emit a single aggregated analytics event per run so the admin can track
   // cache-hit rate, live-fetch rate, and quota-block rate over time.
@@ -1618,7 +1621,8 @@ export async function runScan(
   env: Env,
   config: RuntimeConfig,
   runId?: string,
-  tenantId?: string
+  tenantId?: string,
+  options: { isAdmin?: boolean } = {},
 ): Promise<{ inventory: InventorySnapshot; previousInventory: InventorySnapshot | null; newJobs: JobPosting[]; updatedJobs: JobPosting[] }> {
   const previousState = await loadInventoryState(env, tenantId);
   const previousInventory = previousState.inventory;
@@ -1628,7 +1632,10 @@ export async function runScan(
     firstSeenFingerprintsThisRun: new Set<string>(),
   };
 
-  const inventory = await buildInventory(env, config, previousInventory, runId, tenantId, { metadata: buildMetadata });
+  const inventory = await buildInventory(env, config, previousInventory, runId, tenantId, {
+    metadata: buildMetadata,
+    isAdmin: options.isAdmin,
+  });
   if (runId) {
     await ensureActiveRunOwnership(env, runId);
   }

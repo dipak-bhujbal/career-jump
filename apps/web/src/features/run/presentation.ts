@@ -41,6 +41,7 @@ export function wasRunFullyQuotaBlocked(result: RunStartResponse | null | undefi
 
 export function formatScanQuotaHint(quota: ScanQuotaEnvelope | undefined): string {
   if (!quota) return "Loading daily live-scan quota…";
+  if (quota.unlimited) return "Unlimited live scans.";
   if (quota.remainingLiveScansToday === 0) return "Daily live scans used up. New runs will use cached scans when available and skip companies with no cache until tomorrow.";
   if (quota.remainingLiveScansToday === 1) return "1 live scan left today.";
   return `${quota.remainingLiveScansToday} live scans left today.`;

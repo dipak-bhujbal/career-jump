@@ -857,7 +857,10 @@ Resources:
             Name: !Sub "${AppName}-${Stage}-weekday-et-scan"
             ScheduleExpression: "cron(0 6,9,12,15,18,21 ? * MON-FRI *)"
             ScheduleExpressionTimezone: "America/New_York"
-            State: ENABLED
+            # Registry cadence now owns background scanning. Keep the old
+            # tenant-level orchestrator schedule disabled so manual runs still
+            # work without the legacy per-tenant cron driving scans in prod.
+            State: DISABLED
     Metadata:
       BuildMethod: esbuild
       BuildProperties:

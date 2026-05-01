@@ -1,5 +1,8 @@
 import { ConditionalCheckFailedException, getRow, putRow, registryTableName, scanAllRows } from "../aws/dynamo";
+import type { RegistryEntry } from "../ats/registry";
 import { hyphenSlug, nowISO } from "../lib/utils";
+import { getByCompany, listAll, loadRegistryCache } from "./registry-cache";
+import { deriveRegistryScanPolicy, registryAdapterIdForEntry } from "./registry-scan-policy";
 import type {
   RegistryCompanyScanState,
   RegistryScanPool,
@@ -12,20 +15,14 @@ type RegistryScanStateRow = RegistryCompanyScanState & {
   sk: "REGISTRY-SCAN-STATE";
 };
 
-const DEFAULT_SCAN_POOL: RegistryScanPool = "low";
-const DEFAULT_PRIORITY: RegistryScanPriority = "normal";
-
-function poolFromTrackers(activeTrackers: number): RegistryScanPool {
-  if (activeTrackers >= 3) return "hot";
-  if (activeTrackers >= 1) return "warm";
-  return "low";
-}
+const DEFAULT_SCAN_POOL: RegistryScanPool = "cold";
+const DEFAULT_PRIORITY: RegistryScanPriority = "low";
 const FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
 const PAUSED_FAILURE_THRESHOLD = 5;
 const SCAN_POOL_INTERVAL_MS: Record<RegistryScanPool, number> = {
-  hot: 4 * 60 * 60 * 1000,
-  warm: 8 * 60 * 60 * 1000,
-  low: 16 * 60 * 60 * 1000,
+  hot: 3 * 60 * 60 * 1000,
+  warm: 6 * 60 * 60 * 1000,
+  cold: 12 * 60 * 60 * 1000,
 };
 
 function companySlug(company: string): string {
@@ -41,7 +38,7 @@ function futureIso(durationMs: number): string {
 }
 
 function intervalForPool(scanPool: RegistryScanPool): number {
-  return SCAN_POOL_INTERVAL_MS[scanPool] ?? SCAN_POOL_INTERVAL_MS.low;
+  return SCAN_POOL_INTERVAL_MS[scanPool] ?? SCAN_POOL_INTERVAL_MS.cold;
 }
 
 function staleWindowForPool(scanPool: RegistryScanPool): number {
@@ -76,14 +73,22 @@ function currentUtcHour(): number {
   return new Date().getUTCHours();
 }
 
-function defaultState(company: string, adapterId?: string | null): RegistryCompanyScanState {
+function normalizeStoredScanPool(scanPool: string | null | undefined): RegistryScanPool {
+  if (scanPool === "hot" || scanPool === "warm" || scanPool === "cold") return scanPool;
+  // Older rows stored the lowest lane as "low". Migrate them in memory so the
+  // new hot/warm/cold policy remains backward compatible with existing data.
+  if (scanPool === "low") return "cold";
+  return DEFAULT_SCAN_POOL;
+}
+
+function defaultState(company: string, policy?: Partial<Pick<RegistryCompanyScanState, "adapterId" | "scanPool" | "priority">>): RegistryCompanyScanState {
   const nextScanAt = nowISO();
   return {
     company,
     companySlug: companySlug(company),
-    adapterId: adapterId ?? null,
-    scanPool: DEFAULT_SCAN_POOL,
-    priority: DEFAULT_PRIORITY,
+    adapterId: policy?.adapterId ?? null,
+    scanPool: policy?.scanPool ?? DEFAULT_SCAN_POOL,
+    priority: policy?.priority ?? DEFAULT_PRIORITY,
     status: "pending",
     activeTrackers: 0,
     scanHourWeights: defaultScanHourWeights(),
@@ -103,7 +108,7 @@ export function biasQueryByCurrentHour(
   rows: RegistryCompanyScanState[],
   utcHour: number = currentUtcHour(),
 ): RegistryCompanyScanState[] {
-  const poolOrder: Record<RegistryScanPool, number> = { hot: 0, warm: 1, low: 2 };
+  const poolOrder: Record<RegistryScanPool, number> = { hot: 0, warm: 1, cold: 2 };
   return [...rows].sort((a, b) => {
     const poolDiff = poolOrder[a.scanPool] - poolOrder[b.scanPool];
     if (poolDiff !== 0) return poolDiff;
@@ -113,20 +118,53 @@ export function biasQueryByCurrentHour(
   });
 }
 
+function statePolicyFromEntry(entry: RegistryEntry): Pick<RegistryCompanyScanState, "adapterId" | "scanPool" | "priority"> {
+  const policy = deriveRegistryScanPolicy(entry);
+  return {
+    adapterId: registryAdapterIdForEntry(entry),
+    scanPool: policy.scanPool,
+    priority: policy.priority,
+  };
+}
+
+async function loadRegistryPolicyForCompany(
+  company: string,
+  adapterId?: string | null,
+): Promise<Pick<RegistryCompanyScanState, "adapterId" | "scanPool" | "priority">> {
+  await loadRegistryCache();
+  const entry = getByCompany(company);
+  if (!entry) {
+    return {
+      adapterId: adapterId ?? null,
+      scanPool: DEFAULT_SCAN_POOL,
+      priority: DEFAULT_PRIORITY,
+    };
+  }
+  const policy = statePolicyFromEntry(entry);
+  return {
+    adapterId: policy.adapterId ?? adapterId ?? null,
+    scanPool: policy.scanPool,
+    priority: policy.priority,
+  };
+}
+
 function normalizeState(
   company: string,
   state: RegistryCompanyScanState | null,
-  adapterId?: string | null,
+  policy: Pick<RegistryCompanyScanState, "adapterId" | "scanPool" | "priority">,
 ): RegistryCompanyScanState {
   const merged = {
-    ...defaultState(company, adapterId),
+    ...defaultState(company, policy),
     ...state,
     company,
     companySlug: companySlug(company),
-    adapterId: adapterId ?? state?.adapterId ?? null,
+    adapterId: policy.adapterId ?? state?.adapterId ?? null,
+    scanPool: policy.scanPool,
+    priority: policy.priority,
   };
   return {
     ...merged,
+    scanPool: normalizeStoredScanPool(merged.scanPool),
     status: deriveStatus(merged),
   };
 }
@@ -167,11 +205,12 @@ export async function loadRegistryCompanyScanState(
   company: string,
   adapterId?: string | null,
 ): Promise<RegistryCompanyScanState> {
+  const policy = await loadRegistryPolicyForCompany(company, adapterId);
   const existing = await getRow<RegistryScanStateRow>(registryTableName(), {
     pk: companyPk(company),
     sk: "REGISTRY-SCAN-STATE",
   }, true);
-  const normalized = normalizeState(company, existing, adapterId);
+  const normalized = normalizeState(company, existing, policy);
   if (!existing) {
     await ensureStateInitialized(normalized);
   }
@@ -254,6 +293,7 @@ export async function queryDueRegistryCompanies(
   nowIso: string,
 ): Promise<RegistryCompanyScanState[]> {
   type Row = RegistryCompanyScanState & { pk: string; sk: string };
+  await loadRegistryCache();
   const rows = await scanAllRows<Row>(registryTableName(), {
     filterExpression: "sk = :sk AND #st <> :misconfigured AND #nsa <= :now",
     expressionAttributeNames: { "#st": "status", "#nsa": "nextScanAt" },
@@ -263,7 +303,22 @@ export async function queryDueRegistryCompanies(
       ":now": nowIso,
     },
   });
-  return rows.map(({ pk: _pk, sk: _sk, ...state }) => state as RegistryCompanyScanState);
+  const bySlug = new Map(
+    rows.map(({ pk: _pk, sk: _sk, ...state }) => [state.companySlug, state as RegistryCompanyScanState]),
+  );
+
+  const effectiveStates: RegistryCompanyScanState[] = [];
+  for (const entry of listAll()) {
+    const policy = statePolicyFromEntry(entry);
+    const existing = bySlug.get(companySlug(entry.company)) ?? null;
+    const state = normalizeState(entry.company, existing, policy);
+    if (state.status === "misconfigured") continue;
+    const nextScanAtMs = state.nextScanAt ? Date.parse(state.nextScanAt) : NaN;
+    if (!Number.isFinite(nextScanAtMs) || nextScanAtMs > Date.parse(nowIso)) continue;
+    effectiveStates.push(state);
+  }
+
+  return biasQueryByCurrentHour(effectiveStates);
 }
 
 export async function markRegistryCompanyScanMisconfigured(
@@ -299,16 +354,9 @@ export async function updateActiveTrackers(
 ): Promise<RegistryCompanyScanState> {
   const previous = await loadRegistryCompanyScanState(company);
   const activeTrackers = Math.max(0, (previous.activeTrackers ?? 0) + delta);
-  const scanPool = poolFromTrackers(activeTrackers);
-  const poolChanged = scanPool !== previous.scanPool;
-  const nextScanAt = poolChanged ? nowISO() : previous.nextScanAt;
-  const staleAfterAt = poolChanged ? futureIso(staleWindowForPool(scanPool)) : previous.staleAfterAt;
 
   return saveState({
     ...previous,
     activeTrackers,
-    scanPool,
-    nextScanAt,
-    staleAfterAt,
   });
 }

@@ -3,30 +3,54 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const ConditionalCheckFailedExceptionMock = class ConditionalCheckFailedException extends Error {};
 const getRowMock = vi.fn();
 const putRowMock = vi.fn();
+const loadRegistryCacheMock = vi.fn();
+const getByCompanyMock = vi.fn();
+const listAllMock = vi.fn();
 
 vi.mock("../../src/aws/dynamo", () => ({
   ConditionalCheckFailedException: ConditionalCheckFailedExceptionMock,
   registryTableName: vi.fn(() => "registry-table"),
   getRow: getRowMock,
   putRow: putRowMock,
+  scanAllRows: vi.fn(),
+}));
+
+vi.mock("../../src/storage/registry-cache", () => ({
+  loadRegistryCache: loadRegistryCacheMock,
+  getByCompany: getByCompanyMock,
+  listAll: listAllMock,
 }));
 
 describe("integration registry scan state", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.useRealTimers();
+    loadRegistryCacheMock.mockResolvedValue(undefined);
+    listAllMock.mockReturnValue([]);
   });
 
   it("loads a pending default state for unseen companies", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-28T11:15:00.000Z"));
     getRowMock.mockResolvedValueOnce(null);
+    getByCompanyMock.mockReturnValue({
+      company: "Airtable",
+      ats: "greenhouse",
+      board_url: "https://boards.greenhouse.io/airtable",
+      sample_url: null,
+      rank: 50,
+      tier: "TIER1_VERIFIED",
+      total_jobs: null,
+      sheet: "Registry",
+      source: "curated",
+      last_checked: null,
+    });
     const { loadRegistryCompanyScanState } = await import("../../src/storage/registry-scan-state");
 
     await expect(loadRegistryCompanyScanState("Airtable", "greenhouse")).resolves.toMatchObject({
       company: "Airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "warm",
       priority: "normal",
       status: "pending",
       failureCount: 0,
@@ -56,7 +80,7 @@ describe("integration registry scan state", () => {
       priority: "high",
     });
 
-    expect(putRowMock).toHaveBeenCalledWith("registry-table", expect.objectContaining({
+    expect(putRowMock).toHaveBeenLastCalledWith("registry-table", expect.objectContaining({
       pk: "COMPANY#airtable",
       sk: "REGISTRY-SCAN-STATE",
       adapterId: "greenhouse",
@@ -67,8 +91,8 @@ describe("integration registry scan state", () => {
       lastFetchedCount: 42,
       lastScanAt: "2026-04-28T11:15:00.000Z",
       lastSuccessAt: "2026-04-28T11:15:00.000Z",
-      nextScanAt: "2026-04-28T19:15:00.000Z",
-      staleAfterAt: "2026-04-29T03:15:00.000Z",
+      nextScanAt: "2026-04-28T17:15:00.000Z",
+      staleAfterAt: "2026-04-28T23:15:00.000Z",
     }));
   });
 
@@ -79,7 +103,7 @@ describe("integration registry scan state", () => {
       company: "Airtable",
       companySlug: "airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "cold",
       priority: "normal",
       status: "healthy",
       nextScanAt: "2026-04-28T11:15:00.000Z",
@@ -116,7 +140,7 @@ describe("integration registry scan state", () => {
       company: "Airtable",
       companySlug: "airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "cold",
       priority: "normal",
       status: "failing",
       nextScanAt: "2026-04-28T11:15:00.000Z",
@@ -151,7 +175,7 @@ describe("integration registry scan state", () => {
       company: "Airtable",
       companySlug: "airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "cold",
       priority: "normal",
       status: "failing",
       nextScanAt: "2026-04-28T11:15:00.000Z",
@@ -186,7 +210,7 @@ describe("integration registry scan state", () => {
       company: "Airtable",
       companySlug: "airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "cold",
       priority: "normal",
       status: "paused",
       nextScanAt: "2026-04-29T11:15:00.000Z",
@@ -204,7 +228,7 @@ describe("integration registry scan state", () => {
     await markRegistryCompanyScanSuccess("Airtable", {
       adapterId: "greenhouse",
       fetchedCount: 10,
-      scanPool: "low",
+      scanPool: "cold",
     });
     expect(putRowMock).toHaveBeenLastCalledWith("registry-table", expect.objectContaining({
       status: "healthy",
@@ -217,7 +241,7 @@ describe("integration registry scan state", () => {
       company: "Airtable",
       companySlug: "airtable",
       adapterId: "greenhouse",
-      scanPool: "low",
+      scanPool: "cold",
       priority: "normal",
       status: "healthy",
       nextScanAt: "2026-04-30T03:15:00.000Z",

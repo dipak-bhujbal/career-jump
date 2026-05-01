@@ -437,9 +437,10 @@ export type RunStartResponse = {
 export type ScanQuotaEnvelope = {
   ok: boolean;
   liveScansUsed: number;
-  remainingLiveScansToday: number;
+  remainingLiveScansToday: number | null;
   lastLiveScanAt: string | null;
   date: string;
+  unlimited?: boolean;
 };
 
 // ---------- Email webhook ----------

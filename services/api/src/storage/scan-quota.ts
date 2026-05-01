@@ -9,6 +9,7 @@ import { loadBillingSubscription } from "./accounts";
 import { loadPlanConfig } from "./plan-config";
 
 type ScanQuotaRow = ScanQuotaUsage & { pk: string; sk: string };
+type ScanQuotaOptions = { isAdmin?: boolean };
 
 function todayUtc(): string {
   return new Date().toISOString().slice(0, 10);
@@ -22,7 +23,12 @@ function quotaSk(date: string): string {
   return `SCAN_USAGE#${date}`;
 }
 
-async function dailyQuotaForTenant(tenantId: string): Promise<number> {
+async function dailyQuotaForTenant(tenantId: string, options: ScanQuotaOptions = {}): Promise<number> {
+  if (options.isAdmin) {
+    // Admins act as super users across the full registry, so quota checks
+    // should never block their manual or diagnostic scans.
+    return Number.MAX_SAFE_INTEGER;
+  }
   try {
     const sub = await loadBillingSubscription(tenantId);
     const cfg = await loadPlanConfig(sub.plan as UserPlan);
@@ -42,10 +48,10 @@ export async function loadScanQuotaUsage(tenantId: string, date = todayUtc()): P
   return { tenantId, date, liveScansUsed: 0, lastLiveScanAt: null, runIds: [] };
 }
 
-export async function remainingLiveScans(tenantId: string, date = todayUtc()): Promise<number> {
+export async function remainingLiveScans(tenantId: string, date = todayUtc(), options: ScanQuotaOptions = {}): Promise<number> {
   const [usage, quota] = await Promise.all([
     loadScanQuotaUsage(tenantId, date),
-    dailyQuotaForTenant(tenantId),
+    dailyQuotaForTenant(tenantId, options),
   ]);
   return Math.max(0, quota - usage.liveScansUsed);
 }
@@ -56,8 +62,9 @@ export async function remainingLiveScans(tenantId: string, date = todayUtc()): P
  * no TOCTOU race at the quota boundary.
  * Returns true if the slot was consumed, false if the daily quota is exhausted.
  */
-export async function tryConsumeLiveScan(tenantId: string, runId: string, date = todayUtc()): Promise<boolean> {
-  const quota = await dailyQuotaForTenant(tenantId);
+export async function tryConsumeLiveScan(tenantId: string, runId: string, date = todayUtc(), options: ScanQuotaOptions = {}): Promise<boolean> {
+  if (options.isAdmin) return true;
+  const quota = await dailyQuotaForTenant(tenantId, options);
   const now = nowISO();
   return atomicConsumeIfUnderQuota(
     billingTableName(),

@@ -712,8 +712,8 @@ export function buildOpenApiDocument(baseUrl: string) {
       "/api/debug/schedule": {
         get: {
           tags: ["debugging"],
-          summary: "Inspect the active UTC cron schedule",
-          description: "Returns the direct Cloudflare cron expressions and the intended effective ET timing notes.",
+          summary: "Inspect active registry scan cadence",
+          description: "Returns the registry-level scheduler wake-up cadence plus the hot, warm, and cold scan intervals.",
           responses: { "200": { description: "Schedule debug payload" } },
         },
       },

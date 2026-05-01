@@ -81,7 +81,9 @@ describe("api smoke scan quota routes", () => {
       date: "2026-04-29",
     });
     expect(loadScanQuotaUsageMock).toHaveBeenCalledWith(userActor.tenantId);
-    expect(remainingLiveScansMock).toHaveBeenCalledWith(userActor.tenantId);
+    expect(remainingLiveScansMock).toHaveBeenCalledWith(userActor.tenantId, undefined, {
+      isAdmin: false,
+    });
   });
 
   it("lets an admin override a user's plan", async () => {

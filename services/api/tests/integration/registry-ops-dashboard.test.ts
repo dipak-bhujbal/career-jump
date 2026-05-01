@@ -33,7 +33,7 @@ function makeState(overrides: Partial<{
     company: overrides.company ?? "Company 1",
     companySlug: overrides.companySlug ?? "company-1",
     adapterId: "greenhouse",
-    scanPool: "low" as const,
+    scanPool: "cold" as const,
     priority: "normal" as const,
     status: overrides.status ?? "healthy",
     nextScanAt: overrides.nextScanAt !== undefined ? overrides.nextScanAt : "2026-04-28T18:00:00.000Z",

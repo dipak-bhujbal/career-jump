@@ -66,7 +66,7 @@ function makeMessage(overrides: Partial<{
     company: overrides.company ?? "Stripe",
     companySlug: overrides.companySlug ?? "stripe",
     adapterId: overrides.adapterId ?? "greenhouse",
-    scanPool: "low" as const,
+    scanPool: "cold" as const,
     priority: "normal" as const,
     isReprobe: overrides.isReprobe ?? false,
   };
@@ -218,7 +218,7 @@ describe("registry-scan-worker", () => {
         company: "Stripe",
         companySlug: "stripe",
         adapterId: "greenhouse",
-        scanPool: "low",
+        scanPool: "cold",
         priority: "normal",
         status: "paused",
         failureCount: 5,
