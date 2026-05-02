@@ -1200,7 +1200,7 @@
       "rank": 115,
       "sheet": "Fortune 500",
       "company": "Airbnb",
-      "board_url": "https://boards.greenhouse.io/airbnb",
+      "board_url": "https://job-boards.greenhouse.io/embed/job_board?for=airbnb",
       "ats": "Greenhouse",
       "total_jobs": 231,
       "source": "v3:llm_knowledge_high",

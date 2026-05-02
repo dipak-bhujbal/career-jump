@@ -675,10 +675,11 @@ async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promis
   const needsRegistryHydration = companies.some((company) => {
     const isRegistryBacked = company.isRegistry === true || Boolean(company.registryAts || company.registryTier);
     const missingWorkdayFields = company.source === "workday" && !(company.host && company.tenant && company.site);
+    const registrySourceMayBeStale = isRegistryBacked;
     // Older saved rows may predate registry provenance fields, so use the
     // company name lookup to heal missing canonical board/base URLs and
     // Workday identifiers even when isRegistry was never persisted.
-    return missingWorkdayFields || (isRegistryBacked && !company.boardUrl);
+    return missingWorkdayFields || (isRegistryBacked && !company.boardUrl) || registrySourceMayBeStale;
   });
   if (!needsRegistryHydration) return companies;
 
@@ -708,14 +709,16 @@ async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promis
     ) ?? entry.board_url;
     return {
       ...company,
+      // Registry-backed rows should always reflect the latest canonical ATS so
+      // the configuration badge and the registry tooltip cannot drift apart.
       source: normalizedSource ?? company.source,
       // Registry-backed rows are canonicalized to the board URL so the UI and
       // adapters never drift back to a single job posting URL.
       boardUrl: canonicalBoardUrl,
       sampleUrl: canonicalBoardUrl,
-      isRegistry: company.isRegistry === true ? true : undefined,
-      registryAts: company.registryAts || entry.ats || undefined,
-      registryTier: company.registryTier || entry.tier || undefined,
+      isRegistry: wasMarkedRegistry ? true : company.isRegistry,
+      registryAts: entry.ats || company.registryAts || undefined,
+      registryTier: entry.tier || company.registryTier || undefined,
       workdayBaseUrl:
         typeof parsed.workdayBaseUrl === "string" && parsed.workdayBaseUrl.trim()
           ? parsed.workdayBaseUrl
