@@ -1,7 +1,7 @@
 {
   "_meta": {
     "version": "final-v5",
-    "total": 1230,
+    "total": 1173,
     "generated": "2026-04-25",
     "enum_added": 0,
     "needs_review_pass_promoted": 33,
@@ -121,17 +121,6 @@
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
-      "rank": 12,
-      "sheet": "Fortune 500",
-      "company": "Costco Wholesale",
-      "board_url": "https://www.costco.com/jobs.html",
-      "ats": "Custom",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
       "tier": "TIER1_VERIFIED",
       "from": "v3"
     },
@@ -468,17 +457,6 @@
       "from": "v3"
     },
     {
-      "rank": 44,
-      "sheet": "Fortune 500",
-      "company": "Dell Technologies",
-      "board_url": "https://dell.wd5.myworkdayjobs.com/ExternalNonPublic",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_high",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 45,
       "sheet": "Fortune 500",
       "company": "PepsiCo",
@@ -661,17 +639,6 @@
       "from": "v3"
     },
     {
-      "rank": 61,
-      "sheet": "Fortune 500",
-      "company": "HCA Healthcare",
-      "board_url": "https://careers.hcahealthcare.com/jobs",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 62,
       "sheet": "Fortune 500",
       "company": "Prudential Financial",
@@ -810,28 +777,6 @@
       "from": "v3"
     },
     {
-      "rank": 74,
-      "sheet": "Fortune 500",
-      "company": "United Airlines Holdings",
-      "board_url": "https://united.wd5.myworkdayjobs.com/External",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_high",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
-      "rank": 75,
-      "sheet": "Fortune 500",
-      "company": "ConocoPhillips",
-      "board_url": "https://conocophillips.wd5.myworkdayjobs.com/jobs",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 76,
       "sheet": "Fortune 500",
       "company": "TJX Companies",
@@ -857,8 +802,8 @@
       "rank": 78,
       "sheet": "Fortune 500",
       "company": "Enterprise Products Partners",
-      "board_url": "https://enterpriseproducts.wd1.myworkdayjobs.com/External",
-      "ats": "Workday",
+      "board_url": "https://epco.taleo.net/careersection/alljobs",
+      "ats": "Taleo",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
@@ -887,21 +832,10 @@
       "from": "v3"
     },
     {
-      "rank": 81,
-      "sheet": "Fortune 500",
-      "company": "American Airlines Group",
-      "board_url": "https://aa.wd5.myworkdayjobs.com/AA_Careers",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 82,
       "sheet": "Fortune 500",
       "company": "Capital One Financial",
-      "board_url": "https://capitalone.wd1.myworkdayjobs.com/Capital_One",
+      "board_url": "https://capitalone.wd12.myworkdayjobs.com/Capital_One",
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
@@ -955,18 +889,6 @@
       "last_checked": "2026-04-25T15:27:53.092Z"
     },
     {
-      "rank": 87,
-      "sheet": "Fortune 500",
-      "company": "Oracle",
-      "board_url": "https://eeho.fa.us2.oraclecloud.com/hcmUI/CandExpStatic/css/ce-custom.css?themeNumber=default_minimal_theme_CX_45001&lang=en&themeVersion=10&brandVersion=81&brandTlVersion=82&siteNumber=CX_45001",
-      "ats": "Oracle",
-      "total_jobs": 659,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3",
-      "last_checked": "2026-04-25T15:27:53.214Z"
-    },
-    {
       "rank": 88,
       "sheet": "Fortune 500",
       "company": "Broadcom",
@@ -1005,8 +927,8 @@
       "rank": 91,
       "sheet": "Fortune 500",
       "company": "Liberty Mutual Insurance",
-      "board_url": "https://libertymutual.wd5.myworkdayjobs.com/External",
-      "ats": "Workday",
+      "board_url": "https://careers-libertymutual.icims.com/jobs/search",
+      "ats": "iCIMS",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
@@ -1062,7 +984,7 @@
       "rank": 96,
       "sheet": "Fortune 500",
       "company": "General Dynamics",
-      "board_url": "https://gd.wd5.myworkdayjobs.com/External",
+      "board_url": "https://gdit.wd5.myworkdayjobs.com/External_Career_Site",
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
@@ -1108,8 +1030,8 @@
       "rank": 100,
       "sheet": "Fortune 500",
       "company": "Eli Lilly",
-      "board_url": "https://lilly.wd5.myworkdayjobs.com/en-US/LillyCareers",
-      "ats": null,
+      "board_url": "https://lilly.wd5.myworkdayjobs.com/en-US/LLY",
+      "ats": "Workday",
       "total_jobs": null,
       "source": "v3:needs_review",
       "tier": "NEEDS_REVIEW",
@@ -1288,17 +1210,6 @@
       "last_checked": "2026-04-25T15:27:54.215Z"
     },
     {
-      "rank": 117,
-      "sheet": "Fortune 500",
-      "company": "Twitter/X",
-      "board_url": "https://jobs.ashbyhq.com/x",
-      "ats": "Ashby",
-      "total_jobs": null,
-      "source": "v3:lm_knowledge_verified",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 118,
       "sheet": "Fortune 500",
       "company": "Snap Inc",
@@ -1345,17 +1256,6 @@
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
-      "rank": 122,
-      "sheet": "Fortune 500",
-      "company": "Qualcomm",
-      "board_url": "https://qualcomm.wd5.myworkdayjobs.com/External",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
       "from": "v3"
     },
@@ -1424,17 +1324,6 @@
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
-      "rank": 129,
-      "sheet": "Fortune 500",
-      "company": "Seagate Technology",
-      "board_url": "https://seagate.wd5.myworkdayjobs.com/seagate-careers",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
       "from": "v3"
     },
@@ -1608,17 +1497,6 @@
       "from": "v3"
     },
     {
-      "rank": 145,
-      "sheet": "Fortune 500",
-      "company": "Siemens",
-      "board_url": "https://jobs.siemens.com/siemens/jobs",
-      "ats": "Custom",
-      "total_jobs": null,
-      "source": "v3:mvp_corrected",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 146,
       "sheet": "Fortune 500",
       "company": "ABB",
@@ -1628,19 +1506,6 @@
       "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
       "from": "v3"
-    },
-    {
-      "rank": 147,
-      "sheet": "Fortune 500",
-      "company": "Honeywell",
-      "board_url": "https://careers.honeywell.com/us/en/search-results",
-      "ats": "Oracle Cloud",
-      "total_jobs": 0,
-      "source": "v3:llm_knowledge_high",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3",
-      "last_checked": "2026-04-25T15:27:56.418Z",
-      "tier_warning": "zero_jobs_today"
     },
     {
       "rank": 148,
@@ -1664,17 +1529,6 @@
       "tier": "TIER1_VERIFIED",
       "from": "v3",
       "last_checked": "2026-04-25T15:27:57.174Z"
-    },
-    {
-      "rank": 150,
-      "sheet": "Fortune 500",
-      "company": "Parker Hannifin",
-      "board_url": "https://parker.wd5.myworkdayjobs.com/parker-career",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
     },
     {
       "rank": 151,
@@ -1713,7 +1567,7 @@
       "rank": 154,
       "sheet": "Fortune 500",
       "company": "Textron",
-      "board_url": "https://textron.taleo.net/careersection/ext/jobsearch.ftl",
+      "board_url": "https://textron.taleo.net/careersection/textron/jobsearch.ftl",
       "ats": "Taleo",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
@@ -1767,19 +1621,6 @@
       "from": "v3"
     },
     {
-      "rank": 159,
-      "sheet": "Fortune 500",
-      "company": "ManTech",
-      "board_url": "https://mantech.wd1.myworkdayjobs.com/External",
-      "ats": "Workday",
-      "total_jobs": 0,
-      "source": "v3:mvp_discover_pattern_detected",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3",
-      "last_checked": "2026-04-25T15:27:56.766Z",
-      "tier_warning": "zero_jobs_today"
-    },
-    {
       "rank": 161,
       "sheet": "Fortune 500",
       "company": "Regeneron",
@@ -1827,7 +1668,7 @@
       "rank": 165,
       "sheet": "Fortune 500",
       "company": "Vertex Pharmaceuticals",
-      "board_url": "https://vrtx.wd5.myworkdayjobs.com/vertex_careers",
+      "board_url": "https://vrtx.wd501.myworkdayjobs.com/Vertex_Careers",
       "ats": "Workday",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
@@ -1982,17 +1823,6 @@
       "from": "v3"
     },
     {
-      "rank": 179,
-      "sheet": "Fortune 500",
-      "company": "Zimmer",
-      "board_url": "https://zimmer.wd5.myworkdayjobs.com/ZimmerBiomet",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_high",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 180,
       "sheet": "Fortune 500",
       "company": "Hologic",
@@ -2019,7 +1849,7 @@
       "rank": 183,
       "sheet": "Fortune 500",
       "company": "Wells Fargo",
-      "board_url": "https://wf.wd1.myworkdayjobs.com/WellsFargoJobs",
+      "board_url": "https://wd1.myworkdaysite.com/recruiting/wf/WellsFargoJobs",
       "ats": "Workday",
       "total_jobs": 1781,
       "source": "v3:mvp_discover_pattern_detected",
@@ -2124,8 +1954,8 @@
       "rank": 192,
       "sheet": "Fortune 500",
       "company": "BNY Mellon",
-      "board_url": "https://bnymellon.wd5.myworkdayjobs.com/External",
-      "ats": "Workday",
+      "board_url": "https://eofe.fa.us2.oraclecloud.com/hcmUI/CandidateExperience/en/sites/BNY-Careers/jobs",
+      "ats": "Oracle",
       "total_jobs": null,
       "source": "v3:llm_knowledge_high",
       "tier": "TIER1_VERIFIED",
@@ -2229,17 +2059,6 @@
       "ats": "iCIMS",
       "total_jobs": 1,
       "source": "serper_retry+slug",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
-    },
-    {
-      "rank": 206,
-      "sheet": "Fortune 500",
-      "company": "Interpublic Group",
-      "board_url": "https://boards.greenhouse.io/interpublicgroup",
-      "ats": "Greenhouse",
-      "total_jobs": 0,
-      "source": "final_sweep",
       "tier": "TIER1_VERIFIED",
       "from": "v5"
     },
@@ -2547,17 +2366,6 @@
       "last_checked": "2026-04-25T15:28:00.480Z"
     },
     {
-      "rank": 244,
-      "sheet": "Fortune 500",
-      "company": "Williams-Sonoma",
-      "board_url": "https://ehac.fa.us6.oraclecloud.com/hcmUI/CandidateExperience/en/sites/CX_1",
-      "ats": "Oracle",
-      "total_jobs": 1,
-      "source": "title_verified",
-      "tier": "TIER2_MEDIUM",
-      "from": "v5"
-    },
-    {
       "rank": 245,
       "sheet": "Fortune 500",
       "company": "Arthur J. Gallagher",
@@ -2654,30 +2462,6 @@
       "from": "v5",
       "sample_url": "https://kohls.wd1.myworkdayjobs.com/job/Stevens-Point-0982/Part-Time-Retail-Sales-Associate_R443837",
       "last_checked": "2026-04-25T15:28:01.632Z"
-    },
-    {
-      "rank": 254,
-      "sheet": "Fortune 500",
-      "company": "Burlington Stores",
-      "board_url": "https://burlington.wd5.myworkdayjobs.com/BurlingtonCareers",
-      "ats": "Workday",
-      "total_jobs": 299,
-      "source": "serper_retry+slug",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5",
-      "sample_url": "https://burlington.wd5.myworkdayjobs.com/job/01325---Oxon-Hill/Operations-Service-Manager-II_R103167-1",
-      "last_checked": "2026-04-25T15:28:01.212Z"
-    },
-    {
-      "rank": 256,
-      "sheet": "Fortune 500",
-      "company": "Hubbell",
-      "board_url": "https://performancemanager4.successfactors.com/verp/vmod_v1/ui/extlib/jquery_3.5.1/jquery.js",
-      "ats": "SuccessFactors",
-      "total_jobs": 31,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
     },
     {
       "rank": 259,
@@ -2793,17 +2577,6 @@
       "from": "v5",
       "sample_url": "https://tapestry.wd108.myworkdayjobs.com/job/Richmond-British-Columbia-CANRichmond-Centre---Coach/Store-Manager_JR481",
       "last_checked": "2026-04-25T15:28:01.962Z"
-    },
-    {
-      "rank": 273,
-      "sheet": "Fortune 500",
-      "company": "Hanesbrands",
-      "board_url": "https://jobs-hanesbrands.icims.com/jobs/search?ss=1",
-      "ats": "iCIMS",
-      "total_jobs": 0,
-      "source": "final_sweep",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
     },
     {
       "rank": 274,
@@ -3259,28 +3032,6 @@
       "from": "v5"
     },
     {
-      "rank": 332,
-      "sheet": "Fortune 500",
-      "company": "Cheesecake Factory",
-      "board_url": "https://hourlyjobs-cakecareers.icims.com/jobs/search?ss=1",
-      "ats": "iCIMS",
-      "total_jobs": 1,
-      "source": "title_verified",
-      "tier": "TIER2_MEDIUM",
-      "from": "v5"
-    },
-    {
-      "rank": 333,
-      "sheet": "Fortune 500",
-      "company": "Cracker Barrel",
-      "board_url": "https://cbrlgroup.wd503.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": 0,
-      "source": "final_sweep",
-      "tier": "TIER3_LOW",
-      "from": "v5"
-    },
-    {
       "rank": 334,
       "sheet": "Fortune 500",
       "company": "US Foods Holding",
@@ -3416,17 +3167,6 @@
       "last_checked": "2026-04-25T15:28:05.455Z"
     },
     {
-      "rank": 350,
-      "sheet": "Fortune 500",
-      "company": "Glacier Bancorp",
-      "board_url": "https://careers-glacierbancorp.icims.com/jobs/search?ss=1",
-      "ats": "iCIMS",
-      "total_jobs": 1,
-      "source": "careers_page+slug",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
-    },
-    {
       "rank": 351,
       "sheet": "Fortune 500",
       "company": "Dick's Sporting Goods",
@@ -3475,17 +3215,6 @@
       "from": "v5",
       "sample_url": "https://fivebelow.wd1.myworkdayjobs.com/job/Frankfort-KY-40601/Support-Lead-Part-Time_JR86018-1",
       "last_checked": "2026-04-25T15:28:06.080Z"
-    },
-    {
-      "rank": 356,
-      "sheet": "Fortune 500",
-      "company": "Dollar General",
-      "board_url": "https://internal-dollargeneral.icims.com/jobs/search?ss=1",
-      "ats": "iCIMS",
-      "total_jobs": 1,
-      "source": "careers_page+slug",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
     },
     {
       "rank": 357,
@@ -3609,19 +3338,6 @@
       "tier": "TIER1_VERIFIED",
       "from": "v5",
       "last_checked": "2026-04-25T15:28:06.607Z"
-    },
-    {
-      "rank": 375,
-      "sheet": "Fortune 500",
-      "company": "Shake Shack",
-      "board_url": "https://shakeshack.wd5.myworkdayjobs.com/External",
-      "ats": "Workday",
-      "total_jobs": 572,
-      "source": "careers_page+slug",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5",
-      "sample_url": "https://shakeshack.wd5.myworkdayjobs.com/job/Vernon-Hills-864-E-Townline-Rd-Vernon-Hills-IL-60061/Restaurant-Team-Member----1850---hour_JR6243",
-      "last_checked": "2026-04-25T15:28:06.875Z"
     },
     {
       "rank": 378,
@@ -4022,17 +3738,6 @@
       "from": "v5"
     },
     {
-      "rank": 444,
-      "sheet": "Fortune 500",
-      "company": "PDF Solutions",
-      "board_url": "http://careers-pdf.icims.com/",
-      "ats": "iCIMS",
-      "total_jobs": 1,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "v5"
-    },
-    {
       "rank": 445,
       "sheet": "Fortune 500",
       "company": "Benchmark Corp",
@@ -4156,17 +3861,6 @@
       "total_jobs": 1,
       "source": "serper_retry+slug",
       "tier": "TIER1_VERIFIED",
-      "from": "v5"
-    },
-    {
-      "rank": 477,
-      "sheet": "Fortune 500",
-      "company": "Boise Cascade",
-      "board_url": "https://careers-bc.icims.com/jobs/search?ss=1",
-      "ats": "iCIMS",
-      "total_jobs": 0,
-      "source": "final_sweep",
-      "tier": "TIER3_LOW",
       "from": "v5"
     },
     {
@@ -4581,7 +4275,7 @@
       "rank": 26,
       "sheet": "Unicorn 100",
       "company": "Lattice",
-      "board_url": "https://boards.greenhouse.io/lattice",
+      "board_url": "https://job-boards.greenhouse.io/embed/job_board?for=lattice",
       "ats": "Greenhouse",
       "total_jobs": 9,
       "source": "v3:llm_knowledge_high",
@@ -4628,17 +4322,6 @@
       "from": "v3",
       "sample_url": "https://job-boards.greenhouse.io/remote/jobs/4622190",
       "last_checked": "2026-04-25T15:28:09.752Z"
-    },
-    {
-      "rank": 30,
-      "sheet": "Unicorn 100",
-      "company": "Loom",
-      "board_url": "https://boards.greenhouse.io/loom",
-      "ats": null,
-      "total_jobs": null,
-      "source": "v3:needs_review",
-      "tier": "NEEDS_REVIEW",
-      "from": "v3"
     },
     {
       "rank": 32,
@@ -4804,17 +4487,6 @@
       "from": "v3",
       "sample_url": "http://stability.ai/careers?gh_jid=4788645101",
       "last_checked": "2026-04-25T15:28:10.280Z"
-    },
-    {
-      "rank": 45,
-      "sheet": "Unicorn 100",
-      "company": "Midjourney",
-      "board_url": "https://boards.greenhouse.io/midjourney",
-      "ats": null,
-      "total_jobs": null,
-      "source": "v3:needs_review",
-      "tier": "NEEDS_REVIEW",
-      "from": "v3"
     },
     {
       "rank": 46,
@@ -5082,17 +4754,6 @@
       "last_checked": "2026-04-25T15:28:11.064Z"
     },
     {
-      "rank": 67,
-      "sheet": "Unicorn 100",
-      "company": "mParticle",
-      "board_url": "https://jobs.ashbyhq.com/mparticle",
-      "ats": "Ashby",
-      "total_jobs": null,
-      "source": "v3:mvp_discover_pattern_detected",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
-    },
-    {
       "rank": 68,
       "sheet": "Unicorn 100",
       "company": "Heap",
@@ -5141,17 +4802,6 @@
       "from": "v3",
       "sample_url": "https://jobs.ashbyhq.com/statsig/24ea4c8e-4c60-496f-ba98-5fffd7a8fe8b",
       "last_checked": "2026-04-25T15:28:11.454Z"
-    },
-    {
-      "rank": 72,
-      "sheet": "Unicorn 100",
-      "company": "Eppo",
-      "board_url": "https://jobs.ashbyhq.com/eppo",
-      "ats": "Ashby",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
     },
     {
       "rank": 73,
@@ -5373,17 +5023,6 @@
       "last_checked": "2026-04-25T15:28:12.443Z"
     },
     {
-      "rank": 91,
-      "sheet": "Unicorn 100",
-      "company": "Cruise (GM)",
-      "board_url": "https://jobs.getcruise.com/",
-      "ats": null,
-      "total_jobs": null,
-      "source": "v3:needs_review",
-      "tier": "NEEDS_REVIEW",
-      "from": "v3"
-    },
-    {
       "rank": 92,
       "sheet": "Unicorn 100",
       "company": "Nuro",
@@ -5408,17 +5047,6 @@
       "from": "v3",
       "sample_url": "https://jobs.lever.co/zoox/2b4ebe4a-029b-49f1-9661-e424129f4dc5",
       "last_checked": "2026-04-25T15:28:12.911Z"
-    },
-    {
-      "rank": 94,
-      "sheet": "Unicorn 100",
-      "company": "Rivian",
-      "board_url": "https://rivian.wd5.myworkdayjobs.com/jobs",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "v3:llm_knowledge_medium",
-      "tier": "TIER1_VERIFIED",
-      "from": "v3"
     },
     {
       "rank": 95,
@@ -5487,7 +5115,7 @@
       "rank": 100,
       "sheet": "Unicorn 100",
       "company": "SentinelOne",
-      "board_url": "https://boards.greenhouse.io/sentinelone",
+      "board_url": "https://boards.greenhouse.io/embed/job_board/js?for=sentinellabs",
       "ats": null,
       "total_jobs": null,
       "source": "v3:needs_review",
@@ -5587,17 +5215,6 @@
       "from": "tech",
       "sample_url": "https://job-boards.greenhouse.io/affirm/jobs/7666190003",
       "last_checked": "2026-04-25T15:28:12.916Z"
-    },
-    {
-      "rank": 1009,
-      "sheet": "Tech/SaaS",
-      "company": "Airbyte",
-      "board_url": "https://jobs.ashbyhq.com/airbyte/embed?version=2",
-      "ats": "Ashby",
-      "total_jobs": null,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "tech"
     },
     {
       "rank": 1011,
@@ -5799,17 +5416,6 @@
       "from": "tech"
     },
     {
-      "rank": 1037,
-      "sheet": "Tech/SaaS",
-      "company": "Census",
-      "board_url": "https://usnh.wd5.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
       "rank": 1038,
       "sheet": "Tech/SaaS",
       "company": "Chainlink Labs",
@@ -5818,17 +5424,6 @@
       "total_jobs": null,
       "source": "serper",
       "tier": "TIER2_MEDIUM",
-      "from": "tech"
-    },
-    {
-      "rank": 1039,
-      "sheet": "Tech/SaaS",
-      "company": "Character AI",
-      "board_url": "http://job-boards.greenhouse.io/thinkingmachines",
-      "ats": "Greenhouse",
-      "total_jobs": 29,
-      "source": "serper",
-      "tier": "TIER3_LOW",
       "from": "tech"
     },
     {
@@ -5859,7 +5454,7 @@
       "rank": 1043,
       "sheet": "Tech/SaaS",
       "company": "CircleCI",
-      "board_url": "https://boards.greenhouse.io/embed",
+      "board_url": "https://circleci.com/careers/jobs/",
       "ats": "Greenhouse",
       "total_jobs": null,
       "source": "redirect_chain",
@@ -5870,7 +5465,7 @@
       "rank": 1044,
       "sheet": "Tech/SaaS",
       "company": "ClickUp",
-      "board_url": "https://jobs.ashbyhq.com/clickup/embed?version=2",
+      "board_url": "https://jobs.ashbyhq.com/clickup",
       "ats": "Ashby",
       "total_jobs": null,
       "source": "playwright",
@@ -5926,17 +5521,6 @@
       "from": "tech",
       "sample_url": "https://jobs.lever.co/Coda/977b230b-38cf-42df-8789-075843cf5865",
       "last_checked": "2026-04-25T15:28:13.837Z"
-    },
-    {
-      "rank": 1049,
-      "sheet": "Tech/SaaS",
-      "company": "CodeSandbox",
-      "board_url": "https://boards.greenhouse.io/ramp",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
-      "from": "tech"
     },
     {
       "rank": 1051,
@@ -6014,7 +5598,7 @@
       "rank": 1063,
       "sheet": "Tech/SaaS",
       "company": "DigitalOcean",
-      "board_url": "https://api.greenhouse.io/v1/boards/digitalocean98/embed/departments",
+      "board_url": "https://job-boards.greenhouse.io/embed/job_board?for=digitalocean98",
       "ats": "Greenhouse",
       "total_jobs": 593,
       "source": "playwright",
@@ -6025,22 +5609,11 @@
       "rank": 1065,
       "sheet": "Tech/SaaS",
       "company": "Disney Streaming",
-      "board_url": "https://disney.wd5.myworkdayjobs.com/en-US",
+      "board_url": "https://disney.wd5.myworkdayjobs.com/disneycareer",
       "ats": "Workday",
       "total_jobs": null,
       "source": "serper",
       "tier": "TIER2_MEDIUM",
-      "from": "tech"
-    },
-    {
-      "rank": 1067,
-      "sheet": "Tech/SaaS",
-      "company": "Drift",
-      "board_url": "https://kla.wd1.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
       "from": "tech"
     },
     {
@@ -6084,7 +5657,7 @@
       "rank": 1072,
       "sheet": "Tech/SaaS",
       "company": "Expedia",
-      "board_url": "https://expedia.wd108.myworkdayjobs.com/en-US",
+      "board_url": "https://expedia.wd108.myworkdayjobs.com/search",
       "ats": "Workday",
       "total_jobs": null,
       "source": "redirect_chain",
@@ -6234,17 +5807,6 @@
       "from": "tech"
     },
     {
-      "rank": 1093,
-      "sheet": "Tech/SaaS",
-      "company": "Imgix",
-      "board_url": "https://boards.greenhouse.io/o1labs",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
       "rank": 1094,
       "sheet": "Tech/SaaS",
       "company": "Inflection AI",
@@ -6260,8 +5822,8 @@
     {
       "rank": 1095,
       "sheet": "Tech/SaaS",
-      "company": "Insomnia",
-      "board_url": "https://solera.wd5.myworkdayjobs.com/en-US",
+      "company": "Solera",
+      "board_url": "https://solera.wd5.myworkdayjobs.com/Global_Career_Site",
       "ats": "Workday",
       "total_jobs": null,
       "source": "serper",
@@ -6317,8 +5879,8 @@
     {
       "rank": 1103,
       "sheet": "Tech/SaaS",
-      "company": "Jira",
-      "board_url": "https://swift.wd3.myworkdayjobs.com/en-US",
+      "company": "swift",
+      "board_url": "https://swift.wd3.myworkdayjobs.com/Join-Swift",
       "ats": "Workday",
       "total_jobs": null,
       "source": "serper",
@@ -6384,28 +5946,6 @@
       "total_jobs": null,
       "source": "redirect_chain",
       "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
-      "rank": 1111,
-      "sheet": "Tech/SaaS",
-      "company": "Lattice Semiconductor",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "redirect_chain",
-      "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
-      "rank": 1112,
-      "sheet": "Tech/SaaS",
-      "company": "Lever",
-      "board_url": "https://www.lever.com/careers",
-      "ats": "Lever",
-      "total_jobs": 0,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
       "from": "tech"
     },
     {
@@ -6555,17 +6095,6 @@
       "last_checked": "2026-04-25T15:28:14.355Z"
     },
     {
-      "rank": 1130,
-      "sheet": "Tech/SaaS",
-      "company": "MessageBird",
-      "board_url": "https://boards.greenhouse.io/voxy",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
       "rank": 1133,
       "sheet": "Tech/SaaS",
       "company": "Miro",
@@ -6585,17 +6114,6 @@
       "total_jobs": null,
       "source": "serper",
       "tier": "NEEDS_REVIEW",
-      "from": "tech"
-    },
-    {
-      "rank": 1137,
-      "sheet": "Tech/SaaS",
-      "company": "Monday.com",
-      "board_url": "https://jobs.ashbyhq.com/monday",
-      "ats": "Ashby",
-      "total_jobs": null,
-      "source": "needs_review_pass",
-      "tier": "TIER1_VERIFIED",
       "from": "tech"
     },
     {
@@ -6621,17 +6139,6 @@
       "from": "tech"
     },
     {
-      "rank": 1140,
-      "sheet": "Tech/SaaS",
-      "company": "Neon Database",
-      "board_url": "https://job-boards.greenhouse.io/neondatabase",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "TIER2_MEDIUM",
-      "from": "tech"
-    },
-    {
       "rank": 1142,
       "sheet": "Tech/SaaS",
       "company": "Netlify",
@@ -6651,17 +6158,6 @@
       "board_url": "https://job-boards.greenhouse.io/newrelic/jobs/5166509008",
       "ats": "Greenhouse",
       "total_jobs": 56,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "tech"
-    },
-    {
-      "rank": 1145,
-      "sheet": "Tech/SaaS",
-      "company": "Nuvei",
-      "board_url": "https://www.workable.com/assets/embed.js",
-      "ats": "Workable",
-      "total_jobs": 15,
       "source": "playwright",
       "tier": "TIER1_VERIFIED",
       "from": "tech"
@@ -6777,8 +6273,8 @@
       "rank": 1160,
       "sheet": "Tech/SaaS",
       "company": "Postmark",
-      "board_url": "https://transunion.wd5.myworkdayjobs.com/en-US",
-      "ats": "Workday",
+      "board_url": "https://jobs.ashbyhq.com/poshmark",
+      "ats": "Ashby",
       "total_jobs": null,
       "source": "serper",
       "tier": "NEEDS_REVIEW",
@@ -6817,17 +6313,6 @@
       "total_jobs": 0,
       "source": "serper",
       "tier": "TIER2_MEDIUM",
-      "from": "tech"
-    },
-    {
-      "rank": 1165,
-      "sheet": "Tech/SaaS",
-      "company": "Railway",
-      "board_url": "https://gtsgbu.wd3.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "serper",
-      "tier": "NEEDS_REVIEW",
       "from": "tech"
     },
     {
@@ -6871,8 +6356,8 @@
       "rank": 1173,
       "sheet": "Tech/SaaS",
       "company": "Ripple",
-      "board_url": "https://broadridge.wd5.myworkdayjobs.com/en-US",
-      "ats": "Workday",
+      "board_url": "https://boards.greenhouse.io/embed/job_board/js?for=ripple",
+      "ats": "Greenhouse",
       "total_jobs": null,
       "source": "serper",
       "tier": "NEEDS_REVIEW",
@@ -6914,22 +6399,11 @@
       "from": "tech"
     },
     {
-      "rank": 1180,
-      "sheet": "Tech/SaaS",
-      "company": "SendGrid",
-      "board_url": "https://eightfold.ai/",
-      "ats": "Eightfold",
-      "total_jobs": null,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "tech"
-    },
-    {
       "rank": 1182,
       "sheet": "Tech/SaaS",
       "company": "Sentry",
-      "board_url": "https://sentryinsurance.wd1.myworkdayjobs.com/en-US",
-      "ats": "Workday",
+      "board_url": "https://jobs.ashbyhq.com/sentry",
+      "ats": "Ashby",
       "total_jobs": null,
       "source": "redirect_chain",
       "tier": "TIER2_MEDIUM",
@@ -6999,17 +6473,6 @@
       "last_checked": "2026-04-25T15:28:14.890Z"
     },
     {
-      "rank": 1189,
-      "sheet": "Tech/SaaS",
-      "company": "Splunk",
-      "board_url": "https://cdn.phenompeople.com/CareerConnectResources/CISCISGLOBAL/canvas/default/common/fontfaces/fontface-1727696536968.css",
-      "ats": "Phenom",
-      "total_jobs": null,
-      "source": "playwright",
-      "tier": "TIER1_VERIFIED",
-      "from": "tech"
-    },
-    {
       "rank": 1191,
       "sheet": "Tech/SaaS",
       "company": "Square Block",
@@ -7049,7 +6512,7 @@
     {
       "rank": 1197,
       "sheet": "Tech/SaaS",
-      "company": "TSMC",
+      "company": "CiscoTango",
       "board_url": "https://cisco.wd5.myworkdayjobs.com/en-US",
       "ats": "Workday",
       "total_jobs": null,
@@ -7136,8 +6599,8 @@
     {
       "rank": 1207,
       "sheet": "Tech/SaaS",
-      "company": "Udemy",
-      "board_url": "https://alcon.wd5.myworkdayjobs.com/en-US",
+      "company": "Alcon",
+      "board_url": "https://alcon.wd5.myworkdayjobs.com/careers_alcon",
       "ats": "Workday",
       "total_jobs": null,
       "source": "serper",
@@ -7148,7 +6611,7 @@
       "rank": 1208,
       "sheet": "Tech/SaaS",
       "company": "Unity Software",
-      "board_url": "https://lnw.wd5.myworkdayjobs.com/en-US",
+      "board_url": "https://job-boards.greenhouse.io/embed/job_board?for=unity3d",
       "ats": "Workday",
       "total_jobs": null,
       "source": "serper",
@@ -13584,18 +13047,6 @@
       "website": "http://www.abmsoftware.com/"
     },
     {
-      "rank": 2517,
-      "sheet": "Wikidata-Tech",
-      "company": "AccelByte Inc",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://www.accelbyte.io"
-    },
-    {
       "rank": 2518,
       "sheet": "Wikidata-Tech",
       "company": "Acision",
@@ -13627,7 +13078,7 @@
       "rank": 2520,
       "sheet": "Wikidata-Tech",
       "company": "AGL Energy",
-      "board_url": "https://agl.wd3.myworkdayjobs.com/en-US",
+      "board_url": "https://agl.wd3.myworkdayjobs.com/AGL_Recruitment",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
@@ -13779,7 +13230,7 @@
       "rank": 2531,
       "sheet": "Wikidata-Tech",
       "company": "Brave Software",
-      "board_url": "https://boards.greenhouse.io/embed",
+      "board_url": "https://job-boards.greenhouse.io/brave",
       "ats": "Greenhouse",
       "total_jobs": null,
       "source": "wikidata",
@@ -13833,7 +13284,7 @@
       "rank": 2535,
       "sheet": "Wikidata-Tech",
       "company": "CAE Inc.",
-      "board_url": "https://cae.wd3.myworkdayjobs.com/en-US",
+      "board_url": "https://cae.wd3.myworkdayjobs.com/en-US/career",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
@@ -14037,7 +13488,7 @@
       "rank": 2550,
       "sheet": "Wikidata-Tech",
       "company": "Descript",
-      "board_url": "https://boards.greenhouse.io/embed",
+      "board_url": "https://boards-api.greenhouse.io/v1/boards/descript/jobs",
       "ats": "Greenhouse",
       "total_jobs": null,
       "source": "wikidata",
@@ -14061,7 +13512,7 @@
       "rank": 2552,
       "sheet": "Wikidata-Tech",
       "company": "Diageo",
-      "board_url": "https://diageo.wd3.myworkdayjobs.com/en-US",
+      "board_url": "https://diageo.wd3.myworkdayjobs.com/en-US/Diageo_Careers",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
@@ -14073,25 +13524,13 @@
       "rank": 2553,
       "sheet": "Wikidata-Tech",
       "company": "DigitalBridge",
-      "board_url": "https://job-boards.greenhouse.io/embed",
+      "board_url": "https://job-boards.greenhouse.io/digitalbridge",
       "ats": "Greenhouse",
       "total_jobs": null,
       "source": "wikidata",
       "tier": "TIER1_VERIFIED",
       "from": "wikidata",
       "website": "https://www.digitalbridge.com/"
-    },
-    {
-      "rank": 2554,
-      "sheet": "Wikidata-Tech",
-      "company": "DirecTV",
-      "board_url": "https://directv.wd1.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://directv.com"
     },
     {
       "rank": 2555,
@@ -14123,8 +13562,8 @@
       "rank": 2557,
       "sheet": "Wikidata-Tech",
       "company": "eBay",
-      "board_url": "https://cdn.phenompeople.com/CareerConnectResources/EBAEBAUS/images/eBayCareers-Overview-JobsByLocation-1600x900-30px-082025-1755722287000.png",
-      "ats": "Phenom",
+      "board_url": "https://ebay.wd5.myworkdayjobs.com/apply/",
+      "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
       "tier": "TIER1_VERIFIED",
@@ -14135,7 +13574,7 @@
       "rank": 2558,
       "sheet": "Wikidata-Tech",
       "company": "Equisoft",
-      "board_url": "https://equisoft.wd10.myworkdayjobs.com/en-US",
+      "board_url": "https://equisoft.wd10.myworkdayjobs.com/External",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
@@ -14320,18 +13759,6 @@
       "website": "https://gravyty.com/"
     },
     {
-      "rank": 2572,
-      "sheet": "Wikidata-Tech",
-      "company": "GreyNoise Intelligence",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://www.greynoise.io/"
-    },
-    {
       "rank": 2573,
       "sheet": "Wikidata-Tech",
       "company": "harness",
@@ -14398,18 +13825,6 @@
       "last_checked": "2026-04-25T15:28:40.684Z"
     },
     {
-      "rank": 2578,
-      "sheet": "Wikidata-Tech",
-      "company": "Kajabi",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://kajabi.com/"
-    },
-    {
       "rank": 2579,
       "sheet": "Wikidata-Tech",
       "company": "KSB",
@@ -14464,42 +13879,6 @@
       "website": "https://levitate.ai",
       "sample_url": "https://job-boards.greenhouse.io/levitate/jobs/5150684008",
       "last_checked": "2026-04-25T15:28:39.222Z"
-    },
-    {
-      "rank": 2583,
-      "sheet": "Wikidata-Tech",
-      "company": "Linden Lab",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://www.lindenlab.com/"
-    },
-    {
-      "rank": 2584,
-      "sheet": "Wikidata-Tech",
-      "company": "Live Nation Entertainment",
-      "board_url": "https://livenation.wd503.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://www.livenationentertainment.com/"
-    },
-    {
-      "rank": 2585,
-      "sheet": "Wikidata-Tech",
-      "company": "Lokalise",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "https://lokalise.com"
     },
     {
       "rank": 2586,
@@ -14651,7 +14030,7 @@
       "rank": 2597,
       "sheet": "Wikidata-Tech",
       "company": "Pitney Bowes",
-      "board_url": "https://pitneybowes.wd1.myworkdayjobs.com/en-US",
+      "board_url": "https://pitneybowes.wd1.myworkdayjobs.com/PBCareers",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
@@ -14672,18 +14051,6 @@
       "website": "https://www.pixar.com/",
       "sample_url": "https://pixar.wd501.myworkdayjobs.com/job/Emeryville/Caf-Host--On-Call-_R-03794",
       "last_checked": "2026-04-25T15:28:40.551Z"
-    },
-    {
-      "rank": 2599,
-      "sheet": "Wikidata-Tech",
-      "company": "Room to Read",
-      "board_url": "https://osv-rtr.wd5.myworkdayjobs.com/en-US",
-      "ats": "Workday",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "http://www.roomtoread.org"
     },
     {
       "rank": 2600,
@@ -14825,7 +14192,7 @@
       "rank": 2610,
       "sheet": "Wikidata-Tech",
       "company": "The Browser Company",
-      "board_url": "https://jobs.ashbyhq.com/The",
+      "board_url": "https://jobs.ashbyhq.com/the%20browser%20company",
       "ats": "Ashby",
       "total_jobs": null,
       "source": "wikidata",
@@ -14874,18 +14241,6 @@
       "tier_warning": "zero_jobs_today"
     },
     {
-      "rank": 2614,
-      "sheet": "Wikidata-Tech",
-      "company": "Unbounce",
-      "board_url": "https://boards.greenhouse.io/embed",
-      "ats": "Greenhouse",
-      "total_jobs": null,
-      "source": "wikidata",
-      "tier": "TIER1_VERIFIED",
-      "from": "wikidata",
-      "website": "http://unbounce.com/"
-    },
-    {
       "rank": 2615,
       "sheet": "Wikidata-Tech",
       "company": "UNIQLO",
@@ -14903,7 +14258,7 @@
       "rank": 2616,
       "sheet": "Wikidata-Tech",
       "company": "Unum",
-      "board_url": "https://unum.wd1.myworkdayjobs.com/en-US",
+      "board_url": "https://unum.wd1.myworkdayjobs.com/External",
       "ats": "Workday",
       "total_jobs": null,
       "source": "wikidata",
