@@ -39,24 +39,6 @@ function AdminRoute() {
     { to: "/admin-analytics", title: "Analytics", value: "30d", meta: "Growth, usage, and health", icon: BarChart3 },
   ];
 
-  const adminPills = [
-    {
-      label: "Registry companies",
-      value: (data?.registry.totalCompanies ?? 0).toLocaleString(),
-      meta: `${(data?.registry.currentCompanies ?? 0).toLocaleString()} currently scanned`,
-    },
-    {
-      label: "Current raw jobs",
-      value: (data?.registry.currentJobs ?? 0).toLocaleString(),
-      meta: "Shared Dynamo inventory",
-    },
-    {
-      label: "Last raw scan",
-      value: data?.registry.lastScannedAt ? new Date(data.registry.lastScannedAt).toLocaleString() : "Not scanned yet",
-      meta: "Most recent company refresh",
-    },
-  ];
-
   return (
     <>
       <Topbar title="Admin Workspace" subtitle="Operations, support, and audit controls." />
@@ -76,18 +58,6 @@ function AdminRoute() {
           </Link>
         )}
       >
-        <div className="mb-4 flex flex-wrap gap-3">
-          {adminPills.map((pill) => (
-            <div
-              key={pill.label}
-              className="rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--card))] px-4 py-2 text-sm shadow-sm"
-            >
-              <div className="text-[11px] uppercase tracking-[0.18em] text-[hsl(var(--muted-foreground))]">{pill.label}</div>
-              <div className="font-semibold">{pill.value}</div>
-              <div className="text-[12px] text-[hsl(var(--muted-foreground))]">{pill.meta}</div>
-            </div>
-          ))}
-        </div>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {cards.map((card) => {
             const Icon = card.icon;

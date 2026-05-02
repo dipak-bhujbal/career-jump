@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { RefreshCw, Sparkles, Plus, Briefcase, Globe, Clock, X } from "lucide-react";
+import { RefreshCw, Sparkles, Plus, Briefcase, Globe, Clock, X, ChevronLeft, ChevronRight } from "lucide-react";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { Select } from "@/components/ui/select";
 import { Topbar } from "@/components/layout/topbar";
@@ -45,6 +45,7 @@ export const Route = createFileRoute("/jobs")({
 });
 
 function JobsRoute() {
+  const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
   const search = Route.useSearch();
   const [filter, setFilter] = useState<JobsFilter>({
     companies: [],
@@ -56,6 +57,8 @@ function JobsRoute() {
     newOnly: search.new === "1",
     updatedOnly: search.updated === "1",
   });
+  const [pageSize, setPageSize] = useState<number>(10);
+  const [page, setPage] = useState(0);
 
   const [dateRange, setDateRange] = useState<DateRangeValue>({ from: null, to: null });
   const [selected, setSelected] = useState<Job | null>(null);
@@ -110,7 +113,15 @@ function JobsRoute() {
 
   useEffect(() => { localStorage.setItem("cj_split_width", String(listPaneWidth)); }, [listPaneWidth]);
 
-  const { data, isLoading, isFetching } = useJobs(filter);
+  const jobsQueryFilter = useMemo(
+    () => ({
+      ...filter,
+      limit: pageSize,
+      offset: page * pageSize,
+    }),
+    [filter, page, pageSize],
+  );
+  const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
   const discard = useDiscardJob();
   const savedFiltersQuery = useSavedFilters("available_jobs");
@@ -121,11 +132,13 @@ function JobsRoute() {
 
   const total = data?.total ?? 0;
   const totals = data?.totals;
+  const pagination = data?.pagination;
   const companyOptions = data?.companyOptions ?? [];
   // Client-side date filter on the loaded page. Server-side
   // postedFrom/postedTo support is a backend follow-up.
   const allJobs = data?.jobs ?? [];
   const filteredJobs = useMemoFilter(allJobs, dateRange);
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
 
   // Client-side column sort — default: newest posted first.
   const jobs = useMemo(() => {
@@ -146,6 +159,8 @@ function JobsRoute() {
     });
     return arr;
   }, [filteredJobs, sortBy, sortDir]);
+  const pageStart = total === 0 ? 0 : page * pageSize + 1;
+  const pageEnd = total === 0 ? 0 : Math.min(total, page * pageSize + jobs.length);
 
   function handleSort(col: SortCol) {
     setSortBy((prev) => {
@@ -161,6 +176,37 @@ function JobsRoute() {
 
   // Reset focus when filters change.
   useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
+  useEffect(() => {
+    // Filter changes can dramatically shrink the result set. Jump back to the
+    // first page so the user does not land on an empty offset from the old
+    // broader query.
+    setPage(0);
+  }, [
+    filter.companies,
+    filter.duration,
+    filter.keyword,
+    filter.location,
+    filter.newOnly,
+    filter.source,
+    filter.updatedOnly,
+    filter.usOnly,
+    dateRange.from,
+    dateRange.to,
+  ]);
+  useEffect(() => {
+    // Changing page size invalidates the prior offset math, so restart from
+    // page one to keep the visible slice predictable.
+    setPage(0);
+  }, [pageSize]);
+  useEffect(() => {
+    if (page >= totalPages) setPage(Math.max(0, totalPages - 1));
+  }, [page, totalPages]);
+  useEffect(() => {
+    // Multi-select and drawer state should follow the visible page rather than
+    // pointing at jobs that are no longer mounted.
+    setChecked(new Set());
+    setSelected(null);
+  }, [page, pageSize]);
 
   function openUpgrade() {
     setUpgradeOpen(true);
@@ -470,7 +516,7 @@ function JobsRoute() {
               {filter.newOnly ? "New jobs" : filter.updatedOnly ? "Updated jobs" : "All jobs"}
             </CardTitle>
             <CardDescription className="text-sm">
-              Showing {jobs.length.toLocaleString()} of {total.toLocaleString()}
+              Showing {pageStart.toLocaleString()}-{pageEnd.toLocaleString()} of {total.toLocaleString()}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -486,6 +532,46 @@ function JobsRoute() {
               sortDir={sortDir}
               onSort={handleSort}
             />
+            <div className="flex flex-col gap-3 border-t border-[hsl(var(--border))] px-4 py-3 md:flex-row md:items-center md:justify-between">
+              <div className="text-sm text-[hsl(var(--muted-foreground))]">
+                Page {Math.min(page + 1, totalPages).toLocaleString()} of {totalPages.toLocaleString()}
+                {pagination?.hasMore ? " · more results available" : ""}
+              </div>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+                <label className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
+                  <span>Jobs per page</span>
+                  <Select
+                    value={String(pageSize)}
+                    onChange={(e) => setPageSize(Number(e.target.value) || 10)}
+                    className="w-[92px]"
+                  >
+                    {PAGE_SIZE_OPTIONS.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </Select>
+                </label>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((current) => Math.max(0, current - 1))}
+                    disabled={page === 0}
+                  >
+                    <ChevronLeft size={14} />
+                    Previous
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((current) => (current + 1 < totalPages ? current + 1 : current))}
+                    disabled={page + 1 >= totalPages}
+                  >
+                    Next
+                    <ChevronRight size={14} />
+                  </Button>
+                </div>
+              </div>
+            </div>
           </CardContent>
         </Card>
         </div>{/* end left pane */}

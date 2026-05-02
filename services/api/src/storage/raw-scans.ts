@@ -5,12 +5,15 @@ import type { DetectedConfig, JobPosting } from "../types";
 const RAW_SCAN_SCHEMA_VERSION = 1;
 const RAW_SCAN_CURRENT_SK = "CURRENT";
 const RAW_SCAN_JOB_SK_PREFIX = "JOB#";
+const RAW_SCAN_CURRENT_INDEX_PK = "RAW_SCAN_CURRENT";
 
 type RawScanCurrentRow = {
   pk: string;
   sk: string;
   gsi1pk: string;
   gsi1sk: string;
+  gsi2pk?: string;
+  gsi2sk?: string;
   entityType: "RAW_SCAN_CURRENT" | "RAW_SCAN";
   cacheKey: string;
   company: string;
@@ -28,6 +31,8 @@ type RawScanJobRow = {
   sk: string;
   gsi1pk: string;
   gsi1sk: string;
+  gsi2pk?: string;
+  gsi2sk?: string;
   entityType: "RAW_SCAN_JOB";
   cacheKey: string;
   company: string;
@@ -103,6 +108,19 @@ async function loadCurrentRowsForDetected(detected: DetectedConfig): Promise<Raw
     "pk = :pk",
     { ":pk": rawScanPk(detected) },
     { consistentRead: true },
+  );
+}
+
+async function queryCurrentRawScanRows(): Promise<RawScanCurrentRow[]> {
+  return queryRows<RawScanCurrentRow>(
+    rawScansTableName(),
+    "gsi2pk = :pk",
+    { ":pk": RAW_SCAN_CURRENT_INDEX_PK },
+    {
+      indexName: "current-scan-index",
+      scanIndexForward: false,
+      consistentRead: false,
+    },
   );
 }
 
@@ -211,6 +229,10 @@ export async function saveRawScan(
     sk: RAW_SCAN_CURRENT_SK,
     gsi1pk: `COMPANY#${companySlug}`,
     gsi1sk: RAW_SCAN_CURRENT_SK,
+    // Dedicated current-row index keeps admin inventory reads bounded to one
+    // row per company instead of scanning every historical job row.
+    gsi2pk: RAW_SCAN_CURRENT_INDEX_PK,
+    gsi2sk: `${companySlug}#${scannedAt}`,
     entityType: "RAW_SCAN_CURRENT",
     cacheKey,
     company,
@@ -231,13 +253,7 @@ export async function saveRawScan(
  * the table remains bounded to one live row per company/source.
  */
 export async function listCurrentRawScans(): Promise<Array<{ company: string; detected: DetectedConfig; jobs: JobPosting[]; scannedAt: string }>> {
-  const currentRows = await scanAllRows<RawScanRow>(
-    rawScansTableName(),
-    {
-      filterExpression: "entityType = :entityType",
-      expressionAttributeValues: { ":entityType": "RAW_SCAN_CURRENT" },
-    },
-  );
+  const currentRows = await queryCurrentRawScanRows();
   if (currentRows.length > 0) {
     return currentRows
       .filter((row): row is RawScanCurrentRow =>

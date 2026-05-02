@@ -850,10 +850,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
 
-      const [registryEntries, rawScanSummary, currentRows] = await Promise.all([
+      const [registryEntries, rawScanSummary, currentRows, scanStateRows] = await Promise.all([
         loadRegistryCache().then(() => listAll()),
         summarizeCurrentRawScans(),
         listCurrentRawScanSummaries(),
+        exportScanStateRecords(),
       ]);
 
       // Join the registry catalog against the current raw-scan inventory so
@@ -861,15 +862,21 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const currentByCompanyKey = new Map(
         currentRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
       );
+      const scanStateByCompanyKey = new Map(
+        scanStateRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
+      );
 
       const rows = registryEntries.map((entry) => {
         const current = currentByCompanyKey.get(normalizeCompanyKey(entry.company));
+        const scanState = scanStateByCompanyKey.get(normalizeCompanyKey(entry.company));
         return {
           registryId: normalizeCompanyKey(entry.company),
           company: entry.company,
           ats: entry.ats ?? null,
+          scanPool: scanState?.scanPool ?? "cold",
           totalJobs: current?.totalJobs ?? 0,
           lastScannedAt: current?.lastScannedAt ?? null,
+          nextScanAt: scanState?.nextScanAt ?? null,
         };
       });
 

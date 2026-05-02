@@ -527,8 +527,10 @@ export type AdminRegistryStatusRow = {
   registryId: string;
   company: string;
   ats: string | null;
+  scanPool: "hot" | "warm" | "cold";
   totalJobs: number;
   lastScannedAt: string | null;
+  nextScanAt: string | null;
 };
 
 export type AdminRegistryStatusEnvelope = {
