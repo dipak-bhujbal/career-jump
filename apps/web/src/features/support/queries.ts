@@ -6,6 +6,7 @@ import {
   type AdminAnalyticsEnvelope,
   type AdminActionsNeededEnvelope,
   type AdminRegistryCompanyConfig,
+  type AdminRegistryCompanyConfigDeleteEnvelope,
   type AdminRegistryCompanyConfigEnvelope,
   type AdminRegistryCompanyConfigsEnvelope,
   type AdminRegistryStatusEnvelope,
@@ -136,6 +137,21 @@ export function useSaveAdminRegistryCompanyConfig(registryId: string | null) {
       if (result.nextRegistryId && result.nextRegistryId !== registryId) {
         await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-config", result.nextRegistryId] });
       }
+    },
+  });
+}
+
+export function useDeleteAdminRegistryCompanyConfig(registryId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.del<AdminRegistryCompanyConfigDeleteEnvelope>(
+        `/api/admin/registry/company-configs/${encodeURIComponent(registryId ?? "")}`,
+      ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-configs"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-config", registryId] });
     },
   });
 }

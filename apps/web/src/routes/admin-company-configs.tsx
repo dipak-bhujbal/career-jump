@@ -1,6 +1,6 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { Database, RefreshCw, Save } from "lucide-react";
+import { Database, RefreshCw, Save, Trash2 } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import { useMe } from "@/features/session/queries";
 import {
   useAdminRegistryCompanyConfig,
   useAdminRegistryCompanyConfigs,
+  useDeleteAdminRegistryCompanyConfig,
   useSaveAdminRegistryCompanyConfig,
 } from "@/features/support/queries";
 import type { AdminRegistryCompanyConfig, AdminRegistryCompanyConfigSummary } from "@/lib/api";
@@ -36,6 +37,7 @@ function AdminCompanyConfigsRoute() {
   const [parseError, setParseError] = useState<string | null>(null);
   const detailQuery = useAdminRegistryCompanyConfig(selectedRegistryId, isAdmin);
   const saveMutation = useSaveAdminRegistryCompanyConfig(selectedRegistryId);
+  const deleteMutation = useDeleteAdminRegistryCompanyConfig(selectedRegistryId);
 
   const filteredRows = useMemo(() => {
     const normalizedCompanyFilter = companyFilter.trim().toLowerCase();
@@ -99,6 +101,22 @@ function AdminCompanyConfigsRoute() {
       setSaveMessage(`Saved ${result.config.company}`);
     } catch (error) {
       setSaveMessage(error instanceof Error ? error.message : "Failed to save company config");
+    }
+  }
+
+  async function handleDelete() {
+    if (!selectedRegistryId || !selectedSummary) return;
+    const confirmed = window.confirm(`Delete ${selectedSummary.company} from the live registry?`);
+    if (!confirmed) return;
+
+    try {
+      const result = await deleteMutation.mutateAsync();
+      setSaveMessage(`Deleted ${result.deletedCompany}`);
+      setSelectedRegistryId(null);
+      setEditorValue("");
+      setParseError(null);
+    } catch (error) {
+      setSaveMessage(error instanceof Error ? error.message : "Failed to delete company config");
     }
   }
 
@@ -262,6 +280,16 @@ function AdminCompanyConfigsRoute() {
                   >
                     <RefreshCw size={14} className={cn(detailQuery.isFetching && "animate-spin")} />
                     Reload selected
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={!selectedRegistryId || deleteMutation.isPending}
+                    onClick={() => void handleDelete()}
+                  >
+                    <Trash2 size={14} />
+                    {deleteMutation.isPending ? "Deleting..." : "Delete company"}
                   </Button>
                   <Button type="button" size="sm" disabled={!selectedRegistryId || saveMutation.isPending} onClick={() => void handleSave()}>
                     <Save size={14} />

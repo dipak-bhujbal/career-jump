@@ -602,6 +602,12 @@ export type AdminRegistryCompanyConfigEnvelope = {
   config: AdminRegistryCompanyConfig;
 };
 
+export type AdminRegistryCompanyConfigDeleteEnvelope = {
+  ok: boolean;
+  registryId: string;
+  deletedCompany: string;
+};
+
 export type AdminUsersEnvelope = {
   ok: boolean;
   total: number;

@@ -76,9 +76,20 @@ export async function promoteCustomCompaniesToRegistry(companies: CompanyInput[]
     }
 
     const totalJobs = await countJobs(entry);
+    // Only promote a custom company into the shared registry after the board
+    // proves it has a real, non-empty inventory. Zero-job scans should remain
+    // tenant-local so we do not pollute the canonical registry with dead rows.
+    if (!Number.isFinite(totalJobs) || totalJobs <= 0) {
+      promotions.push({
+        promoted: false,
+        reason: `No non-zero job inventory found for ${company.company}`,
+      });
+      continue;
+    }
+
     const verifiedEntry: RegistryEntry = {
       ...entry,
-      total_jobs: Number.isFinite(totalJobs) ? totalJobs : 0,
+      total_jobs: totalJobs,
       last_checked: nowISO(),
     };
 
@@ -210,4 +221,20 @@ export async function saveRegistryCompanyConfig(
     config: next,
     previousCompany: previous.company,
   };
+}
+
+/**
+ * Admin deletes must operate on the exact registry row they selected so a
+ * typed company-name variant cannot accidentally target the wrong record.
+ */
+export async function deleteRegistryCompanyConfig(
+  registryId: string,
+): Promise<{ deletedCompany: string }> {
+  const existing = await loadRegistryCompanyConfigByRegistryId(registryId);
+  if (!existing) throw new Error("Registry company not found");
+
+  await deleteRow(registryTableName(), { pk: "REGISTRY", sk: registryId });
+  await loadRegistryCache({ force: true });
+
+  return { deletedCompany: existing.company };
 }

@@ -112,6 +112,7 @@ import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
 import { recordPasswordResetConfirmAttempt } from "./storage/password-reset";
 import {
   companyRegistryKey,
+  deleteRegistryCompanyConfig,
   listRegistryCompanyConfigs,
   loadRegistryCompanyConfigByRegistryId,
   saveRegistryCompanyConfig,
@@ -1039,6 +1040,20 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         nextRegistryId: companyRegistryKey(saved.config.company),
         previousCompany: saved.previousCompany ?? null,
         config: saved.config,
+      });
+    }
+
+    if (adminRegistryConfigMatch && request.method === "DELETE") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const registryId = decodeURIComponent(adminRegistryConfigMatch[1] ?? "");
+      const deleted = await deleteRegistryCompanyConfig(registryId);
+      return jsonResponse({
+        ok: true,
+        registryId,
+        deletedCompany: deleted.deletedCompany,
       });
     }
 
