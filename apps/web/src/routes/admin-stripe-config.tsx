@@ -202,7 +202,7 @@ export function AdminStripeConfigRoute() {
                     Current status: {data?.configured ? "configured" : "not configured"} · Webhook: {resolved?.webhookConfigured ? "configured" : "missing"} · Placeholder prices are frontend-only until public pricing is exposed.
                   </div>
                   <div className="flex justify-end">
-                    <Button onClick={save} disabled={saveStripeConfig.isPending}>
+                    <Button variant="success" onClick={save} disabled={saveStripeConfig.isPending}>
                       <Save size={14} /> {saveStripeConfig.isPending ? "Saving…" : "Save Stripe config"}
                     </Button>
                   </div>
@@ -240,7 +240,7 @@ export function AdminStripeConfigRoute() {
                     Current status: {webhookData?.webhookUrl ? "configured" : "missing"} · Shared secret: {webhookData?.sharedSecretConfigured ? "configured" : "missing"}
                   </div>
                   <div className="flex justify-end">
-                    <Button variant="outline" onClick={saveWebhookConfig} disabled={saveEmailWebhook.isPending}>
+                    <Button variant="success" onClick={saveWebhookConfig} disabled={saveEmailWebhook.isPending}>
                       <Save size={14} /> {saveEmailWebhook.isPending ? "Saving…" : "Save email webhook"}
                     </Button>
                   </div>

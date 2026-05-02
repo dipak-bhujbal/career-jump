@@ -693,12 +693,17 @@ async function hydrateRegistryBackedCompanies(companies: CompanyInput[]): Promis
     const entry = getByCompany(company.company);
     if (!entry?.board_url) return company;
 
-    // Registry ATS labels are helpful but not perfect. If they are absent or
-    // too loose, derive the provider from the canonical board/sample URL.
+    // Registry-backed rows must prefer the live registry ATS over the saved
+    // tenant row. Otherwise an older saved source (for example Ashby) can keep
+    // overriding a freshly corrected registry entry (for example Greenhouse).
+    //
+    // If the registry ATS label is absent or too loose, derive the provider
+    // from the canonical board/sample URL before falling back to the saved
+    // tenant row.
     const normalizedSource =
-      company.source ??
       normalizeSource(entry.ats) ??
       inferSourceFromUrl(entry.board_url || entry.sample_url || undefined) ??
+      company.source ??
       "custom-jsonld";
     if (!normalizedSource) return company;
 

@@ -195,8 +195,11 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
  * operators can inspect and change the canonical company config without
  * guessing which attributes are persisted in Dynamo today.
  */
-export async function listRegistryCompanyConfigs(): Promise<Array<RegistryCompanyConfig & { registryId: string }>> {
-  await loadRegistryCache();
+export async function listRegistryCompanyConfigs(force = false): Promise<Array<RegistryCompanyConfig & { registryId: string }>> {
+  // Admin edits need to reflect immediately even when the next read lands on a
+  // different warm Lambda instance. Allow callers to force a fresh registry
+  // reload instead of trusting a potentially stale in-memory cache.
+  await loadRegistryCache({ force });
   return listAll().map((entry) => ({
     registryId: companyRegistryKey(entry.company),
     rank: entry.rank,
@@ -213,9 +216,9 @@ export async function listRegistryCompanyConfigs(): Promise<Array<RegistryCompan
   }));
 }
 
-export async function loadRegistryCompanyConfigByRegistryId(registryId: string): Promise<RegistryCompanyConfig | null> {
+export async function loadRegistryCompanyConfigByRegistryId(registryId: string, force = false): Promise<RegistryCompanyConfig | null> {
   if (!process.env.AWS_REGISTRY_TABLE && !process.env.REGISTRY_TABLE) {
-    await loadRegistryCache();
+    await loadRegistryCache({ force });
     const fallback = listAll().find((entry) => companyRegistryKey(entry.company) === registryId);
     return fallback ? normalizeRegistryCompanyConfig(fallback as unknown as Record<string, unknown>) : null;
   }

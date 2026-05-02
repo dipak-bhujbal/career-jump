@@ -1007,7 +1007,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
 
-      const rows = await listRegistryCompanyConfigs();
+      // Force-refresh after admin edits so the list view cannot lag behind a
+      // just-saved registry row on a different warm Lambda instance.
+      const rows = await listRegistryCompanyConfigs(true);
       return jsonResponse({ ok: true, total: rows.length, rows });
     }
 
@@ -1018,7 +1020,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (gate) return gate;
 
       const registryId = decodeURIComponent(adminRegistryConfigMatch[1] ?? "");
-      const config = await loadRegistryCompanyConfigByRegistryId(registryId);
+      // Force-refresh for the detail pane for the same reason as the list:
+      // admin edits should be visible immediately after save.
+      const config = await loadRegistryCompanyConfigByRegistryId(registryId, true);
       if (!config) return jsonResponse({ ok: false, error: "Registry company not found" }, 404);
       return jsonResponse({ ok: true, registryId, config });
     }

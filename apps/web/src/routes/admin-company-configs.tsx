@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { toast } from "@/components/ui/toast";
 import { useMe } from "@/features/session/queries";
 import {
   useAdminRegistryCompanyConfig,
@@ -164,8 +165,11 @@ function AdminCompanyConfigsRoute() {
       const nextRegistryId = result.nextRegistryId ?? selectedRegistryId;
       setSelectedRegistryId(nextRegistryId);
       setSaveMessage(`Saved ${result.config.company}. JSON validation passed.`);
+      toast(`${result.config.company} config saved`);
     } catch (error) {
-      setSaveMessage(error instanceof Error ? error.message : "Failed to save company config");
+      const message = error instanceof Error ? error.message : "Failed to save company config";
+      setSaveMessage(message);
+      toast(message, "error");
     }
   }
 
@@ -180,8 +184,11 @@ function AdminCompanyConfigsRoute() {
       setSelectedRegistryId(null);
       setEditorValue("");
       setParseError(null);
+      toast(`${result.deletedCompany} deleted`, "info");
     } catch (error) {
-      setSaveMessage(error instanceof Error ? error.message : "Failed to delete company config");
+      const message = error instanceof Error ? error.message : "Failed to delete company config";
+      setSaveMessage(message);
+      toast(message, "error");
     }
   }
 
@@ -348,7 +355,7 @@ function AdminCompanyConfigsRoute() {
                   </Button>
                   <Button
                     type="button"
-                    variant="outline"
+                    variant="warning"
                     size="sm"
                     disabled={!selectedRegistryId || deleteMutation.isPending}
                     onClick={() => void handleDelete()}
@@ -356,9 +363,15 @@ function AdminCompanyConfigsRoute() {
                     <Trash2 size={14} />
                     {deleteMutation.isPending ? "Deleting..." : "Delete company"}
                   </Button>
-                  <Button type="button" size="sm" disabled={!selectedRegistryId || saveMutation.isPending} onClick={() => void handleSave()}>
+                  <Button
+                    type="button"
+                    variant="success"
+                    size="sm"
+                    disabled={!selectedRegistryId || saveMutation.isPending}
+                    onClick={() => void handleSave()}
+                  >
                     <Save size={14} />
-                    Save changes
+                    {saveMutation.isPending ? "Saving…" : "Save changes"}
                   </Button>
                 </div>
               </div>

@@ -285,7 +285,7 @@ function PlanEditorCard({
           </div>
           <Input value={confirmText} onChange={(event) => setConfirmText(event.target.value)} placeholder="CONFIRM" />
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setConfirmOpen(false)}>Cancel</Button>
+            <Button variant="warning" onClick={() => setConfirmOpen(false)}>Cancel</Button>
             <Button variant="success" onClick={confirmSave} disabled={confirmText !== "CONFIRM" || isSaving}>
               {isSaving ? "Saving…" : "Confirm save"}
             </Button>
