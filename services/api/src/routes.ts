@@ -95,7 +95,6 @@ import {
   setUserAccountStatus,
   adminSetUserPlan,
   loadScanQuotaUsage,
-  listCurrentRawScans,
   listCurrentRawScanSummaries,
   summarizeCurrentRawScans,
   remainingLiveScans,
@@ -515,123 +514,6 @@ function categorizeRegistryFailure(
   if (reason.includes("network") || reason.includes("dns") || reason.includes("fetch") || reason.includes("socket") || reason.includes("connect")) return "Network error";
   if (reason.includes("empty") || reason.includes("no jobs")) return "Empty result";
   return "Scan failed";
-}
-
-function isJobDiscardedForTenant(
-  job: JobPosting,
-  registry: Awaited<ReturnType<typeof loadDiscardRegistry>>,
-): boolean {
-  return registry.jobKeys.has(jobKey(job)) || registry.fingerprints.has(jobStableFingerprint(job));
-}
-
-async function loadAdminAvailableJobsPage(
-  env: Env,
-  config: RuntimeConfig,
-  tenantId: string | undefined,
-  params: URLSearchParams,
-): Promise<{
-  runAt: string;
-  total: number;
-  pagination: { offset: number; limit: number; nextOffset: number; hasMore: boolean };
-  totals: {
-    availableJobs: number;
-    totalAvailableJobs: number;
-    newJobs: number;
-    updatedJobs: number;
-    jobsCapped: false;
-    jobCapLimit: null;
-  };
-  companyOptions: string[];
-  pagedJobs: JobPosting[];
-  newJobKeys: Set<string>;
-  updatedJobKeys: Set<string>;
-}> {
-  const [{ newJobKeys, updatedJobKeys }, currentRows, discardRegistry, appliedJobs] = await Promise.all([
-    loadLatestRunMarkers(env, tenantId),
-    listCurrentRawScans(),
-    loadDiscardRegistry(env, tenantId),
-    loadAppliedJobs(env, tenantId),
-  ]);
-
-  const adminAllRegistryCompanies = config.adminRegistryMode !== "none";
-  const enabledCompanyNames = new Set(
-    config.companies
-      .filter((company) => company.enabled !== false)
-      .map((company) => normalizeCompanyKey(company.company)),
-  );
-  const seenJobKeys = new Set<string>();
-  const availableJobs: JobPosting[] = [];
-  let latestSharedScanAt = "";
-
-  for (const row of currentRows) {
-    if (row.scannedAt.localeCompare(latestSharedScanAt) > 0) latestSharedScanAt = row.scannedAt;
-    // Admins in all-registry mode should browse the shared raw inventory
-    // directly instead of hydrating thousands of registry companies into the
-    // per-tenant config row on every request.
-    if (!adminAllRegistryCompanies && !enabledCompanyNames.has(normalizeCompanyKey(row.company))) continue;
-    for (const rawJob of row.jobs) {
-      const enriched = enrichJob(rawJob, config.jobtitles);
-      if (!isInterestingTitle(enriched.title, config.jobtitles)) continue;
-      if (!shouldKeepJobForUSInventory(enriched.location, enriched.title, enriched.url)) continue;
-      if (isJobDiscardedForTenant(enriched, discardRegistry)) continue;
-      const nextJobKey = jobKey(enriched);
-      if (appliedJobs[nextJobKey] || seenJobKeys.has(nextJobKey)) continue;
-      seenJobKeys.add(nextJobKey);
-      availableJobs.push(enriched);
-    }
-  }
-
-  const newOnly = params.get("newOnly") === "true";
-  const updatedOnly = params.get("updatedOnly") === "true";
-  const totalNewAvailable = availableJobs.filter((job) => newJobKeys.has(jobKey(job))).length;
-  const totalUpdatedAvailable = availableJobs.filter((job) => updatedJobKeys.has(jobKey(job))).length;
-  const jobs = filterJobs(availableJobs, params)
-    .filter((job) => !newOnly || newJobKeys.has(jobKey(job)))
-    .filter((job) => !updatedOnly || updatedJobKeys.has(jobKey(job)))
-    .sort((a, b) => {
-      const aKey = jobKey(a);
-      const bKey = jobKey(b);
-      const aDay = formatETDayKey(a.postedAt);
-      const bDay = formatETDayKey(b.postedAt);
-      if (aDay !== bDay) return bDay.localeCompare(aDay);
-
-      const aPriority = newJobKeys.has(aKey) ? 0 : updatedJobKeys.has(aKey) ? 1 : 2;
-      const bPriority = newJobKeys.has(bKey) ? 0 : updatedJobKeys.has(bKey) ? 1 : 2;
-      if (aPriority !== bPriority) return aPriority - bPriority;
-
-      const aTime = a.postedAt ? new Date(a.postedAt).getTime() : 0;
-      const bTime = b.postedAt ? new Date(b.postedAt).getTime() : 0;
-      if (aTime !== bTime) return bTime - aTime;
-
-      return a.title.localeCompare(b.title);
-    });
-
-  const limit = Math.max(1, Math.min(200, Number(params.get("limit") || 100) || 100));
-  const offset = Math.max(0, Number(params.get("offset") || 0) || 0);
-  const pagedJobs = jobs.slice(offset, offset + limit);
-
-  return {
-    runAt: latestSharedScanAt || nowISO(),
-    total: jobs.length,
-    pagination: {
-      offset,
-      limit,
-      nextOffset: Math.min(jobs.length, offset + pagedJobs.length),
-      hasMore: offset + pagedJobs.length < jobs.length,
-    },
-    totals: {
-      availableJobs: availableJobs.length,
-      totalAvailableJobs: availableJobs.length,
-      newJobs: totalNewAvailable,
-      updatedJobs: totalUpdatedAvailable,
-      jobsCapped: false,
-      jobCapLimit: null,
-    },
-    companyOptions: uniqueSortedCompanies(availableJobs.map((job) => job.company)),
-    pagedJobs,
-    newJobKeys,
-    updatedJobKeys,
-  };
 }
 
 function isSavedFilterScope(value: string): value is SavedFilterScope {
@@ -2306,54 +2188,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         await loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
-          // Admin job browsing does not need the fully expanded 1.8k-company
-          // config row just to page through shared raw inventory.
-          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         tenantContext.tenantId,
       );
-      if (tenantContext.isAdmin) {
-        const [adminPage, jobNotes] = await Promise.all([
-          loadAdminAvailableJobsPage(env, config, tenantContext.tenantId, url.searchParams),
-          loadJobNotes(env, tenantContext.tenantId),
-        ]);
-        const companySlug = adminPage.companyOptions.length === 1 ? slugify(adminPage.companyOptions[0]) : "multi";
-
-        // Admin job browsing still records coarse engagement, but it now does so
-        // without forcing the expensive tenant-derived inventory build first.
-        void recordEvent(tenantContext, "JOB_VIEWED", {
-          companySlug,
-          jobCount: adminPage.total,
-        }).catch((error) => {
-          console.warn("[analytics] failed to record job view event", error);
-        });
-
-        return jsonResponse({
-          ok: true,
-          runAt: adminPage.runAt,
-          total: adminPage.total,
-          pagination: adminPage.pagination,
-          totals: adminPage.totals,
-          companyOptions: adminPage.companyOptions,
-          jobs: adminPage.pagedJobs.map((job) => ({
-            jobKey: jobKey(job),
-            notes: jobNotes[jobKey(job)] || "",
-            company: job.company,
-            source: job.source,
-            jobTitle: job.title,
-            postedAt: formatET(job.postedAt),
-            postedAtDate: formatDateOnly(job.postedAt),
-            location: job.location,
-            url: job.url,
-            usLikely: job.isUSLikely,
-            detectedCountry: job.detectedCountry ?? "Unknown",
-            isNew: adminPage.newJobKeys.has(jobKey(job)),
-            isUpdated: adminPage.updatedJobKeys.has(jobKey(job)),
-          })),
-        });
-      }
       const [{ effectiveInventory, inventoryState }, billing] = await Promise.all([
-        loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: tenantContext.isAdmin }),
+        // Keep admin Available Jobs on the same tenant-derived read path as
+        // normal users so scan/cache behavior stays consistent across roles.
+        loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
       ]);
       const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
