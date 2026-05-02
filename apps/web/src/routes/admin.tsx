@@ -34,6 +34,7 @@ function AdminRoute() {
     { to: "/admin-announcements", title: "Announcements", value: me?.announcements?.length ?? 0, meta: "Live user-facing banner inventory", icon: BellRing },
     { to: "/admin-docs", title: "Docs", value: "OpenAPI", meta: "Embedded Swagger reference for admins", icon: BookOpen },
     { to: "/admin-registry-status", title: "Registry Status", value: data?.registry.currentCompanies ?? 0, meta: "Per-company scan coverage and freshness", icon: Database },
+    { to: "/admin-company-configs", title: "Company Configs", value: data?.registry.totalCompanies ?? 0, meta: "Retrieve and edit live registry company rows", icon: Database },
     { to: "/admin-actions-needed", title: "Actions Needed", value: "Review", meta: "Failed registry companies and follow-up queue", icon: AlertTriangle },
     // Keep analytics visible from the main admin workspace so operators do not
     // need to know the direct route to reach the new reporting surface.

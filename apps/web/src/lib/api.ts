@@ -570,6 +570,38 @@ export type AdminActionsNeededEnvelope = {
   rows: AdminActionsNeededRow[];
 };
 
+export type AdminRegistryCompanyConfig = {
+  rank: number | null;
+  sheet: string;
+  company: string;
+  board_url: string | null;
+  ats: string | null;
+  total_jobs: number | null;
+  source: string | null;
+  tier: "TIER1_VERIFIED" | "TIER2_MEDIUM" | "TIER3_LOW" | "NEEDS_REVIEW";
+  from?: string;
+  adapterId?: string | null;
+  boards?: Array<{ ats: string; url: string; total_jobs?: number }>;
+  sample_url?: string | null;
+  last_checked?: string | null;
+} & Record<string, unknown>;
+
+export type AdminRegistryCompanyConfigSummary = AdminRegistryCompanyConfig & {
+  registryId: string;
+};
+
+export type AdminRegistryCompanyConfigsEnvelope = {
+  ok: boolean;
+  total: number;
+  rows: AdminRegistryCompanyConfigSummary[];
+};
+
+export type AdminRegistryCompanyConfigEnvelope = {
+  ok: boolean;
+  registryId: string;
+  config: AdminRegistryCompanyConfig;
+};
+
 export type AdminUsersEnvelope = {
   ok: boolean;
   total: number;

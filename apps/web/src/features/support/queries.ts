@@ -5,6 +5,9 @@ import {
   type AnnouncementsEnvelope,
   type AdminAnalyticsEnvelope,
   type AdminActionsNeededEnvelope,
+  type AdminRegistryCompanyConfig,
+  type AdminRegistryCompanyConfigEnvelope,
+  type AdminRegistryCompanyConfigsEnvelope,
   type AdminRegistryStatusEnvelope,
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
@@ -97,6 +100,43 @@ export function useAdminActionsNeeded(enabled = true) {
     queryFn: () => api.get<AdminActionsNeededEnvelope>("/api/admin/actions-needed"),
     enabled,
     staleTime: 30_000,
+  });
+}
+
+export function useAdminRegistryCompanyConfigs(enabled = true) {
+  return useQuery({
+    queryKey: ["admin-registry-company-configs"],
+    queryFn: () => api.get<AdminRegistryCompanyConfigsEnvelope>("/api/admin/registry/company-configs"),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useAdminRegistryCompanyConfig(registryId: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["admin-registry-company-config", registryId],
+    queryFn: () => api.get<AdminRegistryCompanyConfigEnvelope>(`/api/admin/registry/company-configs/${encodeURIComponent(registryId ?? "")}`),
+    enabled: enabled && Boolean(registryId),
+    staleTime: 10_000,
+  });
+}
+
+export function useSaveAdminRegistryCompanyConfig(registryId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (config: AdminRegistryCompanyConfig) =>
+      api.put<AdminRegistryCompanyConfigEnvelope & { nextRegistryId?: string | null }>(
+        `/api/admin/registry/company-configs/${encodeURIComponent(registryId ?? "")}`,
+        { config },
+      ),
+    onSuccess: async (result) => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-configs"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-config", registryId] });
+      if (result.nextRegistryId && result.nextRegistryId !== registryId) {
+        await queryClient.invalidateQueries({ queryKey: ["admin-registry-company-config", result.nextRegistryId] });
+      }
+    },
   });
 }
 

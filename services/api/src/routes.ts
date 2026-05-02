@@ -110,6 +110,12 @@ import {
 } from "./storage";
 import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
 import { recordPasswordResetConfirmAttempt } from "./storage/password-reset";
+import {
+  companyRegistryKey,
+  listRegistryCompanyConfigs,
+  loadRegistryCompanyConfigByRegistryId,
+  saveRegistryCompanyConfig,
+} from "./storage/registry-admin";
 import { normalizeCompanyKey } from "./storage/tenant-keys";
 import { buildDashboardPayload } from "./services/dashboard";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
@@ -992,6 +998,47 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           lastScannedAt: rawScanSummary.lastScannedAt,
         },
         rows,
+      });
+    }
+
+    if (url.pathname === "/api/admin/registry/company-configs" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const rows = await listRegistryCompanyConfigs();
+      return jsonResponse({ ok: true, total: rows.length, rows });
+    }
+
+    const adminRegistryConfigMatch = url.pathname.match(/^\/api\/admin\/registry\/company-configs\/([^/]+)$/);
+    if (adminRegistryConfigMatch && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const registryId = decodeURIComponent(adminRegistryConfigMatch[1] ?? "");
+      const config = await loadRegistryCompanyConfigByRegistryId(registryId);
+      if (!config) return jsonResponse({ ok: false, error: "Registry company not found" }, 404);
+      return jsonResponse({ ok: true, registryId, config });
+    }
+
+    if (adminRegistryConfigMatch && request.method === "PUT") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const registryId = decodeURIComponent(adminRegistryConfigMatch[1] ?? "");
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const payload = typeof body.config === "object" && body.config !== null
+        ? body.config as Record<string, unknown>
+        : body;
+      const saved = await saveRegistryCompanyConfig(registryId, payload);
+      return jsonResponse({
+        ok: true,
+        registryId,
+        nextRegistryId: companyRegistryKey(saved.config.company),
+        previousCompany: saved.previousCompany ?? null,
+        config: saved.config,
       });
     }
 

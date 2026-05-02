@@ -29,6 +29,7 @@ import { Route as AdminRegistryStatusRouteImport } from './routes/admin-registry
 import { Route as AdminPlanConfigRouteImport } from './routes/admin-plan-config'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
 import { Route as AdminDocsRouteImport } from './routes/admin-docs'
+import { Route as AdminCompanyConfigsRouteImport } from './routes/admin-company-configs'
 import { Route as AdminAnnouncementsRouteImport } from './routes/admin-announcements'
 import { Route as AdminAnalyticsRouteImport } from './routes/admin-analytics'
 import { Route as AdminActionsNeededRouteImport } from './routes/admin-actions-needed'
@@ -136,6 +137,11 @@ const AdminDocsRoute = AdminDocsRouteImport.update({
   path: '/admin-docs',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminCompanyConfigsRoute = AdminCompanyConfigsRouteImport.update({
+  id: '/admin-company-configs',
+  path: '/admin-company-configs',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminAnnouncementsRoute = AdminAnnouncementsRouteImport.update({
   id: '/admin-announcements',
   path: '/admin-announcements',
@@ -173,6 +179,7 @@ export interface FileRoutesByFullPath {
   '/admin-actions-needed': typeof AdminActionsNeededRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-company-configs': typeof AdminCompanyConfigsRoute
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
@@ -201,6 +208,7 @@ export interface FileRoutesByTo {
   '/admin-actions-needed': typeof AdminActionsNeededRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-company-configs': typeof AdminCompanyConfigsRoute
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
@@ -230,6 +238,7 @@ export interface FileRoutesById {
   '/admin-actions-needed': typeof AdminActionsNeededRoute
   '/admin-analytics': typeof AdminAnalyticsRoute
   '/admin-announcements': typeof AdminAnnouncementsRoute
+  '/admin-company-configs': typeof AdminCompanyConfigsRoute
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
@@ -260,6 +269,7 @@ export interface FileRouteTypes {
     | '/admin-actions-needed'
     | '/admin-analytics'
     | '/admin-announcements'
+    | '/admin-company-configs'
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
@@ -288,6 +298,7 @@ export interface FileRouteTypes {
     | '/admin-actions-needed'
     | '/admin-analytics'
     | '/admin-announcements'
+    | '/admin-company-configs'
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
@@ -316,6 +327,7 @@ export interface FileRouteTypes {
     | '/admin-actions-needed'
     | '/admin-analytics'
     | '/admin-announcements'
+    | '/admin-company-configs'
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
@@ -345,6 +357,7 @@ export interface RootRouteChildren {
   AdminActionsNeededRoute: typeof AdminActionsNeededRoute
   AdminAnalyticsRoute: typeof AdminAnalyticsRoute
   AdminAnnouncementsRoute: typeof AdminAnnouncementsRoute
+  AdminCompanyConfigsRoute: typeof AdminCompanyConfigsRoute
   AdminDocsRoute: typeof AdminDocsRoute
   AdminFlagsRoute: typeof AdminFlagsRoute
   AdminPlanConfigRoute: typeof AdminPlanConfigRoute
@@ -510,6 +523,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminDocsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin-company-configs': {
+      id: '/admin-company-configs'
+      path: '/admin-company-configs'
+      fullPath: '/admin-company-configs'
+      preLoaderRoute: typeof AdminCompanyConfigsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin-announcements': {
       id: '/admin-announcements'
       path: '/admin-announcements'
@@ -561,6 +581,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminActionsNeededRoute: AdminActionsNeededRoute,
   AdminAnalyticsRoute: AdminAnalyticsRoute,
   AdminAnnouncementsRoute: AdminAnnouncementsRoute,
+  AdminCompanyConfigsRoute: AdminCompanyConfigsRoute,
   AdminDocsRoute: AdminDocsRoute,
   AdminFlagsRoute: AdminFlagsRoute,
   AdminPlanConfigRoute: AdminPlanConfigRoute,

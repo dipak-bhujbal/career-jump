@@ -1,8 +1,8 @@
 import { countJobs, type RegistryEntry } from "../ats/registry";
-import { registryTableName, putRow } from "../aws/dynamo";
+import { deleteRow, getRow, registryTableName, putRow } from "../aws/dynamo";
 import { canonicalBoardUrlForCompany } from "../config";
 import { hyphenSlug, nowISO } from "../lib/utils";
-import { loadRegistryCache } from "./registry-cache";
+import { listAll, loadRegistryCache } from "./registry-cache";
 import type { CompanyInput } from "../types";
 
 type PromotionResult = {
@@ -11,9 +11,25 @@ type PromotionResult = {
   reason?: string;
 };
 
-function companyRegistryKey(company: string): string {
+export function companyRegistryKey(company: string): string {
   return `COMPANY#${hyphenSlug(company) || company.toLowerCase().replace(/[^a-z0-9]+/g, "-") || "unknown-company"}`;
 }
+
+export type RegistryCompanyConfig = {
+  rank: number | null;
+  sheet: string;
+  company: string;
+  board_url: string | null;
+  ats: string | null;
+  total_jobs: number | null;
+  source: string | null;
+  tier: RegistryEntry["tier"];
+  from?: string;
+  adapterId?: string | null;
+  boards?: Array<{ ats: string; url: string; total_jobs?: number }>;
+  sample_url?: string | null;
+  last_checked?: string | null;
+} & Record<string, unknown>;
 
 function preferredRegistryTier(company: CompanyInput): RegistryEntry["tier"] {
   if (company.registryTier === "TIER1_VERIFIED" || company.registryTier === "TIER2_MEDIUM" || company.registryTier === "TIER3_LOW") {
@@ -81,4 +97,117 @@ export async function promoteCustomCompaniesToRegistry(companies: CompanyInput[]
   }
 
   return promotions;
+}
+
+function normalizeRegistryCompanyConfig(input: Record<string, unknown>): RegistryCompanyConfig {
+  const company = typeof input.company === "string" ? input.company.trim() : "";
+  if (!company) throw new Error("company is required");
+
+  const tier = typeof input.tier === "string" ? input.tier.trim() : "";
+  if (!["TIER1_VERIFIED", "TIER2_MEDIUM", "TIER3_LOW", "NEEDS_REVIEW"].includes(tier)) {
+    throw new Error("tier must be one of TIER1_VERIFIED, TIER2_MEDIUM, TIER3_LOW, NEEDS_REVIEW");
+  }
+
+  const coerceNumber = (value: unknown): number | null => {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = typeof value === "number" ? value : Number(value);
+    if (!Number.isFinite(parsed)) throw new Error("numeric fields must be numbers or null");
+    return parsed;
+  };
+
+  const coerceString = (value: unknown): string | null => {
+    if (value === null || value === undefined) return null;
+    if (typeof value !== "string") throw new Error("string fields must be strings or null");
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  };
+
+  const next: Record<string, unknown> = { ...input };
+  delete next.pk;
+  delete next.sk;
+  delete next.updatedAt;
+
+  return {
+    ...next,
+    rank: coerceNumber(input.rank),
+    sheet: typeof input.sheet === "string" && input.sheet.trim() ? input.sheet.trim() : "Registry",
+    company,
+    board_url: coerceString(input.board_url),
+    ats: coerceString(input.ats),
+    total_jobs: coerceNumber(input.total_jobs),
+    source: coerceString(input.source),
+    tier: tier as RegistryEntry["tier"],
+    from: coerceString(input.from) ?? undefined,
+    adapterId: coerceString(input.adapterId),
+    boards: Array.isArray(input.boards) ? input.boards as RegistryCompanyConfig["boards"] : undefined,
+    sample_url: coerceString(input.sample_url),
+    last_checked: coerceString(input.last_checked),
+  };
+}
+
+/**
+ * Admin registry editing needs a stable list view plus a full-row loader so
+ * operators can inspect and change the canonical company config without
+ * guessing which attributes are persisted in Dynamo today.
+ */
+export async function listRegistryCompanyConfigs(): Promise<Array<RegistryCompanyConfig & { registryId: string }>> {
+  await loadRegistryCache();
+  return listAll().map((entry) => ({
+    registryId: companyRegistryKey(entry.company),
+    rank: entry.rank,
+    sheet: entry.sheet,
+    company: entry.company,
+    board_url: entry.board_url,
+    ats: entry.ats,
+    total_jobs: entry.total_jobs,
+    source: entry.source,
+    tier: entry.tier,
+    from: entry.from,
+    sample_url: entry.sample_url,
+    last_checked: entry.last_checked,
+  }));
+}
+
+export async function loadRegistryCompanyConfigByRegistryId(registryId: string): Promise<RegistryCompanyConfig | null> {
+  if (!process.env.AWS_REGISTRY_TABLE && !process.env.REGISTRY_TABLE) {
+    await loadRegistryCache();
+    const fallback = listAll().find((entry) => companyRegistryKey(entry.company) === registryId);
+    return fallback ? normalizeRegistryCompanyConfig(fallback as unknown as Record<string, unknown>) : null;
+  }
+  const row = await getRow<Record<string, unknown>>(registryTableName(), { pk: "REGISTRY", sk: registryId });
+  if (!row) return null;
+  return normalizeRegistryCompanyConfig(row);
+}
+
+/**
+ * Saving by registry id allows admins to rename companies while keeping a
+ * deterministic lookup key for the row they opened in the editor.
+ */
+export async function saveRegistryCompanyConfig(
+  registryId: string,
+  input: Record<string, unknown>,
+): Promise<{ config: RegistryCompanyConfig; previousCompany?: string | null }> {
+  const next = normalizeRegistryCompanyConfig(input);
+  const previous = await loadRegistryCompanyConfigByRegistryId(registryId);
+  if (!previous) throw new Error("Registry company not found");
+
+  const nextRegistryId = companyRegistryKey(next.company);
+  const timestamp = nowISO();
+
+  await putRow(registryTableName(), {
+    pk: "REGISTRY",
+    sk: nextRegistryId,
+    ...next,
+    updatedAt: timestamp,
+  });
+
+  if (nextRegistryId !== registryId) {
+    await deleteRow(registryTableName(), { pk: "REGISTRY", sk: registryId });
+  }
+
+  await loadRegistryCache({ force: true });
+  return {
+    config: next,
+    previousCompany: previous.company,
+  };
 }

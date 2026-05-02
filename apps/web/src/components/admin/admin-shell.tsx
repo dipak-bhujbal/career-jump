@@ -62,6 +62,12 @@ export const adminNavItems: AdminNavItem[] = [
     icon: Database,
   },
   {
+    to: "/admin-company-configs",
+    label: "Company Configs",
+    description: "Retrieve and edit the full live config for any registry company.",
+    icon: Database,
+  },
+  {
     to: "/admin-actions-needed",
     label: "Actions Needed",
     description: "Failed registry companies that need operator follow-up.",
