@@ -1,6 +1,6 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { ArrowDownAZ, ArrowUpAZ, Database } from "lucide-react";
+import { ArrowDownAZ, ArrowUpAZ, Database, RefreshCw } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,7 +23,7 @@ const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 function AdminRegistryStatusRoute() {
   const { data: me } = useMe();
   const isAdmin = me?.actor?.isAdmin === true;
-  const { data, isLoading } = useAdminRegistryStatus(isAdmin);
+  const { data, isLoading, isFetching, refetch } = useAdminRegistryStatus(isAdmin);
   const location = useLocation();
   const [companyFilter, setCompanyFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
@@ -45,15 +45,6 @@ function AdminRegistryStatusRoute() {
       setSortDir(column === "lastScannedAt" || column === "nextScanAt" || column === "totalJobs" ? "desc" : "asc");
       return column;
     });
-  }
-
-  if (!isAdmin) {
-    return (
-      <>
-        <Topbar title="Registry Status" subtitle="Admin access required" />
-        <div className="p-6 text-sm text-[hsl(var(--muted-foreground))]">This workspace is only available to admin accounts.</div>
-      </>
-    );
   }
 
   const filteredRows = useMemo(() => {
@@ -112,6 +103,15 @@ function AdminRegistryStatusRoute() {
     if (safePage !== page) setPage(safePage);
   }, [page, safePage]);
 
+  if (!isAdmin) {
+    return (
+      <>
+        <Topbar title="Registry Status" subtitle="Admin access required" />
+        <div className="p-6 text-sm text-[hsl(var(--muted-foreground))]">This workspace is only available to admin accounts.</div>
+      </>
+    );
+  }
+
   return (
     <>
       <Topbar title="Registry Status" subtitle="Per-company raw inventory coverage and freshness." />
@@ -142,13 +142,28 @@ function AdminRegistryStatusRoute() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Database size={16} />
-              Company scan status
-            </CardTitle>
-            <CardDescription>
-              Filter, sort, and page through registry coverage. Each row shows the current shared job count, scan tier, and next scheduled refresh for that company.
-            </CardDescription>
+            <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="flex items-center gap-2">
+                  <Database size={16} />
+                  Company scan status
+                </CardTitle>
+                <CardDescription>
+                  Filter, sort, and page through registry coverage. Each row shows the current shared job count, scan tier, and next scheduled refresh for that company.
+                </CardDescription>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => void refetch()}
+                disabled={isFetching}
+                className="md:self-start"
+              >
+                <RefreshCw size={14} className={cn(isFetching && "animate-spin")} />
+                Refresh
+              </Button>
+            </div>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_160px_160px_180px_220px_180px]">
