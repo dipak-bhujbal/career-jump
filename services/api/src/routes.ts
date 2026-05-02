@@ -84,6 +84,7 @@ import {
   setUserAccountStatus,
   adminSetUserPlan,
   loadScanQuotaUsage,
+  summarizeCurrentRawScans,
   remainingLiveScans,
   setCompanyScanOverride,
   setCompanyScanOverrides,
@@ -806,7 +807,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
-      const [users, tickets, flags] = await Promise.all([
+      const [users, tickets, flags, registryEntries, rawScanSummary] = await Promise.all([
         findUserProfiles(),
         listAdminTickets(),
         loadFeatureFlags({
@@ -817,6 +818,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           scope: tenantContext.scope,
           isAdmin: tenantContext.isAdmin,
         }),
+        loadRegistryCache().then(() => listAll()),
+        summarizeCurrentRawScans(),
       ]);
       return jsonResponse({
         ok: true,
@@ -829,6 +832,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           totalTickets: tickets.length,
           openTickets: tickets.filter((ticket) => ticket.status === "open").length,
           inProgressTickets: tickets.filter((ticket) => ticket.status === "in_progress").length,
+        },
+        registry: {
+          totalCompanies: registryEntries.length,
+          currentCompanies: rawScanSummary.currentCompanies,
+          currentJobs: rawScanSummary.currentJobs,
+          lastScannedAt: rawScanSummary.lastScannedAt,
         },
         featureFlags: flags,
       });

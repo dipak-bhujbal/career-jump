@@ -509,6 +509,12 @@ export type AdminSummaryEnvelope = {
     openTickets: number;
     inProgressTickets: number;
   };
+  registry: {
+    totalCompanies: number;
+    currentCompanies: number;
+    currentJobs: number;
+    lastScannedAt: string | null;
+  };
   featureFlags: Array<{
     flagName: string;
     enabled: boolean;

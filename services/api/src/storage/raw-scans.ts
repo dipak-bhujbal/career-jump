@@ -1,4 +1,4 @@
-import { deleteRow, getRow, putRow, queryRows, rawScansTableName, scanRows } from "../aws/dynamo";
+import { deleteRow, getRow, putRow, queryRows, rawScansTableName, scanAllRows } from "../aws/dynamo";
 import { hyphenSlug, nowISO, slugify } from "../lib/utils";
 import type { DetectedConfig, JobPosting } from "../types";
 
@@ -41,6 +41,17 @@ type RawScanJobRow = {
 };
 
 type RawScanRow = RawScanCurrentRow | RawScanJobRow;
+
+function isUsableScanTimestamp(
+  scannedAt: string | undefined,
+  options: { allowStale?: boolean; maxAgeMs?: number },
+): boolean {
+  if (!scannedAt) return false;
+  if (options.allowStale) return true;
+  const scannedAtMs = Date.parse(scannedAt);
+  const maxAgeMs = options.maxAgeMs ?? Number.POSITIVE_INFINITY;
+  return Number.isFinite(scannedAtMs) && (Date.now() - scannedAtMs) <= maxAgeMs;
+}
 
 function stableDetectedToken(detected: DetectedConfig): string {
   switch (detected.source) {
@@ -119,7 +130,7 @@ export async function loadLatestRawScan(
     true,
   );
   const currentCandidate = current?.scannedAt && Array.isArray(current.jobs) ? current : null;
-  if (currentCandidate) {
+  if (currentCandidate && isUsableScanTimestamp(currentCandidate.scannedAt, options)) {
     return {
       jobs: sortJobsForStorage(currentCandidate.jobs),
       scannedAt: currentCandidate.scannedAt,
@@ -130,7 +141,7 @@ export async function loadLatestRawScan(
   const jobRows = currentRows.filter(isRawScanJobRow);
   if (jobRows.length > 0) {
     const scannedAt = currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
-    if (!scannedAt) return null;
+    if (!isUsableScanTimestamp(scannedAt, options)) return null;
     return {
       jobs: sortJobsForStorage(jobRows.map((row) => row.job)),
       scannedAt,
@@ -147,9 +158,7 @@ export async function loadLatestRawScan(
   const latest = rows[0];
   if (!latest?.scannedAt || !Array.isArray(latest.jobs)) return null;
 
-  const scannedAtMs = Date.parse(latest.scannedAt);
-  const maxAgeMs = options.maxAgeMs ?? Number.POSITIVE_INFINITY;
-  if (!options.allowStale && (!Number.isFinite(scannedAtMs) || (Date.now() - scannedAtMs) > maxAgeMs)) {
+  if (!isUsableScanTimestamp(latest.scannedAt, options)) {
     return null;
   }
 
@@ -222,10 +231,12 @@ export async function saveRawScan(
  * the table remains bounded to one live row per company/source.
  */
 export async function listCurrentRawScans(): Promise<Array<{ company: string; detected: DetectedConfig; jobs: JobPosting[]; scannedAt: string }>> {
-  const currentRows = await scanRows<RawScanRow>(
+  const currentRows = await scanAllRows<RawScanRow>(
     rawScansTableName(),
-    "entityType = :entityType",
-    { ":entityType": "RAW_SCAN_CURRENT" },
+    {
+      filterExpression: "entityType = :entityType",
+      expressionAttributeValues: { ":entityType": "RAW_SCAN_CURRENT" },
+    },
   );
   if (currentRows.length > 0) {
     return currentRows
@@ -247,7 +258,7 @@ export async function listCurrentRawScans(): Promise<Array<{ company: string; de
   // format existed. We keep the latest row per shared raw-scan key so admin
   // browsing works immediately after deploy instead of waiting for every board
   // to be rescanned.
-  const legacyRows = await scanRows<RawScanRow>(rawScansTableName());
+  const legacyRows = await scanAllRows<RawScanRow>(rawScansTableName());
   const latestByPk = new Map<string, RawScanCurrentRow>();
   for (const row of legacyRows) {
     if (!isRawScanCurrentRow(row) || !Array.isArray(row.jobs) || typeof row.company !== "string" || typeof row.scannedAt !== "string") continue;
@@ -262,4 +273,25 @@ export async function listCurrentRawScans(): Promise<Array<{ company: string; de
     jobs: row.jobs,
     scannedAt: row.scannedAt,
   }));
+}
+
+export async function summarizeCurrentRawScans(): Promise<{
+  currentCompanies: number;
+  currentJobs: number;
+  lastScannedAt: string | null;
+}> {
+  const rows = await listCurrentRawScans();
+  let lastScannedAt: string | null = null;
+
+  for (const row of rows) {
+    if (!lastScannedAt || row.scannedAt.localeCompare(lastScannedAt) > 0) {
+      lastScannedAt = row.scannedAt;
+    }
+  }
+
+  return {
+    currentCompanies: rows.length,
+    currentJobs: rows.reduce((sum, row) => sum + row.jobs.length, 0),
+    lastScannedAt,
+  };
 }

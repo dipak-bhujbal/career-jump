@@ -4,7 +4,7 @@ const getRowMock = vi.fn();
 const putRowMock = vi.fn();
 const queryRowsMock = vi.fn();
 const deleteRowMock = vi.fn();
-const scanRowsMock = vi.fn();
+const scanAllRowsMock = vi.fn();
 
 vi.mock("../../src/aws/dynamo", () => ({
   rawScansTableName: vi.fn(() => "raw-scans-table"),
@@ -12,7 +12,7 @@ vi.mock("../../src/aws/dynamo", () => ({
   putRow: putRowMock,
   queryRows: queryRowsMock,
   deleteRow: deleteRowMock,
-  scanRows: scanRowsMock,
+  scanAllRows: scanAllRowsMock,
 }));
 
 describe("raw scan storage", () => {
@@ -24,7 +24,7 @@ describe("raw scan storage", () => {
     putRowMock.mockResolvedValue(undefined);
     queryRowsMock.mockResolvedValue([]);
     deleteRowMock.mockResolvedValue(undefined);
-    scanRowsMock.mockResolvedValue([]);
+    scanAllRowsMock.mockResolvedValue([]);
   });
 
   it("replaces missing company jobs when a new raw scan arrives", async () => {
@@ -120,5 +120,86 @@ describe("raw scan storage", () => {
     // inventory, which keeps the company-indexed read path working.
     expect(result?.jobs.map((job) => job.id)).toEqual(["job-1", "job-2"]);
     expect(result?.scannedAt).toBe("2026-05-01T12:00:00.000Z");
+  });
+
+  it("treats durable current rows as stale only for freshness-gated reads", async () => {
+    const { loadLatestRawScan } = await import("../../src/storage/raw-scans");
+    getRowMock.mockResolvedValueOnce({
+      pk: "RAW_SCAN#greenhouse#board:openai",
+      sk: "CURRENT",
+      entityType: "RAW_SCAN_CURRENT",
+      scannedAt: "2026-04-25T12:00:00.000Z",
+      jobs: [
+        {
+          source: "greenhouse",
+          company: "OpenAI",
+          id: "job-1",
+          title: "Applied Scientist",
+          location: "Remote",
+          url: "https://boards.greenhouse.io/openai/jobs/1",
+        },
+      ],
+    });
+
+    const freshOnly = await loadLatestRawScan(
+      "OpenAI",
+      { source: "greenhouse", boardToken: "openai", company: "OpenAI" },
+      { maxAgeMs: 60 * 60 * 1000 },
+    );
+
+    getRowMock.mockResolvedValueOnce({
+      pk: "RAW_SCAN#greenhouse#board:openai",
+      sk: "CURRENT",
+      entityType: "RAW_SCAN_CURRENT",
+      scannedAt: "2026-04-25T12:00:00.000Z",
+      jobs: [
+        {
+          source: "greenhouse",
+          company: "OpenAI",
+          id: "job-1",
+          title: "Applied Scientist",
+          location: "Remote",
+          url: "https://boards.greenhouse.io/openai/jobs/1",
+        },
+      ],
+    });
+
+    const allowWeekendStale = await loadLatestRawScan(
+      "OpenAI",
+      { source: "greenhouse", boardToken: "openai", company: "OpenAI" },
+      { allowStale: true },
+    );
+
+    // Freshness-gated weekday scans should treat an old current row as stale,
+    // while weekend/read-only paths can still serve the last known inventory.
+    expect(freshOnly).toBeNull();
+    expect(allowWeekendStale?.jobs).toHaveLength(1);
+    expect(allowWeekendStale?.scannedAt).toBe("2026-04-25T12:00:00.000Z");
+  });
+
+  it("summarizes paged current raw scans for the admin workspace", async () => {
+    const { summarizeCurrentRawScans } = await import("../../src/storage/raw-scans");
+    scanAllRowsMock.mockResolvedValueOnce([
+      {
+        entityType: "RAW_SCAN_CURRENT",
+        company: "Cisco",
+        scannedAt: "2026-05-02T03:15:57.912Z",
+        jobs: [{ id: "1" }, { id: "2" }],
+      },
+      {
+        entityType: "RAW_SCAN_CURRENT",
+        company: "Takeda",
+        scannedAt: "2026-05-02T07:05:49.163Z",
+        jobs: [{ id: "3" }],
+      },
+    ]);
+
+    const summary = await summarizeCurrentRawScans();
+
+    expect(summary).toEqual({
+      currentCompanies: 2,
+      currentJobs: 3,
+      lastScannedAt: "2026-05-02T07:05:49.163Z",
+    });
   });
 });
