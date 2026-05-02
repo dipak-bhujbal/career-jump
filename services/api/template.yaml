@@ -826,8 +826,8 @@ Resources:
     Properties:
       # The target production account currently has the default 10 concurrent
       # executions quota, and AWS requires all 10 to remain unreserved. Keep
-      # these functions on the shared pool until the account concurrency limit
-      # is raised, then revisit per-function reservations if needed.
+      # these functions on the shared pool and control pressure by reducing
+      # frontend bursts plus capping background worker fan-out instead.
       FunctionName: !Sub "${AppName}-${Stage}-api"
       Handler: src/aws/api.handler
       Timeout: 30
@@ -1102,6 +1102,11 @@ Resources:
           Properties:
             Queue: !GetAtt WorkdayQueue.Arn
             BatchSize: 5
+            # The prod account only has 10 total Lambda concurrency slots. Cap
+            # each registry worker queue at the minimum supported concurrency so
+            # shared background scans cannot starve the user-facing API.
+            ScalingConfig:
+              MaximumConcurrency: 2
             FunctionResponseTypes:
               - ReportBatchItemFailures
         EnterpriseQueueEvent:
@@ -1109,6 +1114,8 @@ Resources:
           Properties:
             Queue: !GetAtt EnterpriseQueue.Arn
             BatchSize: 5
+            ScalingConfig:
+              MaximumConcurrency: 2
             FunctionResponseTypes:
               - ReportBatchItemFailures
         PublicApiQueueEvent:
@@ -1116,6 +1123,8 @@ Resources:
           Properties:
             Queue: !GetAtt PublicApiQueue.Arn
             BatchSize: 10
+            ScalingConfig:
+              MaximumConcurrency: 2
             FunctionResponseTypes:
               - ReportBatchItemFailures
       LoggingConfig:

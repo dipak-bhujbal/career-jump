@@ -523,6 +523,20 @@ export type AdminSummaryEnvelope = {
   }>;
 };
 
+export type AdminRegistryStatusRow = {
+  registryId: string;
+  company: string;
+  ats: string | null;
+  totalJobs: number;
+  lastScannedAt: string | null;
+};
+
+export type AdminRegistryStatusEnvelope = {
+  ok: boolean;
+  totals: AdminSummaryEnvelope["registry"];
+  rows: AdminRegistryStatusRow[];
+};
+
 export type AdminUsersEnvelope = {
   ok: boolean;
   total: number;

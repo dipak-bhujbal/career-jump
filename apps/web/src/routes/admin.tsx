@@ -1,5 +1,5 @@
 import { createFileRoute, Link, useLocation } from "@tanstack/react-router";
-import { Shield, Users, LifeBuoy, Flag, BarChart3, SlidersHorizontal, CreditCard, BellRing, BookOpen } from "lucide-react";
+import { Shield, Users, LifeBuoy, Flag, BarChart3, SlidersHorizontal, CreditCard, BellRing, BookOpen, Database } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,9 +10,10 @@ export const Route = createFileRoute("/admin")({ component: AdminRoute });
 
 function AdminRoute() {
   const { data: me } = useMe();
-  const { data } = useAdminSummary();
+  const isAdmin = me?.actor?.isAdmin === true;
+  const { data } = useAdminSummary(isAdmin);
   const location = useLocation();
-  if (!me?.actor?.isAdmin) {
+  if (!isAdmin) {
     return (
       <>
         <Topbar title="Admin" subtitle="Admin access required" />
@@ -32,6 +33,7 @@ function AdminRoute() {
     { to: "/admin-stripe-config", title: "Stripe Config", value: "Billing", meta: "Checkout and price IDs", icon: CreditCard },
     { to: "/admin-announcements", title: "Announcements", value: me?.announcements?.length ?? 0, meta: "Live user-facing banner inventory", icon: BellRing },
     { to: "/admin-docs", title: "Docs", value: "OpenAPI", meta: "Embedded Swagger reference for admins", icon: BookOpen },
+    { to: "/admin-registry-status", title: "Registry Status", value: data?.registry.currentCompanies ?? 0, meta: "Per-company scan coverage and freshness", icon: Database },
     // Keep analytics visible from the main admin workspace so operators do not
     // need to know the direct route to reach the new reporting surface.
     { to: "/admin-analytics", title: "Analytics", value: "30d", meta: "Growth, usage, and health", icon: BarChart3 },

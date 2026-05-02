@@ -16,6 +16,7 @@ export interface CareerJumpAwsRuntimeConfig {
   adminCognitoDomain?: string;
   adminCognitoClientId?: string;
   adminCognitoUserPoolId?: string;
+  gaMeasurementId?: string;
   redirectUri?: string;
 }
 

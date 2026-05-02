@@ -1254,7 +1254,9 @@ export function openApiJsonResponse(request: Request): Response {
   return new Response(JSON.stringify(buildOpenApiDocument(baseUrl), null, 2), {
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "Cache-Control": "no-store",
+      // The OpenAPI document is public metadata, so short-lived caching helps
+      // the embedded docs UI avoid re-hammering the API origin on refresh.
+      "Cache-Control": "public, max-age=60",
     },
   });
 }

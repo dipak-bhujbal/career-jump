@@ -8,5 +8,6 @@ window.CAREER_JUMP_AWS = {
   cognitoDomain: "",
   cognitoClientId: "",
   cognitoUserPoolId: "",
+  gaMeasurementId: "",
   redirectUri: window.location.origin,
 };

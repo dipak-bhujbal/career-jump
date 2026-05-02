@@ -27,6 +27,7 @@ import { useJobs } from "@/features/jobs/queries";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
 import { useMe } from "@/features/session/queries";
+import { trackEvent } from "@/lib/analytics";
 
 export function CommandPalette() {
   const [open, setOpen] = useState(false);
@@ -56,11 +57,18 @@ export function CommandPalette() {
   const { theme, toggle: toggleTheme } = useTheme();
   const startRun = useStartRun();
   const clearCache = useClearCache();
-  const config = useConfig();
+  const config = useConfig({ enabled: open });
   const { data: me } = useMe();
 
   const registry = useRegistrySearch({ search: debounced, enabled: open && debounced.length >= 2 });
-  const jobs = useJobs({ keyword: debounced, limit: 8 });
+  const jobs = useJobs(
+    { keyword: debounced, limit: 8 },
+    {
+      // Keep the palette read-only until the user is actively searching so it
+      // does not duplicate the main Available Jobs query on every route load.
+      enabled: open && debounced.length >= 2,
+    },
+  );
   const enabledCompanyCount = enabledCompanyCountForScan(
     config.data?.config.companies,
     config.data?.companyScanOverrides,
@@ -144,6 +152,14 @@ export function CommandPalette() {
               onSelect={action(() => {
                 if (!confirmLargeScanStart(enabledCompanyCount, isAdmin)) return;
                 toast("Scan starting", "info");
+                // Mirror the sidebar scan event so command-palette launches are
+                // attributed to the same product action in GA4.
+                trackEvent("run_scan", {
+                  enabled_company_count: enabledCompanyCount,
+                  actor_role: isAdmin ? "admin" : "user",
+                  confirm_large_scan: enabledCompanyCount > 20,
+                  trigger_surface: "command_palette",
+                });
                 startRun.mutate({ confirmLargeScan: enabledCompanyCount > 20 }, {
                   onSuccess: (result) => toast(formatRunCompletionToast(result)),
                   onError: (error) => toast(error instanceof Error ? error.message : "Start failed", "error"),

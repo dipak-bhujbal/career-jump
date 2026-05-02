@@ -17,6 +17,7 @@ import { KeyboardHelp } from "@/components/keyboard-help";
 import { MeteorBackground } from "@/components/meteor-background";
 import { RunProgress } from "@/components/run-progress";
 import { useHotkey } from "@/lib/hotkeys";
+import { trackPageView } from "@/lib/analytics";
 import { AuthProvider, useAuth } from "@/features/auth/AuthContext";
 import { useMe } from "@/features/session/queries";
 import { Sparkles } from "lucide-react";
@@ -62,7 +63,7 @@ function AppShell() {
 
 function AuthGate() {
   const { status } = useAuth();
-  const { pathname } = useLocation();
+  const { pathname, href } = useLocation();
 
   // Redirect after render so protected routes do not flash a blank screen
   // while TanStack Router processes the location change.
@@ -74,6 +75,12 @@ function AuthGate() {
       window.location.replace(loginUrl);
     }
   }, [pathname, status]);
+
+  useEffect(() => {
+    // Pageviews belong at the root route so the app tracks both public and
+    // authenticated navigation without duplicating analytics hooks per screen.
+    trackPageView(href);
+  }, [href]);
 
   if (isPublicPath(pathname)) return <Outlet />;
 

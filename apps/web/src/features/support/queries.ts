@@ -4,6 +4,7 @@ import {
   type AnnouncementEnvelope,
   type AnnouncementsEnvelope,
   type AdminAnalyticsEnvelope,
+  type AdminRegistryStatusEnvelope,
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
   type AdminSummaryEnvelope,
@@ -71,11 +72,21 @@ export function useCreateSupportMessage(ticketId: string | null) {
   });
 }
 
-export function useAdminSummary() {
+export function useAdminSummary(enabled = true) {
   return useQuery({
     queryKey: ["admin-summary"],
     queryFn: () => api.get<AdminSummaryEnvelope>("/api/admin/summary"),
+    enabled,
     staleTime: 10_000,
+  });
+}
+
+export function useAdminRegistryStatus(enabled = true) {
+  return useQuery({
+    queryKey: ["admin-registry-status"],
+    queryFn: () => api.get<AdminRegistryStatusEnvelope>("/api/admin/registry-status"),
+    enabled,
+    staleTime: 30_000,
   });
 }
 

@@ -295,3 +295,16 @@ export async function summarizeCurrentRawScans(): Promise<{
     lastScannedAt,
   };
 }
+
+export async function listCurrentRawScanSummaries(): Promise<Array<{
+  company: string;
+  totalJobs: number;
+  lastScannedAt: string | null;
+}>> {
+  const rows = await listCurrentRawScans();
+  return rows.map((row) => ({
+    company: row.company,
+    totalJobs: row.jobs.length,
+    lastScannedAt: row.scannedAt ?? null,
+  }));
+}

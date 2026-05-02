@@ -24,6 +24,10 @@ export const registryMetaKey = ["registry", "meta"] as const;
 export const registrySearchKey = (q: { search?: string; ats?: string; tier?: string; limit?: number }) =>
   ["registry", "search", q.search ?? "", q.ats ?? "", q.tier ?? "", q.limit ?? 50] as const;
 
+type ConfigQueryOptions = {
+  enabled?: boolean;
+};
+
 export type RegistrySearchResult = { ok: boolean; total: number; entries: RegistryEntry[] };
 
 function normalizeRegistryEntries(result: Partial<RegistrySearchResult> & Record<string, unknown>): RegistryEntry[] {
@@ -32,10 +36,13 @@ function normalizeRegistryEntries(result: Partial<RegistrySearchResult> & Record
   return Array.isArray(rawEntries) ? rawEntries as RegistryEntry[] : [];
 }
 
-export function useConfig() {
+export function useConfig(options: ConfigQueryOptions = {}) {
   return useQuery({
     queryKey: configKey,
     queryFn: () => api.get<ConfigEnvelope>("/api/config"),
+    // Some app-shell surfaces only need config while actively visible. Let
+    // those call sites opt out of eager background reads to reduce burst load.
+    enabled: options.enabled !== false,
     staleTime: 30_000,
   });
 }

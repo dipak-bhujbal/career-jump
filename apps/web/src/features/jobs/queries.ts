@@ -18,6 +18,10 @@ export type JobsFilter = {
   offset?: number;
 };
 
+type JobsQueryOptions = {
+  enabled?: boolean;
+};
+
 function buildJobsParams(f: JobsFilter): URLSearchParams {
   const p = new URLSearchParams();
   for (const c of f.companies ?? []) if (c) p.append("company", c);
@@ -35,13 +39,17 @@ function buildJobsParams(f: JobsFilter): URLSearchParams {
 
 export const jobsKey = (f: JobsFilter) => ["jobs", f] as const;
 
-export function useJobs(filter: JobsFilter) {
+export function useJobs(filter: JobsFilter, options: JobsQueryOptions = {}) {
   return useQuery({
     queryKey: jobsKey(filter),
     queryFn: () => {
       const params = buildJobsParams(filter);
       return api.get<JobsEnvelope>(`/api/jobs?${params.toString()}`);
     },
+    // Callers such as the global command palette can disable background job
+    // lookups while hidden so the app shell does not duplicate `/api/jobs`
+    // traffic on every page load.
+    enabled: options.enabled !== false,
     placeholderData: (prev) => prev,
     staleTime: 15_000,
   });

@@ -17,10 +17,13 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import "./index.css";
 import { routeTree } from "./routeTree.gen";
 import { installMocks, shouldUseMocks } from "./mocks/install";
+import { initAnalytics } from "./lib/analytics";
+import { ApiError } from "./lib/api";
 
 // Demo / test data — install BEFORE the QueryClient kicks off any
 // fetches so the app sees mocked responses end-to-end.
 if (shouldUseMocks()) installMocks();
+initAnalytics();
 
 const router = createRouter({ routeTree });
 
@@ -30,7 +33,14 @@ declare module "@tanstack/react-router" {
 
 const queryClient = new QueryClient({
   defaultOptions: {
-    queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 30_000 },
+    queries: {
+      // Retrying 4xx responses, especially Lambda/edge 429s, multiplies the
+      // same burst that caused the throttle. Only retry transient 5xx/network
+      // style failures once.
+      retry: (failureCount, error) => !(error instanceof ApiError && error.status < 500) && failureCount < 1,
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    },
     mutations: { retry: 0 },
   },
 });

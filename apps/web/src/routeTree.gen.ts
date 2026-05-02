@@ -25,6 +25,7 @@ import { Route as AppliedRouteImport } from './routes/applied'
 import { Route as AdminUsersRouteImport } from './routes/admin-users'
 import { Route as AdminSupportRouteImport } from './routes/admin-support'
 import { Route as AdminStripeConfigRouteImport } from './routes/admin-stripe-config'
+import { Route as AdminRegistryStatusRouteImport } from './routes/admin-registry-status'
 import { Route as AdminPlanConfigRouteImport } from './routes/admin-plan-config'
 import { Route as AdminFlagsRouteImport } from './routes/admin-flags'
 import { Route as AdminDocsRouteImport } from './routes/admin-docs'
@@ -114,6 +115,11 @@ const AdminStripeConfigRoute = AdminStripeConfigRouteImport.update({
   path: '/admin-stripe-config',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AdminRegistryStatusRoute = AdminRegistryStatusRouteImport.update({
+  id: '/admin-registry-status',
+  path: '/admin-registry-status',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const AdminPlanConfigRoute = AdminPlanConfigRouteImport.update({
   id: '/admin-plan-config',
   path: '/admin-plan-config',
@@ -163,6 +169,7 @@ export interface FileRoutesByFullPath {
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-registry-status': typeof AdminRegistryStatusRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -189,6 +196,7 @@ export interface FileRoutesByTo {
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-registry-status': typeof AdminRegistryStatusRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -216,6 +224,7 @@ export interface FileRoutesById {
   '/admin-docs': typeof AdminDocsRoute
   '/admin-flags': typeof AdminFlagsRoute
   '/admin-plan-config': typeof AdminPlanConfigRoute
+  '/admin-registry-status': typeof AdminRegistryStatusRoute
   '/admin-stripe-config': typeof AdminStripeConfigRoute
   '/admin-support': typeof AdminSupportRoute
   '/admin-users': typeof AdminUsersRoute
@@ -244,6 +253,7 @@ export interface FileRouteTypes {
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
+    | '/admin-registry-status'
     | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
@@ -270,6 +280,7 @@ export interface FileRouteTypes {
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
+    | '/admin-registry-status'
     | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
@@ -296,6 +307,7 @@ export interface FileRouteTypes {
     | '/admin-docs'
     | '/admin-flags'
     | '/admin-plan-config'
+    | '/admin-registry-status'
     | '/admin-stripe-config'
     | '/admin-support'
     | '/admin-users'
@@ -323,6 +335,7 @@ export interface RootRouteChildren {
   AdminDocsRoute: typeof AdminDocsRoute
   AdminFlagsRoute: typeof AdminFlagsRoute
   AdminPlanConfigRoute: typeof AdminPlanConfigRoute
+  AdminRegistryStatusRoute: typeof AdminRegistryStatusRoute
   AdminStripeConfigRoute: typeof AdminStripeConfigRoute
   AdminSupportRoute: typeof AdminSupportRoute
   AdminUsersRoute: typeof AdminUsersRoute
@@ -456,6 +469,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AdminStripeConfigRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/admin-registry-status': {
+      id: '/admin-registry-status'
+      path: '/admin-registry-status'
+      fullPath: '/admin-registry-status'
+      preLoaderRoute: typeof AdminRegistryStatusRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/admin-plan-config': {
       id: '/admin-plan-config'
       path: '/admin-plan-config'
@@ -523,6 +543,7 @@ const rootRouteChildren: RootRouteChildren = {
   AdminDocsRoute: AdminDocsRoute,
   AdminFlagsRoute: AdminFlagsRoute,
   AdminPlanConfigRoute: AdminPlanConfigRoute,
+  AdminRegistryStatusRoute: AdminRegistryStatusRoute,
   AdminStripeConfigRoute: AdminStripeConfigRoute,
   AdminSupportRoute: AdminSupportRoute,
   AdminUsersRoute: AdminUsersRoute,

@@ -87,9 +87,11 @@
           return "";
         }
       }
-      const apiBaseUrl = window.CAREER_JUMP_AWS?.apiBaseUrl?.replace(/\/$/, "") || "";
       window.ui = SwaggerUIBundle({
-        url: apiBaseUrl ? `${apiBaseUrl}/api/openapi.json` : "/api/openapi.json",
+        // Resolve the OpenAPI document from the same origin as the docs page so
+        // CloudFront can cache the public spec and we avoid an extra direct API
+        // hop during admin refreshes.
+        url: "/api/openapi.json",
         dom_id: "#swagger-ui",
         deepLinking: true,
         docExpansion: "list",

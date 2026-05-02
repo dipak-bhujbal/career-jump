@@ -5,6 +5,7 @@ import {
   BarChart3,
   BookOpen,
   CreditCard,
+  Database,
   Flag,
   LayoutDashboard,
   LifeBuoy,
@@ -52,6 +53,12 @@ export const adminNavItems: AdminNavItem[] = [
     label: "Docs",
     description: "Admin-facing Swagger and API reference.",
     icon: BookOpen,
+  },
+  {
+    to: "/admin-registry-status",
+    label: "Registry Status",
+    description: "Per-company current job counts and last scan time.",
+    icon: Database,
   },
   {
     to: "/admin-analytics",

@@ -84,6 +84,7 @@ import {
   setUserAccountStatus,
   adminSetUserPlan,
   loadScanQuotaUsage,
+  listCurrentRawScanSummaries,
   summarizeCurrentRawScans,
   remainingLiveScans,
   setCompanyScanOverride,
@@ -98,6 +99,7 @@ import {
 } from "./storage";
 import { biasQueryByCurrentHour } from "./storage/registry-scan-state";
 import { recordPasswordResetConfirmAttempt } from "./storage/password-reset";
+import { normalizeCompanyKey } from "./storage/tenant-keys";
 import { buildDashboardPayload } from "./services/dashboard";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
@@ -840,6 +842,46 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           lastScannedAt: rawScanSummary.lastScannedAt,
         },
         featureFlags: flags,
+      });
+    }
+
+    if (url.pathname === "/api/admin/registry-status" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const [registryEntries, rawScanSummary, currentRows] = await Promise.all([
+        loadRegistryCache().then(() => listAll()),
+        summarizeCurrentRawScans(),
+        listCurrentRawScanSummaries(),
+      ]);
+
+      // Join the registry catalog against the current raw-scan inventory so
+      // admins can see both scanned and not-yet-scanned companies in one table.
+      const currentByCompanyKey = new Map(
+        currentRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
+      );
+
+      const rows = registryEntries.map((entry) => {
+        const current = currentByCompanyKey.get(normalizeCompanyKey(entry.company));
+        return {
+          registryId: normalizeCompanyKey(entry.company),
+          company: entry.company,
+          ats: entry.ats ?? null,
+          totalJobs: current?.totalJobs ?? 0,
+          lastScannedAt: current?.lastScannedAt ?? null,
+        };
+      });
+
+      return jsonResponse({
+        ok: true,
+        totals: {
+          totalCompanies: registryEntries.length,
+          currentCompanies: rawScanSummary.currentCompanies,
+          currentJobs: rawScanSummary.currentJobs,
+          lastScannedAt: rawScanSummary.lastScannedAt,
+        },
+        rows,
       });
     }
 

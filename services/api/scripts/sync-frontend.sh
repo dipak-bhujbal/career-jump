@@ -29,6 +29,7 @@ COGNITO_USER_POOL_ID="$(output CognitoUserPoolId)"
 ADMIN_COGNITO_DOMAIN="$(output AdminCognitoDomain)"
 ADMIN_COGNITO_CLIENT_ID="$(output AdminCognitoClientId)"
 ADMIN_COGNITO_USER_POOL_ID="$(output AdminCognitoUserPoolId)"
+GA_MEASUREMENT_ID="${GOOGLE_ANALYTICS_MEASUREMENT_ID:-${VITE_GA_MEASUREMENT_ID:-}}"
 
 CONFIG_FILE="$(mktemp)"
 cat > "$CONFIG_FILE" <<EOF_CONFIG
@@ -40,6 +41,7 @@ window.CAREER_JUMP_AWS = {
   adminCognitoDomain: "${ADMIN_COGNITO_DOMAIN%/}",
   adminCognitoClientId: "${ADMIN_COGNITO_CLIENT_ID}",
   adminCognitoUserPoolId: "${ADMIN_COGNITO_USER_POOL_ID}",
+  gaMeasurementId: "${GA_MEASUREMENT_ID}",
   redirectUri: "${FRONTEND_URL%/}/"
 };
 EOF_CONFIG

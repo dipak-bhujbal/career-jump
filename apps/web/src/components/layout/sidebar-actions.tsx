@@ -26,6 +26,7 @@ import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useConfig } from "@/features/companies/queries";
 import { useMe } from "@/features/session/queries";
+import { trackEvent } from "@/lib/analytics";
 
 export function SidebarActions() {
   const status = useRunStatus();
@@ -79,6 +80,14 @@ export function SidebarActions() {
           onClick={() => {
             if (!confirmLargeScanStart(enabledCompanyCount, isAdmin)) return;
             toast("Scan starting", "info");
+            // Capture the primary app action so product analytics can separate
+            // routine navigation from deliberate scan intent.
+            trackEvent("run_scan", {
+              enabled_company_count: enabledCompanyCount,
+              actor_role: isAdmin ? "admin" : "user",
+              confirm_large_scan: enabledCompanyCount > 20,
+              trigger_surface: "sidebar",
+            });
             startRun.mutate({ confirmLargeScan: enabledCompanyCount > 20 }, {
               onSuccess: (result) => toast(formatRunCompletionToast(result)),
               onError: (e) => toast(e instanceof Error ? e.message : "Start failed", "error"),
