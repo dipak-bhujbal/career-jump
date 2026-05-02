@@ -1551,6 +1551,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         await loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
+          // Manual admin scans should honor the visible tenant configuration
+          // instead of silently expanding into the full registry.
+          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         tenantContext.tenantId,
       );
@@ -1823,6 +1826,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         await loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
+          // Keep manual admin scans on the same bounded company set the user
+          // sees in Configuration so "scan one company" never fans out to the
+          // full registry behind the scenes.
+          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         tenantContext.tenantId,
       );

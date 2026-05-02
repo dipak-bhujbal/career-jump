@@ -81,6 +81,10 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
       await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        // The async AWS run path must mirror the interactive Configuration
+        // screen for admins, otherwise a one-company manual scan can explode
+        // into a full-registry fanout after /api/run already returned accepted.
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       }),
       tenantContext.tenantId,
     );
