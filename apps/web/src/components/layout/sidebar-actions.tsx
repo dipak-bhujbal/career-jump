@@ -12,11 +12,10 @@ import { useRef, useEffect } from "react";
 import { Play, Trash2, Wand2, AlertTriangle, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
-  useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks, useLatestRunResult, useScanQuota,
+  useStartRun, useAbortRun, useRunStatus, useClearCache, useRemoveBrokenLinks, useLatestRunResult, useScanQuota, useScanContext,
 } from "@/features/run/queries";
 import {
   confirmLargeScanStart,
-  enabledCompanyCountForScan,
   formatLastRunSummary,
   formatRunCompletionToast,
   formatScanQuotaHint,
@@ -24,15 +23,14 @@ import {
 } from "@/features/run/presentation";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
-import { useConfig } from "@/features/companies/queries";
 import { useMe } from "@/features/session/queries";
 import { trackEvent } from "@/lib/analytics";
 
 export function SidebarActions() {
   const status = useRunStatus();
   const quota = useScanQuota();
+  const scanContext = useScanContext();
   const latestRun = useLatestRunResult();
-  const config = useConfig();
   const { data: me } = useMe();
   const startRun = useStartRun();
   const abortRun = useAbortRun();
@@ -45,10 +43,9 @@ export function SidebarActions() {
   const active = status.data?.active === true || startRun.isPending || queuedPending;
   const busy = abortRun.isPending || clearCache.isPending || removeBroken.isPending;
   const abortableRunId = status.data?.runId ?? latestRun.data?.runId ?? null;
-  const enabledCompanyCount = enabledCompanyCountForScan(
-    config.data?.config.companies,
-    config.data?.companyScanOverrides,
-  );
+  // The sidebar is mounted on every page, so use a tiny dedicated endpoint for
+  // scan confirmation context instead of eagerly fetching the full config.
+  const enabledCompanyCount = scanContext.data?.enabledCompanyCount ?? 0;
   const isAdmin = me?.actor.isAdmin === true;
 
   useEffect(() => {

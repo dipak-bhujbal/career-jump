@@ -12,6 +12,7 @@ import {
   type AppliedJobsEnvelope,
   type Dashboard,
   type JobsEnvelope,
+  type ScanContextEnvelope,
   type RunStartResponse,
   type RunStatus,
   type ScanQuotaEnvelope,
@@ -22,6 +23,7 @@ import { isAcceptedRun } from "./presentation";
 export const runStatusKey = ["run", "status"] as const;
 export const latestRunResultKey = ["run", "latest-result"] as const;
 export const scanQuotaKey = ["run", "scan-quota"] as const;
+export const scanContextKey = ["run", "scan-context"] as const;
 export const startRunMutationKey = ["run", "start"] as const;
 
 function normalizeRunStartResponse(result: RunStartResponse): RunStartResponse {
@@ -83,6 +85,15 @@ export function useScanQuota() {
     // updates soon after completion without forcing manual reloads.
     refetchInterval: () => (qc.getQueryData<RunStatus>(runStatusKey)?.active ? 5_000 : 60_000),
     staleTime: 10_000,
+  });
+}
+
+export function useScanContext(options: { enabled?: boolean } = {}) {
+  return useQuery({
+    queryKey: scanContextKey,
+    queryFn: () => api.get<ScanContextEnvelope>("/api/scan-context"),
+    enabled: options.enabled !== false,
+    staleTime: 60_000,
   });
 }
 

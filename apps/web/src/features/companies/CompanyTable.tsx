@@ -30,13 +30,14 @@ const ATS_OPTIONS = [
 
 interface CompanyTableProps {
   companies: CompanyConfig[];
+  rowIndexes?: number[];
   scanOverrides: Record<string, { paused: boolean }>;
   onChange: (index: number, patch: Partial<CompanyConfig>) => void;
   onRemove: (index: number) => void;
   onToggleScan: (company: string, currentlyPaused: boolean) => void;
 }
 
-export function CompanyTable({ companies, scanOverrides, onChange, onRemove, onToggleScan }: CompanyTableProps) {
+export function CompanyTable({ companies, rowIndexes, scanOverrides, onChange, onRemove, onToggleScan }: CompanyTableProps) {
   if (companies.length === 0) {
     return (
       <div className="px-6 py-16 text-center text-sm text-[hsl(var(--muted-foreground))]">
@@ -47,12 +48,15 @@ export function CompanyTable({ companies, scanOverrides, onChange, onRemove, onT
   return (
     <div className="divide-y divide-[hsl(var(--border))]">
       {companies.map((company, index) => {
+        // Configuration pagination/filtering keeps rendering a subset of rows, so
+        // preserve the original draft index when mutating the parent state.
+        const rowIndex = rowIndexes?.[index] ?? index;
         const paused = scanOverrides?.[companyKey(company.company)]?.paused === true;
         return (
           <CompanyRow
-            key={`${index}-${company.company}`}
+            key={`${rowIndex}-${company.company}`}
             company={company}
-            index={index}
+            index={rowIndex}
             paused={paused}
             onChange={onChange}
             onRemove={onRemove}

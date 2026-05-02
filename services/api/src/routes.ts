@@ -269,6 +269,17 @@ function effectiveEnabledCompanyKeys(
   );
 }
 
+function summarizeCompaniesByAts(companies: RuntimeConfig["companies"]): Array<{ ats: string; count: number }> {
+  const counts = new Map<string, number>();
+  for (const company of companies) {
+    const ats = String(company.registryAts || company.source || "unknown").trim() || "unknown";
+    counts.set(ats, (counts.get(ats) ?? 0) + 1);
+  }
+  return [...counts.entries()]
+    .map(([ats, count]) => ({ ats, count }))
+    .sort((a, b) => b.count - a.count || a.ats.localeCompare(b.ats));
+}
+
 async function loadCompanyLimitForUser(userId: string): Promise<number | null> {
   const subscription = await loadBillingSubscription(userId);
   const planConfig = await loadPlanConfig(subscription.plan);
@@ -1377,6 +1388,24 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       });
       const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       return jsonResponse({ ok: true, config, companyScanOverrides });
+    }
+
+    if (url.pathname === "/api/scan-context" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
+      // Sidebar and palette only need the enabled-company count for the large
+      // scan confirmation UX, so keep this endpoint intentionally tiny.
+      return jsonResponse({
+        ok: true,
+        enabledCompanyCount: config.companies.filter((company) => company.enabled !== false).length,
+      });
     }
 
     if (url.pathname === "/api/auth/reset/request" && request.method === "POST") {
@@ -2608,13 +2637,33 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
-        isAdmin: tenantContext.isAdmin,
-        updatedByUserId: tenantContext.userId,
-      });
-      const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantContext.tenantId);
+      const config = await applyCompanyScanOverrides(
+        env,
+        await loadRuntimeConfig(env, tenantContext.tenantId, {
+          isAdmin: tenantContext.isAdmin,
+          updatedByUserId: tenantContext.userId,
+        }),
+        tenantContext.tenantId,
+      );
+      const { effectiveInventory, inventoryState } = await loadDerivedAvailableInventory(
+        env,
+        config,
+        tenantContext.tenantId,
+        { isAdmin: tenantContext.isAdmin },
+      );
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
-      return jsonResponse({ ok: true, ...(await buildDashboardPayload(env, inventory, appliedJobs, tenantContext.tenantId, inventoryState)) });
+      const companiesByAts = summarizeCompaniesByAts(config.companies);
+      return jsonResponse({
+        ok: true,
+        ...(await buildDashboardPayload(
+          env,
+          effectiveInventory,
+          appliedJobs,
+          tenantContext.tenantId,
+          inventoryState,
+          companiesByAts,
+        )),
+      });
     }
 
     if (url.pathname === "/api/filters" && request.method === "GET") {

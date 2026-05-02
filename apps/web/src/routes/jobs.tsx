@@ -124,7 +124,9 @@ function JobsRoute() {
   const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
   const discard = useDiscardJob();
-  const savedFiltersQuery = useSavedFilters("available_jobs");
+  // Saved filters only matter while the advanced drawer is open, so defer the
+  // request until the user actually expands that surface.
+  const savedFiltersQuery = useSavedFilters("available_jobs", { enabled: advancedOpen });
   const saveFilter = useSaveFilter();
   const deleteFilter = useDeleteFilter();
   const [saveFilterName, setSaveFilterName] = useState("");

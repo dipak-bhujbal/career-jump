@@ -162,6 +162,7 @@ export type Dashboard = {
   ok?: boolean;
   kpis?: DashboardKpis;
   lastRunAt?: string;
+  companiesByAts?: Array<{ ats: string; count: number }>;
   statusBreakdown?: Record<string, number>;
   keywordCounts?: Record<string, number>;
 };
@@ -454,6 +455,11 @@ export type ScanQuotaEnvelope = {
   lastLiveScanAt: string | null;
   date: string;
   unlimited?: boolean;
+};
+
+export type ScanContextEnvelope = {
+  ok: boolean;
+  enabledCompanyCount: number;
 };
 
 // ---------- Email webhook ----------

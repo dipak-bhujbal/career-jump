@@ -32,7 +32,8 @@ export async function buildDashboardPayload(
   inventory: InventorySnapshot,
   appliedJobs: Record<string, AppliedJobRecord>,
   tenantId?: string,
-  preloadedState?: DashboardPreloadedState
+  preloadedState?: DashboardPreloadedState,
+  companiesByAts?: Array<{ ats: string; count: number }>,
 ) {
   const appliedRows = Object.values(appliedJobs);
   const inventoryKeys = new Set(inventory.jobs.map((job) => jobKey(job)));
@@ -95,6 +96,7 @@ export async function buildDashboardPayload(
       newJobsLatestRun: lastNewJobsCount,
       updatedJobsLatestRun: lastUpdatedJobsCount,
     },
+    companiesByAts: companiesByAts ?? [],
     keywordCounts: combinedKeywordCounts(inventory, appliedJobs),
     statusBreakdown,
   };

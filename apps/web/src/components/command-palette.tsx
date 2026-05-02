@@ -19,10 +19,9 @@ import {
 } from "lucide-react";
 import { useHotkey } from "@/lib/hotkeys";
 import { useTheme } from "@/lib/theme";
-import { useStartRun, useClearCache } from "@/features/run/queries";
-import { confirmLargeScanStart, enabledCompanyCountForScan, formatRunCompletionToast } from "@/features/run/presentation";
+import { useStartRun, useClearCache, useScanContext } from "@/features/run/queries";
+import { confirmLargeScanStart, formatRunCompletionToast } from "@/features/run/presentation";
 import { useRegistrySearch } from "@/features/companies/queries";
-import { useConfig } from "@/features/companies/queries";
 import { useJobs } from "@/features/jobs/queries";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
@@ -57,7 +56,7 @@ export function CommandPalette() {
   const { theme, toggle: toggleTheme } = useTheme();
   const startRun = useStartRun();
   const clearCache = useClearCache();
-  const config = useConfig({ enabled: open });
+  const scanContext = useScanContext({ enabled: open });
   const { data: me } = useMe();
 
   const registry = useRegistrySearch({ search: debounced, enabled: open && debounced.length >= 2 });
@@ -69,10 +68,9 @@ export function CommandPalette() {
       enabled: open && debounced.length >= 2,
     },
   );
-  const enabledCompanyCount = enabledCompanyCountForScan(
-    config.data?.config.companies,
-    config.data?.companyScanOverrides,
-  );
+  // Keep the palette cheap while closed and avoid loading the full config just
+  // to decide whether a large-scan confirmation should appear.
+  const enabledCompanyCount = scanContext.data?.enabledCompanyCount ?? 0;
   const isAdmin = me?.actor.isAdmin === true;
 
   const go = (to: string) => () => { setOpen(false); navigate({ to }); };

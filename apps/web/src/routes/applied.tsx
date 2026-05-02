@@ -85,7 +85,9 @@ function AppliedRoute() {
   const { data, isLoading } = useApplied(filter);
   const kanbanQuery = useAppliedKanban({ enabled: view === "board" });
   const updateStatus = useUpdateStatus();
-  const savedFiltersQuery = useSavedFilters("applied_jobs");
+  // Saved filters only matter once the advanced drawer is expanded, so defer
+  // the request until the user actually opens that surface.
+  const savedFiltersQuery = useSavedFilters("applied_jobs", { enabled: advancedOpen });
   const saveFilterMutation = useSaveFilter();
   const deleteFilterMutation = useDeleteFilter();
   // Normalize optional API arrays once so empty states cannot crash on `.length`.

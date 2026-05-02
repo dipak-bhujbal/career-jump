@@ -15,13 +15,14 @@ export interface SavedFilter {
 
 export const filtersKey = (scope?: SavedFilterScope) => ["filters", scope ?? "all"] as const;
 
-export function useSavedFilters(scope?: SavedFilterScope) {
+export function useSavedFilters(scope?: SavedFilterScope, options: { enabled?: boolean } = {}) {
   return useQuery({
     queryKey: filtersKey(scope),
     queryFn: () => {
       const params = scope ? `?scope=${scope}` : "";
       return api.get<{ ok: boolean; total: number; filters: SavedFilter[] }>(`/api/filters${params}`);
     },
+    enabled: options.enabled !== false,
     staleTime: 30_000,
   });
 }

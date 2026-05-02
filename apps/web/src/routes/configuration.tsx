@@ -23,7 +23,6 @@ import { CompanyPicker } from "@/features/companies/CompanyPicker";
 import { CompanyTable } from "@/features/companies/CompanyTable";
 import {
   useConfig,
-  useRegistryMeta,
   useSaveConfig,
   useToggleCompany,
   configKey,
@@ -82,9 +81,9 @@ function canonicalBoardUrlForRegistryEntry(
 }
 
 function ConfigurationRoute() {
+  const CONFIG_PAGE_SIZE = 20;
   const { data: me } = useMe();
   const config = useConfig();
-  const registryMeta = useRegistryMeta();
   const saveConfig = useSaveConfig();
   const toggleScan = useToggleCompany();
   const toggleAll = useToggleAllCompanies();
@@ -97,6 +96,7 @@ function ConfigurationRoute() {
   const [companySearch, setCompanySearch] = useState("");
   const [atsFilter, setAtsFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState<"" | "enabled" | "paused">();
+  const [companyPage, setCompanyPage] = useState(0);
   const [editingKeywords, setEditingKeywords] = useState(false);
   const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
   const [adminRegistryMode, setAdminRegistryMode] = useState<"all" | "none">("all");
@@ -153,30 +153,47 @@ function ConfigurationRoute() {
   const trackedCustom = draftCompanies.filter((c) => !isFromRegistry(c) && c.company).length;
   const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
   const showUpgradeBanner = currentPlan === "free";
-  void registryMeta;
 
   const visibleCompanies = useMemo(() => {
     const scanOverrides = config.data?.companyScanOverrides ?? {};
-    let list = draftCompanies;
-    if (tab === "registry") list = list.filter(isFromRegistry);
-    else if (tab === "custom") list = list.filter((c) => !isFromRegistry(c));
+    let list = draftCompanies.map((company, index) => ({ company, index }));
+    if (tab === "registry") list = list.filter((row) => isFromRegistry(row.company));
+    else if (tab === "custom") list = list.filter((row) => !isFromRegistry(row.company));
     if (companySearch.trim()) {
       const q = companySearch.trim().toLowerCase();
-      list = list.filter((c) => c.company.toLowerCase().includes(q));
+      list = list.filter((row) => row.company.company.toLowerCase().includes(q));
     }
     if (atsFilter) {
-      list = list.filter((c) => {
-        const src = (c.registryAts || c.source || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+      list = list.filter((row) => {
+        const src = (row.company.registryAts || row.company.source || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
         return src === atsFilter;
       });
     }
     if (statusFilter === "paused") {
-      list = list.filter((c) => c.company && scanOverrides[companyKey(c.company)]?.paused);
+      list = list.filter((row) => row.company.company && scanOverrides[companyKey(row.company.company)]?.paused);
     } else if (statusFilter === "enabled") {
-      list = list.filter((c) => !c.company || !scanOverrides[companyKey(c.company)]?.paused);
+      list = list.filter((row) => !row.company.company || !scanOverrides[companyKey(row.company.company)]?.paused);
     }
     return list;
   }, [draftCompanies, tab, companySearch, atsFilter, statusFilter, config.data]);
+
+  const totalVisiblePages = Math.max(1, Math.ceil(visibleCompanies.length / CONFIG_PAGE_SIZE));
+  const pagedVisibleCompanies = useMemo(() => {
+    const start = companyPage * CONFIG_PAGE_SIZE;
+    return visibleCompanies.slice(start, start + CONFIG_PAGE_SIZE);
+  }, [visibleCompanies, companyPage]);
+
+  useEffect(() => {
+    // Filtering can shrink the table dramatically, so snap back to the first page
+    // to avoid landing on an empty slice from a stale page index.
+    setCompanyPage(0);
+  }, [tab, companySearch, atsFilter, statusFilter]);
+
+  useEffect(() => {
+    if (companyPage >= totalVisiblePages) {
+      setCompanyPage(Math.max(0, totalVisiblePages - 1));
+    }
+  }, [companyPage, totalVisiblePages]);
 
   /** Add a registry-backed company. Stores the registry's ATS + sample URL
    *  on the row so the picker can show "already added" and the table can
@@ -452,12 +469,37 @@ function ConfigurationRoute() {
           <CardContent className="p-0 border-t border-[hsl(var(--border))]">
             <div className="max-h-[280px] overflow-y-auto">
               <CompanyTable
-                companies={visibleCompanies}
+                companies={pagedVisibleCompanies.map((row) => row.company)}
+                rowIndexes={pagedVisibleCompanies.map((row) => row.index)}
                 scanOverrides={config.data?.companyScanOverrides ?? {}}
-                onChange={(idx, patch) => handleEdit(draftCompanies.indexOf(visibleCompanies[idx]), patch)}
-                onRemove={(idx) => handleRemove(draftCompanies.indexOf(visibleCompanies[idx]))}
+                onChange={handleEdit}
+                onRemove={handleRemove}
                 onToggleScan={handleToggleScan}
               />
+            </div>
+            <div className="flex items-center justify-between gap-3 border-t border-[hsl(var(--border))] px-5 py-3 text-sm text-[hsl(var(--muted-foreground))]">
+              <div>
+                Page {Math.min(companyPage + 1, totalVisiblePages)} of {totalVisiblePages}
+                <span className="ml-2">· 20 companies per page</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCompanyPage((page) => Math.max(0, page - 1))}
+                  disabled={companyPage === 0}
+                >
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setCompanyPage((page) => Math.min(totalVisiblePages - 1, page + 1))}
+                  disabled={companyPage >= totalVisiblePages - 1}
+                >
+                  Next
+                </Button>
+              </div>
             </div>
           </CardContent>
         </Card>

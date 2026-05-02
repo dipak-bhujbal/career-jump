@@ -19,7 +19,6 @@ import { useDashboard } from "./queries";
 import { useLatestRunResult, useScanQuota, useRunStatus } from "@/features/run/queries";
 import { formatLastRunSummary } from "@/features/run/presentation";
 import { useApplied } from "@/features/applied/queries";
-import { useConfig } from "@/features/companies/queries";
 import { useActionPlan } from "@/features/plan/queries";
 import { formatNumber, formatPercent, formatShortDate, relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -362,15 +361,10 @@ function TopCompaniesWidget() {
 }
 
 function AtsBreakdownWidget() {
-  const { data: config } = useConfig();
+  const { data: dashboard } = useDashboard();
   const counts = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const c of config?.config?.companies ?? []) {
-      const ats = c.registryAts || c.source || "Unknown";
-      m[ats] = (m[ats] ?? 0) + 1;
-    }
-    return Object.entries(m).sort((a, b) => b[1] - a[1]);
-  }, [config]);
+    return (dashboard?.companiesByAts ?? []).map((row) => [row.ats, row.count] as const);
+  }, [dashboard?.companiesByAts]);
   const total = counts.reduce((a, [, v]) => a + v, 0);
   return (
     <WidgetCard icon={<Star size={14} />} title="Companies by ATS">
