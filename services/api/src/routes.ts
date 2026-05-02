@@ -460,13 +460,61 @@ function deriveRegistryLastScanStatus(scanState: {
   status?: string | null;
   lastSuccessAt?: string | null;
   lastFailureAt?: string | null;
-} | null | undefined): RegistryLastScanStatus {
+  nextScanAt?: string | null;
+} | null | undefined, options: {
+  lastScannedAt?: string | null;
+  nextScanAt?: string | null;
+  nowIso?: string;
+} = {}): RegistryLastScanStatus {
+  const effectiveLastScannedAt = options.lastScannedAt ?? scanState?.lastSuccessAt ?? null;
+  const effectiveNowIso = options.nowIso ?? nowISO();
+  const nextScanAt = options.nextScanAt ?? scanState?.nextScanAt ?? null;
+  const isOverdueWithoutSnapshot = Boolean(
+    !effectiveLastScannedAt
+      && nextScanAt
+      && nextScanAt.localeCompare(effectiveNowIso) <= 0,
+  );
+
+  // If a company is already overdue and still has no successful snapshot, the
+  // admin table should surface that as a failure instead of a misleading pass.
+  if (isOverdueWithoutSnapshot) return "fail";
   if (!scanState?.lastSuccessAt && !scanState?.lastFailureAt) return "pending";
   if (scanState.status === "failing" || scanState.status === "misconfigured") return "fail";
+  if (scanState.status === "paused") return "fail";
   if (scanState.lastFailureAt && (!scanState.lastSuccessAt || scanState.lastFailureAt.localeCompare(scanState.lastSuccessAt) > 0)) {
     return "fail";
   }
   return "pass";
+}
+
+function categorizeRegistryFailure(
+  scanState: {
+    status?: string | null;
+    lastFailureReason?: string | null;
+  } | null | undefined,
+  options: {
+    lastScannedAt?: string | null;
+    nextScanAt?: string | null;
+    nowIso?: string;
+  } = {},
+): string {
+  const reason = String(scanState?.lastFailureReason ?? "").trim().toLowerCase();
+  const effectiveNowIso = options.nowIso ?? nowISO();
+  const nextScanAt = options.nextScanAt ?? null;
+  const lastScannedAt = options.lastScannedAt ?? null;
+
+  if (!lastScannedAt && nextScanAt && nextScanAt.localeCompare(effectiveNowIso) <= 0) return "Overdue scan";
+  if (scanState?.status === "misconfigured") return "Config issue";
+  if (scanState?.status === "paused") return "Needs review";
+  if (!reason) return "Scan failed";
+  if (reason.includes("timeout")) return "Timeout";
+  if (reason.includes("429") || reason.includes("rate") || reason.includes("throttle")) return "Rate limit";
+  if (reason.includes("401") || reason.includes("403") || reason.includes("auth") || reason.includes("forbidden")) return "Auth issue";
+  if (reason.includes("404") || reason.includes("410") || reason.includes("missing") || reason.includes("not found")) return "Board missing";
+  if (reason.includes("parse") || reason.includes("schema") || reason.includes("json") || reason.includes("html")) return "Parser issue";
+  if (reason.includes("network") || reason.includes("dns") || reason.includes("fetch") || reason.includes("socket") || reason.includes("connect")) return "Network error";
+  if (reason.includes("empty") || reason.includes("no jobs")) return "Empty result";
+  return "Scan failed";
 }
 
 function isJobDiscardedForTenant(
@@ -1031,18 +1079,24 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const scanStateByCompanyKey = new Map(
         scanStateRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
       );
+      const now = nowISO();
 
       const rows = registryEntries.map((entry) => {
         const current = currentByCompanyKey.get(normalizeCompanyKey(entry.company));
         const scanState = scanStateByCompanyKey.get(normalizeCompanyKey(entry.company));
+        const effectiveLastScannedAt = current?.lastScannedAt ?? scanState?.lastSuccessAt ?? null;
         return {
           registryId: normalizeCompanyKey(entry.company),
           company: entry.company,
           ats: entry.ats ?? null,
           scanPool: scanState?.scanPool ?? "cold",
-          lastScanStatus: deriveRegistryLastScanStatus(scanState),
+          lastScanStatus: deriveRegistryLastScanStatus(scanState, {
+            lastScannedAt: effectiveLastScannedAt,
+            nextScanAt: scanState?.nextScanAt ?? null,
+            nowIso: now,
+          }),
           totalJobs: current?.totalJobs ?? 0,
-          lastScannedAt: current?.lastScannedAt ?? null,
+          lastScannedAt: effectiveLastScannedAt,
           nextScanAt: scanState?.nextScanAt ?? null,
         };
       });
@@ -1054,6 +1108,68 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           currentCompanies: rawScanSummary.currentCompanies,
           currentJobs: rawScanSummary.currentJobs,
           lastScannedAt: rawScanSummary.lastScannedAt,
+        },
+        rows,
+      });
+    }
+
+    if (url.pathname === "/api/admin/actions-needed" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const [registryEntries, currentRows, scanStateRows] = await Promise.all([
+        loadRegistryCache().then(() => listAll()),
+        listCurrentRawScanSummaries(),
+        exportScanStateRecords(),
+      ]);
+
+      const currentByCompanyKey = new Map(
+        currentRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
+      );
+      const scanStateByCompanyKey = new Map(
+        scanStateRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
+      );
+      const now = nowISO();
+
+      const rows = registryEntries.flatMap((entry) => {
+        const companyKey = normalizeCompanyKey(entry.company);
+        const current = currentByCompanyKey.get(companyKey);
+        const scanState = scanStateByCompanyKey.get(companyKey);
+        const effectiveLastScannedAt = current?.lastScannedAt ?? scanState?.lastSuccessAt ?? null;
+        const lastScanStatus = deriveRegistryLastScanStatus(scanState, {
+          lastScannedAt: effectiveLastScannedAt,
+          nextScanAt: scanState?.nextScanAt ?? null,
+          nowIso: now,
+        });
+
+        if (lastScanStatus !== "fail") return [];
+
+        return [{
+          company: entry.company,
+          ats: entry.ats ?? null,
+          scanPool: scanState?.scanPool ?? "cold",
+          lastScanStatus,
+          totalJobs: current?.totalJobs ?? 0,
+          lastScannedAt: effectiveLastScannedAt,
+          nextScanAt: scanState?.nextScanAt ?? null,
+          lastFailureAt: scanState?.lastFailureAt ?? null,
+          failureCount: scanState?.failureCount ?? 0,
+          failureCategory: categorizeRegistryFailure(scanState, {
+            lastScannedAt: effectiveLastScannedAt,
+            nextScanAt: scanState?.nextScanAt ?? null,
+            nowIso: now,
+          }),
+          failureReason: scanState?.lastFailureReason ?? null,
+        }];
+      });
+
+      return jsonResponse({
+        ok: true,
+        totals: {
+          totalFailures: rows.length,
+          pausedCompanies: rows.filter((row) => row.nextScanAt === null).length,
+          overdueCompanies: rows.filter((row) => row.lastScannedAt === null && row.nextScanAt && row.nextScanAt.localeCompare(now) <= 0).length,
         },
         rows,
       });

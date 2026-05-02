@@ -4,6 +4,7 @@ import {
   type AnnouncementEnvelope,
   type AnnouncementsEnvelope,
   type AdminAnalyticsEnvelope,
+  type AdminActionsNeededEnvelope,
   type AdminRegistryStatusEnvelope,
   type FeatureUsageAnalytics,
   type GrowthAnalytics,
@@ -85,6 +86,15 @@ export function useAdminRegistryStatus(enabled = true) {
   return useQuery({
     queryKey: ["admin-registry-status"],
     queryFn: () => api.get<AdminRegistryStatusEnvelope>("/api/admin/registry-status"),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+export function useAdminActionsNeeded(enabled = true) {
+  return useQuery({
+    queryKey: ["admin-actions-needed"],
+    queryFn: () => api.get<AdminActionsNeededEnvelope>("/api/admin/actions-needed"),
     enabled,
     staleTime: 30_000,
   });

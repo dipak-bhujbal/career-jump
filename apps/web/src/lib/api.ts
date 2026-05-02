@@ -546,6 +546,30 @@ export type AdminRegistryStatusEnvelope = {
   rows: AdminRegistryStatusRow[];
 };
 
+export type AdminActionsNeededRow = {
+  company: string;
+  ats: string | null;
+  scanPool: "hot" | "warm" | "cold";
+  lastScanStatus: "fail";
+  totalJobs: number;
+  lastScannedAt: string | null;
+  nextScanAt: string | null;
+  lastFailureAt: string | null;
+  failureCount: number;
+  failureCategory: string;
+  failureReason: string | null;
+};
+
+export type AdminActionsNeededEnvelope = {
+  ok: boolean;
+  totals: {
+    totalFailures: number;
+    pausedCompanies: number;
+    overdueCompanies: number;
+  };
+  rows: AdminActionsNeededRow[];
+};
+
 export type AdminUsersEnvelope = {
   ok: boolean;
   total: number;

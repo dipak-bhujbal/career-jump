@@ -18,7 +18,9 @@ type RegistryScanStateRow = RegistryCompanyScanState & {
 const DEFAULT_SCAN_POOL: RegistryScanPool = "cold";
 const DEFAULT_PRIORITY: RegistryScanPriority = "low";
 const FAILURE_WINDOW_MS = 24 * 60 * 60 * 1000;
-const PAUSED_FAILURE_THRESHOLD = 5;
+// Two consecutive failures are enough to remove a company from the automated
+// scheduler until an admin reviews the problem in the registry actions queue.
+const PAUSED_FAILURE_THRESHOLD = 2;
 const SCAN_POOL_INTERVAL_MS: Record<RegistryScanPool, number> = {
   hot: 3 * 60 * 60 * 1000,
   warm: 6 * 60 * 60 * 1000,
@@ -57,6 +59,13 @@ function pausedReprobeAt(lastFailureAt: string): string {
 
 function deriveStatus(state: RegistryCompanyScanState): RegistryScanStatus {
   if (state.status === "misconfigured") return "misconfigured";
+  if (
+    state.failureCount >= PAUSED_FAILURE_THRESHOLD
+    && state.lastFailureAt
+    && (!state.lastSuccessAt || state.lastFailureAt.localeCompare(state.lastSuccessAt) > 0)
+  ) {
+    return "paused";
+  }
   if (state.status === "paused") return "paused";
   if (state.status === "failing") return "failing";
   if (!state.lastSuccessAt) return "pending";
@@ -162,10 +171,12 @@ function normalizeState(
     scanPool: policy.scanPool,
     priority: policy.priority,
   };
+  const normalizedStatus = deriveStatus(merged);
   return {
     ...merged,
     scanPool: normalizeStoredScanPool(merged.scanPool),
-    status: deriveStatus(merged),
+    status: normalizedStatus,
+    nextScanAt: normalizedStatus === "paused" || normalizedStatus === "misconfigured" ? null : merged.nextScanAt,
   };
 }
 
@@ -269,8 +280,10 @@ export async function markRegistryCompanyScanFailure(
   const scannedAt = nowISO();
   const failureCount = normalizeFailureCount(previous);
   const paused = failureCount >= PAUSED_FAILURE_THRESHOLD;
+  // Once a company fails twice in a row, take it out of the automated
+  // scheduler entirely so repeated bad configs do not churn forever.
   const nextScanAt = paused
-    ? pausedReprobeAt(scannedAt)
+    ? null
     : futureIso(Math.min(intervalForPool(scanPool), failureCount * 60 * 60 * 1000));
 
   return saveState({
@@ -295,11 +308,12 @@ export async function queryDueRegistryCompanies(
   type Row = RegistryCompanyScanState & { pk: string; sk: string };
   await loadRegistryCache();
   const rows = await scanAllRows<Row>(registryTableName(), {
-    filterExpression: "sk = :sk AND #st <> :misconfigured AND #nsa <= :now",
+    filterExpression: "sk = :sk AND #st <> :misconfigured AND #st <> :paused AND #nsa <= :now",
     expressionAttributeNames: { "#st": "status", "#nsa": "nextScanAt" },
     expressionAttributeValues: {
       ":sk": "REGISTRY-SCAN-STATE",
       ":misconfigured": "misconfigured",
+      ":paused": "paused",
       ":now": nowIso,
     },
   });
@@ -312,7 +326,7 @@ export async function queryDueRegistryCompanies(
     const policy = statePolicyFromEntry(entry);
     const existing = bySlug.get(companySlug(entry.company)) ?? null;
     const state = normalizeState(entry.company, existing, policy);
-    if (state.status === "misconfigured") continue;
+    if (state.status === "misconfigured" || state.status === "paused") continue;
     const nextScanAtMs = state.nextScanAt ? Date.parse(state.nextScanAt) : NaN;
     if (!Number.isFinite(nextScanAtMs) || nextScanAtMs > Date.parse(nowIso)) continue;
     effectiveStates.push(state);

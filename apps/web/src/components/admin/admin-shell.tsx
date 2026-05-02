@@ -7,6 +7,7 @@ import {
   CreditCard,
   Database,
   Flag,
+  AlertTriangle,
   LayoutDashboard,
   LifeBuoy,
   ScrollText,
@@ -59,6 +60,12 @@ export const adminNavItems: AdminNavItem[] = [
     label: "Registry Status",
     description: "Per-company current job counts and last scan time.",
     icon: Database,
+  },
+  {
+    to: "/admin-actions-needed",
+    label: "Actions Needed",
+    description: "Failed registry companies that need operator follow-up.",
+    icon: AlertTriangle,
   },
   {
     to: "/admin-analytics",
