@@ -7,6 +7,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
+import { DateRangePicker, type DateRangeValue } from "@/components/ui/date-range-picker";
 import { useMe } from "@/features/session/queries";
 import { useAdminRegistryStatus } from "@/features/support/queries";
 import type { AdminRegistryStatusRow } from "@/lib/api";
@@ -14,7 +15,7 @@ import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin-registry-status")({ component: AdminRegistryStatusRoute });
 
-type SortColumn = "registryId" | "company" | "ats" | "scanPool" | "totalJobs" | "lastScannedAt" | "nextScanAt";
+type SortColumn = "company" | "ats" | "scanPool" | "lastScanStatus" | "totalJobs" | "lastScannedAt" | "nextScanAt";
 type SortDirection = "asc" | "desc";
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
@@ -26,6 +27,9 @@ function AdminRegistryStatusRoute() {
   const location = useLocation();
   const [companyFilter, setCompanyFilter] = useState("");
   const [tierFilter, setTierFilter] = useState("");
+  const [atsFilter, setAtsFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [lastScannedRange, setLastScannedRange] = useState<DateRangeValue>({ from: null, to: null });
   const [pageSize, setPageSize] = useState<number>(10);
   const [page, setPage] = useState(0);
   const [sortBy, setSortBy] = useState<SortColumn>("lastScannedAt");
@@ -56,10 +60,24 @@ function AdminRegistryStatusRoute() {
     const normalizedCompanyFilter = companyFilter.trim().toLowerCase();
     return (data?.rows ?? []).filter((row) => {
       if (tierFilter && row.scanPool !== tierFilter) return false;
+      if (atsFilter && (row.ats ?? "").toLowerCase() !== atsFilter) return false;
+      if (statusFilter && row.lastScanStatus !== statusFilter) return false;
       if (normalizedCompanyFilter && !row.company.toLowerCase().includes(normalizedCompanyFilter)) return false;
+      if (lastScannedRange.from || lastScannedRange.to) {
+        if (!row.lastScannedAt) return false;
+        const lastScannedMs = Date.parse(row.lastScannedAt);
+        if (!Number.isFinite(lastScannedMs)) return false;
+        if (lastScannedRange.from && lastScannedMs < lastScannedRange.from.getTime()) return false;
+        if (lastScannedRange.to && lastScannedMs > (lastScannedRange.to.getTime() + 86_399_999)) return false;
+      }
       return true;
     });
-  }, [companyFilter, data?.rows, tierFilter]);
+  }, [atsFilter, companyFilter, data?.rows, lastScannedRange.from, lastScannedRange.to, statusFilter, tierFilter]);
+
+  const atsOptions = useMemo(() => {
+    return [...new Set((data?.rows ?? []).map((row) => (row.ats ?? "").trim()).filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b));
+  }, [data?.rows]);
 
   const sortedRows = useMemo(() => {
     const direction = sortDir === "asc" ? 1 : -1;
@@ -133,7 +151,7 @@ function AdminRegistryStatusRoute() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_180px_180px]">
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_160px_160px_180px_220px_180px]">
               <Input
                 value={companyFilter}
                 onChange={(event) => {
@@ -142,6 +160,18 @@ function AdminRegistryStatusRoute() {
                 }}
                 placeholder="Filter by company name"
               />
+              <Select
+                value={statusFilter}
+                onChange={(event) => {
+                  setStatusFilter(event.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">All scan statuses</option>
+                <option value="pass">Pass</option>
+                <option value="fail">Fail</option>
+                <option value="pending">Pending</option>
+              </Select>
               <Select
                 value={tierFilter}
                 onChange={(event) => {
@@ -155,6 +185,26 @@ function AdminRegistryStatusRoute() {
                 <option value="cold">Cold</option>
               </Select>
               <Select
+                value={atsFilter}
+                onChange={(event) => {
+                  setAtsFilter(event.target.value);
+                  setPage(0);
+                }}
+              >
+                <option value="">All ATS</option>
+                {atsOptions.map((ats) => (
+                  <option key={ats} value={ats.toLowerCase()}>{ats}</option>
+                ))}
+              </Select>
+              <DateRangePicker
+                value={lastScannedRange}
+                onChange={(next) => {
+                  setLastScannedRange(next);
+                  setPage(0);
+                }}
+                placeholder="Last scanned between"
+              />
+              <Select
                 value={String(pageSize)}
                 onChange={(event) => {
                   setPageSize(Number(event.target.value) || 10);
@@ -167,15 +217,34 @@ function AdminRegistryStatusRoute() {
               </Select>
             </div>
 
+            {(companyFilter || tierFilter || atsFilter || statusFilter || lastScannedRange.from || lastScannedRange.to) ? (
+              <div className="flex justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setCompanyFilter("");
+                    setTierFilter("");
+                    setAtsFilter("");
+                    setStatusFilter("");
+                    setLastScannedRange({ from: null, to: null });
+                    setPage(0);
+                  }}
+                >
+                  Clear filters
+                </Button>
+              </div>
+            ) : null}
+
             <div className="overflow-x-auto">
               <table className="min-w-full text-sm">
                 <thead>
                   <tr className="border-b border-[hsl(var(--border))] text-left text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">
-                    <SortableHeader column="registryId" label="Registry ID" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="company" label="Company" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="ats" label="ATS" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="scanPool" label="Tier" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="totalJobs" label="Current Jobs" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
+                    <SortableHeader column="lastScanStatus" label="Last Scan Status" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="lastScannedAt" label="Last Scanned" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="nextScanAt" label="Next Scheduled Scan" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                   </tr>
@@ -183,11 +252,11 @@ function AdminRegistryStatusRoute() {
                 <tbody>
                   {pagedRows.map((row) => (
                     <tr key={row.registryId} className="border-b border-[hsl(var(--border))]/60 align-top">
-                      <td className="px-3 py-2 font-mono text-[12px] text-[hsl(var(--muted-foreground))]">{row.registryId}</td>
                       <td className="px-3 py-2 font-medium">{row.company}</td>
                       <td className="px-3 py-2">{row.ats ?? "Unknown"}</td>
                       <td className="px-3 py-2 capitalize">{row.scanPool}</td>
                       <td className="px-3 py-2">{row.totalJobs.toLocaleString()}</td>
+                      <td className="px-3 py-2 capitalize">{row.lastScanStatus}</td>
                       <td className="px-3 py-2">{formatScanTimestamp(row.lastScannedAt, "Not scanned yet")}</td>
                       <td className="px-3 py-2">{formatScanTimestamp(row.nextScanAt, "Not scheduled")}</td>
                     </tr>
@@ -237,14 +306,14 @@ function AdminRegistryStatusRoute() {
 
 function compareRegistryRows(a: AdminRegistryStatusRow, b: AdminRegistryStatusRow, sortBy: SortColumn): number {
   switch (sortBy) {
-    case "registryId":
-      return a.registryId.localeCompare(b.registryId);
     case "company":
       return a.company.localeCompare(b.company);
     case "ats":
       return (a.ats ?? "").localeCompare(b.ats ?? "");
     case "scanPool":
       return a.scanPool.localeCompare(b.scanPool);
+    case "lastScanStatus":
+      return a.lastScanStatus.localeCompare(b.lastScanStatus);
     case "totalJobs":
       return a.totalJobs - b.totalJobs;
     case "lastScannedAt":

@@ -577,6 +577,8 @@ export type RegistryScanStatus =
   | "paused"
   | "misconfigured";
 
+export type RegistryLastScanStatus = "pass" | "fail" | "pending";
+
 export type KanbanColumn = {
   status: AppliedJobStatus;
   count: number;

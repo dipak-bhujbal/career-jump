@@ -534,6 +534,7 @@ export type AdminRegistryStatusRow = {
   company: string;
   ats: string | null;
   scanPool: "hot" | "warm" | "cold";
+  lastScanStatus: "pass" | "fail" | "pending";
   totalJobs: number;
   lastScannedAt: string | null;
   nextScanAt: string | null;

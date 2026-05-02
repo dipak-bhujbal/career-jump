@@ -44,6 +44,7 @@ import {
 } from "../storage";
 import { isScraperApiConfigured, scanWorkdayJobs } from "../ats/core/workday";
 import { fetchJobsForDetectedConfig, getDetectedConfig } from "./discovery";
+import { normalizeCompanyKey } from "../storage/tenant-keys";
 import type {
   DetectedConfig,
   Env,
@@ -236,18 +237,32 @@ export async function buildAvailableJobsFromSharedInventory(
   let cacheHits = 0;
   let filteredOutJobs = 0;
   let filteredOutCompanies = 0;
+  const adminAllRegistryCompanies = options.isAdmin && config.adminRegistryMode !== "none";
 
   if (options.isAdmin) {
     const currentRows = process.env.AWS_RAW_SCANS_TABLE ? await listCurrentRawScans() : [];
-    const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
+    const enabledCompanyNames = new Set(enabledCompanies.map((company) => normalizeCompanyKey(company.company)));
     for (const row of currentRows) {
-      if (!enabledCompanyNames.has(companyIdentity(row.company))) continue;
+      // Admin "all companies" mode should browse the whole shared registry inventory
+      // without expanding thousands of registry rows into runtime config on every read.
+      if (!adminAllRegistryCompanies && !enabledCompanyNames.has(normalizeCompanyKey(row.company))) continue;
       totalCompaniesDetected += 1;
       totalFetched += row.jobs.length;
       cacheHits += 1;
       byCompanyFetched[row.company] = row.jobs.length;
+      let companyMatchedJobs = 0;
       for (const rawJob of row.jobs) {
         const enriched = enrichJob(rawJob, config.jobtitles);
+        const titleMatched = isInterestingTitle(enriched.title, config.jobtitles);
+        if (!titleMatched) {
+          filteredOutJobs += 1;
+          continue;
+        }
+        const geographyMatched = shouldKeepJobForUSInventory(enriched.location, enriched.title, enriched.url);
+        if (!geographyMatched) {
+          filteredOutJobs += 1;
+          continue;
+        }
         if (isDiscarded(enriched, discardRegistry)) {
           filteredOutJobs += 1;
           continue;
@@ -256,11 +271,15 @@ export async function buildAvailableJobsFromSharedInventory(
         if (seenJobKeys.has(nextJobKey)) continue;
         seenJobKeys.add(nextJobKey);
         jobs.push(enriched);
+        companyMatchedJobs += 1;
         bySource[enriched.source] = (bySource[enriched.source] ?? 0) + 1;
         byCompany[enriched.company] = (byCompany[enriched.company] ?? 0) + 1;
         for (const keyword of enriched.matchedKeywords ?? []) {
           keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
         }
+      }
+      if (row.jobs.length > 0 && companyMatchedJobs === 0) {
+        filteredOutCompanies += 1;
       }
     }
   } else {

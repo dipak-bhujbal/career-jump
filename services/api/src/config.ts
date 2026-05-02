@@ -76,7 +76,7 @@ function sanitizeStringArray(value: unknown): string[] {
   return value.map(String).map((x) => x.trim()).filter(Boolean);
 }
 
-function normalizeSource(value: unknown): Source | undefined {
+export function normalizeSource(value: unknown): Source | undefined {
   const normalized = normalizeAtsId(typeof value === "string" ? value : null);
   return normalized === "greenhouse" ||
     normalized === "ashby" ||
@@ -100,7 +100,7 @@ function normalizeSource(value: unknown): Source | undefined {
     : undefined;
 }
 
-function inferSourceFromUrl(rawUrl: string | undefined): Source | undefined {
+export function inferSourceFromUrl(rawUrl: string | undefined): Source | undefined {
   const inferred = normalizeAtsId(inferAtsIdFromUrl(rawUrl));
   return normalizeSource(inferred);
 }
@@ -752,7 +752,7 @@ export function sanitizeJobtitles(input: unknown): JobTitleConfig {
 export async function loadRuntimeConfig(
   env: Env,
   tenantId?: string,
-  options: { isAdmin?: boolean; updatedByUserId?: string } = {},
+  options: { isAdmin?: boolean; updatedByUserId?: string; expandAdminCompanies?: boolean } = {},
 ): Promise<RuntimeConfig> {
   const kv = configStoreKv(env);
   const scopedKey = tenantScopedKey(tenantId, CONFIG_KEY);
@@ -767,12 +767,19 @@ export async function loadRuntimeConfig(
   const raw = tableConfig ?? scopedRaw ?? legacyRaw;
   const usedTableConfig = Boolean(tableConfig);
   const usedLegacyFallback = !scopedRaw && Boolean(legacyRaw);
+  const shouldExpandAdminCompanies = options.isAdmin && options.expandAdminCompanies !== false;
 
   if (!raw || typeof raw !== "object") {
     const seeded = seedRuntimeConfig();
     await saveRuntimeConfig(env, seeded, tenantId, options.updatedByUserId, { isAdmin: options.isAdmin });
     return options.isAdmin
-      ? { ...seeded, adminRegistryMode: "all", companies: await expandAdminRuntimeConfigCompanies(seeded.companies, "all") }
+      ? {
+          ...seeded,
+          adminRegistryMode: "all",
+          companies: shouldExpandAdminCompanies
+            ? await expandAdminRuntimeConfigCompanies(seeded.companies, "all")
+            : seeded.companies,
+        }
       : seeded;
   }
 
@@ -783,7 +790,9 @@ export async function loadRuntimeConfig(
     ? await compactAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
     : hydratedCompanies;
   const effectiveCompanies = options.isAdmin
-    ? await expandAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
+    ? shouldExpandAdminCompanies
+      ? await expandAdminRuntimeConfigCompanies(hydratedCompanies, adminRegistryMode)
+      : storedCompanies
     : hydratedCompanies;
   const normalized = {
     companies: effectiveCompanies,
