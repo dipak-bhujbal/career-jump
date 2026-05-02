@@ -21,6 +21,65 @@ export const Route = createFileRoute("/admin-company-configs")({ component: Admi
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
 
+function validateRegistryConfigJson(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return "Config JSON must be an object.";
+  }
+
+  const record = value as Record<string, unknown>;
+  const company = typeof record.company === "string" ? record.company.trim() : "";
+  if (!company) return "company is required.";
+
+  const tier = typeof record.tier === "string" ? record.tier.trim() : "";
+  if (!["TIER1_VERIFIED", "TIER2_MEDIUM", "TIER3_LOW", "NEEDS_REVIEW"].includes(tier)) {
+    return "tier must be one of TIER1_VERIFIED, TIER2_MEDIUM, TIER3_LOW, NEEDS_REVIEW.";
+  }
+
+  const numberFields = ["rank", "total_jobs"] as const;
+  for (const field of numberFields) {
+    const current = record[field];
+    if (current !== undefined && current !== null && current !== "" && !Number.isFinite(Number(current))) {
+      return `${field} must be a number or null.`;
+    }
+  }
+
+  const stringFields = ["sheet", "board_url", "ats", "source", "from", "adapterId", "sample_url", "last_checked"] as const;
+  for (const field of stringFields) {
+    const current = record[field];
+    if (current !== undefined && current !== null && typeof current !== "string") {
+      return `${field} must be a string or null.`;
+    }
+  }
+
+  if (record.boards !== undefined) {
+    if (!Array.isArray(record.boards)) {
+      return "boards must be an array when provided.";
+    }
+    for (const [index, board] of record.boards.entries()) {
+      if (!board || typeof board !== "object" || Array.isArray(board)) {
+        return `boards[${index}] must be an object.`;
+      }
+      const boardRecord = board as Record<string, unknown>;
+      if (typeof boardRecord.ats !== "string" || !boardRecord.ats.trim()) {
+        return `boards[${index}].ats is required.`;
+      }
+      if (typeof boardRecord.url !== "string" || !boardRecord.url.trim()) {
+        return `boards[${index}].url is required.`;
+      }
+      if (
+        boardRecord.total_jobs !== undefined
+        && boardRecord.total_jobs !== null
+        && boardRecord.total_jobs !== ""
+        && !Number.isFinite(Number(boardRecord.total_jobs))
+      ) {
+        return `boards[${index}].total_jobs must be a number or null.`;
+      }
+    }
+  }
+
+  return null;
+}
+
 function AdminCompanyConfigsRoute() {
   const { data: me } = useMe();
   const isAdmin = me?.actor?.isAdmin === true;
@@ -94,11 +153,17 @@ function AdminCompanyConfigsRoute() {
       return;
     }
 
+    const validationError = validateRegistryConfigJson(parsed);
+    if (validationError) {
+      setParseError(validationError);
+      return;
+    }
+
     try {
       const result = await saveMutation.mutateAsync(parsed as AdminRegistryCompanyConfig);
       const nextRegistryId = result.nextRegistryId ?? selectedRegistryId;
       setSelectedRegistryId(nextRegistryId);
-      setSaveMessage(`Saved ${result.config.company}`);
+      setSaveMessage(`Saved ${result.config.company}. JSON validation passed.`);
     } catch (error) {
       setSaveMessage(error instanceof Error ? error.message : "Failed to save company config");
     }

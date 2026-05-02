@@ -31,6 +31,19 @@ export type RegistryCompanyConfig = {
   last_checked?: string | null;
 } & Record<string, unknown>;
 
+const VALID_REGISTRY_TIERS = new Set([
+  "TIER1_VERIFIED",
+  "TIER2_MEDIUM",
+  "TIER3_LOW",
+  "NEEDS_REVIEW",
+]);
+
+function assertRecord(value: unknown, label: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${label} must be a JSON object`);
+  }
+}
+
 function preferredRegistryTier(company: CompanyInput): RegistryEntry["tier"] {
   if (company.registryTier === "TIER1_VERIFIED" || company.registryTier === "TIER2_MEDIUM" || company.registryTier === "TIER3_LOW") {
     return company.registryTier;
@@ -111,11 +124,12 @@ export async function promoteCustomCompaniesToRegistry(companies: CompanyInput[]
 }
 
 function normalizeRegistryCompanyConfig(input: Record<string, unknown>): RegistryCompanyConfig {
+  assertRecord(input, "config");
   const company = typeof input.company === "string" ? input.company.trim() : "";
   if (!company) throw new Error("company is required");
 
   const tier = typeof input.tier === "string" ? input.tier.trim() : "";
-  if (!["TIER1_VERIFIED", "TIER2_MEDIUM", "TIER3_LOW", "NEEDS_REVIEW"].includes(tier)) {
+  if (!VALID_REGISTRY_TIERS.has(tier)) {
     throw new Error("tier must be one of TIER1_VERIFIED, TIER2_MEDIUM, TIER3_LOW, NEEDS_REVIEW");
   }
 
@@ -138,6 +152,26 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
   delete next.sk;
   delete next.updatedAt;
 
+  let boards: RegistryCompanyConfig["boards"] | undefined;
+  if (input.boards !== undefined) {
+    if (!Array.isArray(input.boards)) {
+      throw new Error("boards must be an array when provided");
+    }
+    boards = input.boards.map((board, index) => {
+      assertRecord(board, `boards[${index}]`);
+      const ats = coerceString(board.ats);
+      const url = coerceString(board.url);
+      const totalJobs = coerceNumber(board.total_jobs);
+      if (!ats) throw new Error(`boards[${index}].ats is required`);
+      if (!url) throw new Error(`boards[${index}].url is required`);
+      return {
+        ats,
+        url,
+        total_jobs: totalJobs ?? undefined,
+      };
+    });
+  }
+
   return {
     ...next,
     rank: coerceNumber(input.rank),
@@ -150,7 +184,7 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
     tier: tier as RegistryEntry["tier"],
     from: coerceString(input.from) ?? undefined,
     adapterId: coerceString(input.adapterId),
-    boards: Array.isArray(input.boards) ? input.boards as RegistryCompanyConfig["boards"] : undefined,
+    boards,
     sample_url: coerceString(input.sample_url),
     last_checked: coerceString(input.last_checked),
   };
