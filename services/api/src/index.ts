@@ -75,14 +75,12 @@ export default {
         runId,
         route: "/scheduled",
       });
-      const config = await applyCompanyScanOverrides(
-        env,
-        await loadRuntimeConfig(env, tenantContext.tenantId, {
-          isAdmin: tenantContext.isAdmin,
-          updatedByUserId: tenantContext.userId,
-        }),
-        tenantContext.tenantId,
-      );
+      // Tenant pause flags should only affect manual `/run` fanout, not the
+      // system-driven scheduled scans that keep shared inventory fresh.
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
       const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
       await ensureActiveRunOwnership(env, runId);

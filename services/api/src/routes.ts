@@ -1918,14 +1918,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config/apply" && request.method === "POST") {
       const tenantContext = await getTenantContext();
-      const config = await applyCompanyScanOverrides(
-        env,
-        await loadRuntimeConfig(env, tenantContext.tenantId, {
-          isAdmin: tenantContext.isAdmin,
-          updatedByUserId: tenantContext.userId,
-        }),
-        tenantContext.tenantId,
-      );
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       await clearATSCache(env, config.companies);
       const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
@@ -2357,14 +2353,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await applyCompanyScanOverrides(
-        env,
-        await loadRuntimeConfig(env, tenantContext.tenantId, {
-          isAdmin: tenantContext.isAdmin,
-          updatedByUserId: tenantContext.userId,
-        }),
-        tenantContext.tenantId,
-      );
+      // Company pause is a manual-run control only. Available Jobs should
+      // continue to show the company's already fetched/shared inventory.
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
       const [{ effectiveInventory, inventoryState }, billing] = await Promise.all([
         // Keep admin Available Jobs on the same tenant-derived read path as
         // normal users so scan/cache behavior stays consistent across roles.
@@ -2967,17 +2961,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await applyCompanyScanOverrides(
-        env,
-        await loadRuntimeConfig(env, tenantContext.tenantId, {
-          isAdmin: tenantContext.isAdmin,
-          updatedByUserId: tenantContext.userId,
-          // Dashboard can derive admin shared-inventory metrics without fully
-          // expanding every registry company into runtime config first.
-          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
-        }),
-        tenantContext.tenantId,
-      );
+      // Dashboard should reflect the tenant's visible inventory, not hide a
+      // company simply because the user paused it for future manual scans.
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+        // Dashboard can derive admin shared-inventory metrics without fully
+        // expanding every registry company into runtime config first.
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
+      });
       const { effectiveInventory, inventoryState } = await loadDerivedAvailableInventory(
         env,
         config,
