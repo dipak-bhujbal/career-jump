@@ -111,6 +111,39 @@ export type InventoryState = {
   lastUpdatedJobKeys: string[];
 };
 
+export type AvailableJobsCursor = {
+  phase: "shared" | "manual";
+  companyIndex: number;
+  jobIndex: number;
+  manualIndex: number;
+  returnedCount: number;
+};
+
+export type StreamAvailableJobsFilters = {
+  companies: string[];
+  companySearch: string;
+  location: string;
+  keyword: string;
+  source: string;
+  usOnly: boolean;
+  durationHours: number | null;
+  newOnly: boolean;
+  updatedOnly: boolean;
+  appliedJobKeys: Set<string>;
+  newJobKeys: Set<string>;
+  updatedJobKeys: Set<string>;
+};
+
+export type StreamAvailableJobsPageResult = {
+  jobs: JobPosting[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  inspectedCompanies: number;
+  inspectedJobs: number;
+  matchedJobs: number;
+  durationMs: number;
+};
+
 export async function loadInventoryState(env: Env, tenantId?: string): Promise<InventoryState> {
   const [
     primaryExisting,
@@ -138,6 +171,245 @@ export async function loadInventoryState(env: Env, tenantId?: string): Promise<I
     lastNewJobKeys: Array.isArray(lastNewKeysRaw) ? lastNewKeysRaw.map(String) : [],
     lastUpdatedJobsCount: Number(lastUpdatedCountRaw ?? "0") || 0,
     lastUpdatedJobKeys: Array.isArray(lastUpdatedKeysRaw) ? lastUpdatedKeysRaw.map(String) : [],
+  };
+}
+
+function encodeAvailableJobsCursor(cursor: AvailableJobsCursor): string {
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+}
+
+function decodeAvailableJobsCursor(rawCursor: string | null | undefined): AvailableJobsCursor {
+  if (!rawCursor) {
+    return { phase: "shared", companyIndex: 0, jobIndex: 0, manualIndex: 0, returnedCount: 0 };
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(rawCursor, "base64url").toString("utf8")) as Partial<AvailableJobsCursor>;
+    const phase = parsed.phase === "manual" ? "manual" : "shared";
+    return {
+      phase,
+      companyIndex: Math.max(0, Number(parsed.companyIndex) || 0),
+      jobIndex: Math.max(0, Number(parsed.jobIndex) || 0),
+      manualIndex: Math.max(0, Number(parsed.manualIndex) || 0),
+      returnedCount: Math.max(0, Number(parsed.returnedCount) || 0),
+    };
+  } catch {
+    return { phase: "shared", companyIndex: 0, jobIndex: 0, manualIndex: 0, returnedCount: 0 };
+  }
+}
+
+function buildPreviousJobsByCompany(previousInventory: InventorySnapshot | null): Map<string, JobPosting[]> {
+  const previousJobsByCompany = new Map<string, JobPosting[]>();
+  for (const job of previousInventory?.jobs ?? []) {
+    const key = companyIdentity(job.company);
+    const rows = previousJobsByCompany.get(key) ?? [];
+    rows.push(job);
+    previousJobsByCompany.set(key, rows);
+  }
+  return previousJobsByCompany;
+}
+
+function sortJobsForInteractiveRead(jobs: JobPosting[]): JobPosting[] {
+  return [...jobs].sort((left, right) => {
+    const leftPostedAt = Date.parse(left.postedAt ?? "") || 0;
+    const rightPostedAt = Date.parse(right.postedAt ?? "") || 0;
+    if (leftPostedAt !== rightPostedAt) {
+      return rightPostedAt - leftPostedAt;
+    }
+    return jobKey(left).localeCompare(jobKey(right));
+  });
+}
+
+function matchesInteractiveAvailableJob(
+  job: JobPosting,
+  jobtitles: RuntimeConfig["jobtitles"],
+  filters: StreamAvailableJobsFilters,
+  discardRegistry: DiscardRegistry,
+): boolean {
+  if (!isInterestingTitle(job.title, jobtitles)) {
+    return false;
+  }
+  if (!shouldKeepJobForUSInventory(job.location, job.title, job.url)) {
+    return false;
+  }
+  if (isDiscarded(job, discardRegistry)) {
+    return false;
+  }
+
+  const currentJobKey = jobKey(job);
+  if (filters.appliedJobKeys.has(currentJobKey)) {
+    return false;
+  }
+  if (filters.newOnly && !filters.newJobKeys.has(currentJobKey)) {
+    return false;
+  }
+  if (filters.updatedOnly && !filters.updatedJobKeys.has(currentJobKey)) {
+    return false;
+  }
+  if (filters.source && job.source !== filters.source) {
+    return false;
+  }
+  if (filters.companies.length && !filters.companies.includes(job.company.toLowerCase())) {
+    return false;
+  }
+  if (filters.companySearch && !job.company.toLowerCase().includes(filters.companySearch)) {
+    return false;
+  }
+  if (filters.location && !job.location.toLowerCase().includes(filters.location)) {
+    return false;
+  }
+  if (filters.keyword && !job.title.toLowerCase().includes(filters.keyword)) {
+    return false;
+  }
+  if (filters.usOnly && job.isUSLikely === false) {
+    return false;
+  }
+  if (filters.durationHours !== null) {
+    if (!job.postedAt) return false;
+    const postedAtMs = Date.parse(job.postedAt);
+    if (!Number.isFinite(postedAtMs)) return false;
+    const ageMs = Date.now() - postedAtMs;
+    if (ageMs < 0 || ageMs > filters.durationHours * 60 * 60 * 1000) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Build the first visible jobs page incrementally instead of materializing the
+ * full available-jobs inventory. The interactive route only needs enough rows
+ * to paint the current page, so stop once the requested limit is satisfied.
+ */
+export async function streamAvailableJobsPage(
+  env: Env,
+  config: RuntimeConfig,
+  previousInventory: InventorySnapshot | null,
+  tenantId: string | undefined,
+  limit: number,
+  rawCursor: string | null | undefined,
+  filters: StreamAvailableJobsFilters,
+  maxVisibleJobs: number | null = null,
+): Promise<StreamAvailableJobsPageResult> {
+  const startedAt = Date.now();
+  const cursor = decodeAvailableJobsCursor(rawCursor);
+  const remainingVisibleJobs = maxVisibleJobs === null
+    ? limit
+    : Math.max(0, Math.min(limit, maxVisibleJobs - cursor.returnedCount));
+  if (remainingVisibleJobs <= 0) {
+    return {
+      jobs: [],
+      nextCursor: null,
+      hasMore: false,
+      inspectedCompanies: 0,
+      inspectedJobs: 0,
+      matchedJobs: 0,
+      durationMs: Date.now() - startedAt,
+    };
+  }
+  const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
+  const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
+  const previousJobsByCompany = buildPreviousJobsByCompany(previousInventory);
+  const discardRegistry = await loadDiscardRegistry(env, tenantId);
+  const pageJobs: JobPosting[] = [];
+  const pageJobKeys = new Set<string>();
+  let inspectedCompanies = 0;
+  let inspectedJobs = 0;
+  let matchedJobs = 0;
+
+  for (let companyIndex = cursor.companyIndex; companyIndex < enabledCompanies.length; companyIndex += 1) {
+    const company = enabledCompanies[companyIndex];
+    const detected = await getDetectedConfig(env, company, tenantId);
+    if (!detected) continue;
+
+    const cachedScan = process.env.AWS_RAW_SCANS_TABLE
+      ? await loadLatestRawScan(company.company, detected, { allowStale: true })
+      : null;
+    const sharedJobs = cachedScan?.jobs ?? previousJobsByCompany.get(companyIdentity(company.company)) ?? [];
+    inspectedCompanies += 1;
+    const startJobIndex = cursor.phase === "shared" && companyIndex === cursor.companyIndex ? cursor.jobIndex : 0;
+
+    for (let jobIndex = startJobIndex; jobIndex < sharedJobs.length; jobIndex += 1) {
+      const enrichedJob = enrichJob(sharedJobs[jobIndex], config.jobtitles);
+      inspectedJobs += 1;
+      if (!matchesInteractiveAvailableJob(enrichedJob, config.jobtitles, filters, discardRegistry)) {
+        continue;
+      }
+
+      const currentJobKey = jobKey(enrichedJob);
+      if (pageJobKeys.has(currentJobKey)) continue;
+      pageJobKeys.add(currentJobKey);
+      pageJobs.push(enrichedJob);
+      matchedJobs += 1;
+
+      if (pageJobs.length >= remainingVisibleJobs) {
+        return {
+          jobs: pageJobs,
+          nextCursor: encodeAvailableJobsCursor({
+            phase: "shared",
+            companyIndex,
+            jobIndex: jobIndex + 1,
+            manualIndex: 0,
+            returnedCount: cursor.returnedCount + pageJobs.length,
+          }),
+          hasMore: true,
+          inspectedCompanies,
+          inspectedJobs,
+          matchedJobs,
+          durationMs: Date.now() - startedAt,
+        };
+      }
+    }
+  }
+
+  const manualJobs = sortJobsForInteractiveRead(
+    (previousInventory?.jobs ?? []).filter((job) =>
+      job.manualEntry
+      && enabledCompanyNames.has(companyIdentity(job.company))
+    ),
+  );
+
+  for (let manualIndex = cursor.phase === "manual" ? cursor.manualIndex : 0; manualIndex < manualJobs.length; manualIndex += 1) {
+    const manualJob = manualJobs[manualIndex];
+    inspectedJobs += 1;
+    if (!matchesInteractiveAvailableJob(manualJob, config.jobtitles, filters, discardRegistry)) {
+      continue;
+    }
+
+    const currentJobKey = jobKey(manualJob);
+    if (pageJobKeys.has(currentJobKey)) continue;
+    pageJobKeys.add(currentJobKey);
+    pageJobs.push(manualJob);
+    matchedJobs += 1;
+
+    if (pageJobs.length >= remainingVisibleJobs) {
+      return {
+        jobs: pageJobs,
+        nextCursor: encodeAvailableJobsCursor({
+          phase: "manual",
+          companyIndex: enabledCompanies.length,
+          jobIndex: 0,
+          manualIndex: manualIndex + 1,
+          returnedCount: cursor.returnedCount + pageJobs.length,
+        }),
+        hasMore: true,
+        inspectedCompanies,
+        inspectedJobs,
+        matchedJobs,
+        durationMs: Date.now() - startedAt,
+      };
+    }
+  }
+
+  return {
+    jobs: pageJobs,
+    nextCursor: null,
+    hasMore: false,
+    inspectedCompanies,
+    inspectedJobs,
+    matchedJobs,
+    durationMs: Date.now() - startedAt,
   };
 }
 

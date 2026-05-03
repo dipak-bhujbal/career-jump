@@ -5,7 +5,9 @@ import { deleteRow, getRow, registryTableName, putRow } from "../aws/dynamo";
 import { canonicalBoardUrlForCompany } from "../config";
 import { hyphenSlug, nowISO } from "../lib/utils";
 import { listAll, loadRegistryCache } from "./registry-cache";
+import { syncRegistryCompanyScanPolicy } from "./registry-scan-state";
 import type { CompanyInput } from "../types";
+import type { RegistryScanPool } from "../types";
 
 type PromotionResult = {
   promoted: boolean;
@@ -32,6 +34,7 @@ export type RegistryCompanyConfig = {
   total_jobs: number | null;
   source: string | null;
   tier: RegistryEntry["tier"];
+  scan_pool?: RegistryScanPool | null;
   from?: string;
   adapterId?: string | null;
   boards?: Array<{ ats: string; url: string; total_jobs?: number }>;
@@ -45,6 +48,7 @@ const VALID_REGISTRY_TIERS = new Set([
   "TIER3_LOW",
   "NEEDS_REVIEW",
 ]);
+const VALID_SCAN_POOLS = new Set<RegistryScanPool>(["hot", "warm", "cold"]);
 
 function assertRecord(value: unknown, label: string): asserts value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -140,6 +144,13 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
   if (!VALID_REGISTRY_TIERS.has(tier)) {
     throw new Error("tier must be one of TIER1_VERIFIED, TIER2_MEDIUM, TIER3_LOW, NEEDS_REVIEW");
   }
+  if (input.scan_pool !== undefined && input.scan_pool !== null && typeof input.scan_pool !== "string") {
+    throw new Error("scan_pool must be a string or null when provided");
+  }
+  const scanPool = typeof input.scan_pool === "string" ? input.scan_pool.trim() : "";
+  if (scanPool && !VALID_SCAN_POOLS.has(scanPool as RegistryScanPool)) {
+    throw new Error("scan_pool must be one of hot, warm, cold when provided");
+  }
 
   const coerceNumber = (value: unknown): number | null => {
     if (value === null || value === undefined || value === "") return null;
@@ -196,6 +207,7 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
     total_jobs: coerceNumber(input.total_jobs),
     source: coerceString(input.source),
     tier: tier as RegistryEntry["tier"],
+    scan_pool: scanPool ? (scanPool as RegistryScanPool) : null,
     from: coerceString(input.from) ?? undefined,
     adapterId: coerceString(input.adapterId),
     boards,
@@ -282,6 +294,7 @@ export async function listRegistryCompanyConfigs(force = false): Promise<Array<R
     total_jobs: entry.total_jobs,
     source: entry.source,
     tier: entry.tier,
+    scan_pool: entry.scan_pool ?? null,
     from: entry.from,
     sample_url: entry.sample_url,
     last_checked: entry.last_checked,
@@ -325,7 +338,11 @@ export async function saveRegistryCompanyConfig(
     await deleteRow(registryTableName(), { pk: "REGISTRY", sk: registryId });
   }
 
+  // Refresh the scan-state policy right away so registry status and the
+  // scheduler pick up ATS/cadence changes immediately after an admin save.
   await loadRegistryCache({ force: true });
+  await syncRegistryCompanyScanPolicy(next.company, next.ats);
+
   return {
     config: next,
     previousCompany: previous.company,

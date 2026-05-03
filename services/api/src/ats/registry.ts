@@ -15,6 +15,7 @@ import "./custom"; // self-registers all custom adapters
 import type { JobPosting } from "../types";
 import { getAdapter, listAdapters } from "./shared/types";
 import { inferAtsIdFromUrl, normalizeAtsId } from "./shared/normalize";
+import type { RegistryScanPool } from "../types";
 
 export type RegistryEntry = {
   rank: number | null;
@@ -25,6 +26,11 @@ export type RegistryEntry = {
   total_jobs: number | null;
   source: string | null;
   tier: "TIER1_VERIFIED" | "TIER2_MEDIUM" | "TIER3_LOW" | "NEEDS_REVIEW";
+  /**
+   * Optional admin override for scheduler cadence. When unset, scheduling
+   * still falls back to the curated/rank-derived hot/warm/cold heuristics.
+   */
+  scan_pool?: RegistryScanPool | null;
   from?: string;
   sample_url?: string | null;
   last_checked?: string | null;

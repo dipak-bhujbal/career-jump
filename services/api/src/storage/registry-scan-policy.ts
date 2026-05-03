@@ -185,7 +185,9 @@ export function registryAdapterIdForEntry(entry: RegistryEntry): string | null {
 }
 
 export function deriveRegistryScanPolicy(entry: RegistryEntry): RegistryScanPolicy {
-  const scanPool = poolFromCuratedList(entry) ?? poolFromRegistryMetadata(entry);
+  // Admin-selected scan pools override the heuristic so operators can adjust
+  // cadence without having to game rank or registry confidence tiers.
+  const scanPool = entry.scan_pool ?? poolFromCuratedList(entry) ?? poolFromRegistryMetadata(entry);
   return {
     scanPool,
     priority: priorityForPool(scanPool),

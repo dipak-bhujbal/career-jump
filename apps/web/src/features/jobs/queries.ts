@@ -3,7 +3,7 @@
  * the query key so refining filters refetches automatically.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, type JobsEnvelope } from "@/lib/api";
+import { api, type JobDetailEnvelope, type JobsEnvelope } from "@/lib/api";
 
 export type JobsFilter = {
   companies?: string[];
@@ -15,7 +15,7 @@ export type JobsFilter = {
   newOnly?: boolean;
   updatedOnly?: boolean;
   limit?: number;
-  offset?: number;
+  cursor?: string | null;
 };
 
 type JobsQueryOptions = {
@@ -33,7 +33,7 @@ function buildJobsParams(f: JobsFilter): URLSearchParams {
   if (f.newOnly) p.set("newOnly", "true");
   if (f.updatedOnly) p.set("updatedOnly", "true");
   p.set("limit", String(f.limit ?? 100));
-  p.set("offset", String(f.offset ?? 0));
+  if (f.cursor) p.set("cursor", f.cursor);
   return p;
 }
 
@@ -63,11 +63,23 @@ export function useJobs(filter: JobsFilter, options: JobsQueryOptions = {}) {
   });
 }
 
+export function useJobDetails(jobKey: string | null, enabled = true) {
+  return useQuery({
+    queryKey: ["job-details", jobKey],
+    queryFn: () => api.get<JobDetailEnvelope>(`/api/jobs/details?jobKey=${encodeURIComponent(jobKey ?? "")}`),
+    enabled: enabled && Boolean(jobKey),
+    staleTime: 60_000,
+  });
+}
+
 export function useDiscardJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (jobKey: string) => api.post("/api/jobs/discard", { jobKey }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["jobs"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["jobs"] });
+      qc.invalidateQueries({ queryKey: ["job-details"] });
+    },
   });
 }
 
@@ -79,6 +91,7 @@ export function useApplyJob() {
       qc.invalidateQueries({ queryKey: ["jobs"] });
       qc.invalidateQueries({ queryKey: ["applied"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
+      qc.invalidateQueries({ queryKey: ["job-details"] });
     },
   });
 }
@@ -93,6 +106,7 @@ export function useSaveJobNotes() {
       // The shared drawer edits notes for action-plan rows too, so refresh
       // that surface alongside available/applied job lists.
       qc.invalidateQueries({ queryKey: ["actionPlan"] });
+      qc.invalidateQueries({ queryKey: ["job-details"] });
     },
   });
 }

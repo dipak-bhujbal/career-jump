@@ -311,7 +311,11 @@ export type JobsEnvelope = {
   ok: boolean;
   runAt?: string;
   total: number;
-  pagination: { offset: number; limit: number; nextOffset: number; hasMore: boolean };
+  pagination: {
+    limit: number;
+    hasMore: boolean;
+    nextCursor: string | null;
+  };
   totals: {
     availableJobs: number;
     newJobs: number;
@@ -322,6 +326,11 @@ export type JobsEnvelope = {
   };
   companyOptions: string[];
   jobs: Job[];
+};
+
+export type JobDetailEnvelope = {
+  ok: boolean;
+  job: Job;
 };
 
 // ---------- Applied jobs ----------
@@ -601,6 +610,7 @@ export type AdminRegistryCompanyConfig = {
   total_jobs: number | null;
   source: string | null;
   tier: "TIER1_VERIFIED" | "TIER2_MEDIUM" | "TIER3_LOW" | "NEEDS_REVIEW";
+  scan_pool?: "hot" | "warm" | "cold" | null;
   from?: string;
   adapterId?: string | null;
   boards?: Array<{ ats: string; url: string; total_jobs?: number }>;

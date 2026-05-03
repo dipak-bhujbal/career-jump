@@ -10,8 +10,10 @@ import { readFile } from "node:fs/promises";
 import { DynamoDBClient, GetItemCommand, QueryCommand, type AttributeValue } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import type { RegistryEntry, SeedRegistry } from "../ats/registry";
+import { normalizeAtsId } from "../ats/shared/normalize";
 import { normalizeCompanyKey, DEFAULT_TENANT } from "./tenant-keys";
 import bundledRegistry from "../../data/seed_registry.json";
+import type { RegistryScanPool } from "../types";
 
 type CacheState = {
   loadedAt: number;
@@ -58,18 +60,26 @@ function stringOrNull(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function scanPoolOrNull(value: unknown): RegistryScanPool | null {
+  return value === "hot" || value === "warm" || value === "cold" ? value : null;
+}
+
 function itemToRegistryEntry(item: Record<string, unknown>): RegistryEntry | null {
   const company = stringOrNull(item.company);
   if (!company) return null;
+  const normalizedAts = stringOrNull(item.ats);
   return {
     rank: numberOrNull(item.rank),
     sheet: stringOrNull(item.sheet) ?? "Registry",
     company,
     board_url: stringOrNull(item.board_url),
-    ats: stringOrNull(item.ats),
+    // Canonical ATS ids keep admin filters/dropdowns stable even when older
+    // registry rows were written with mixed casing like "Greenhouse".
+    ats: normalizedAts ? normalizeAtsId(normalizedAts) : null,
     total_jobs: numberOrNull(item.total_jobs),
     source: stringOrNull(item.source),
     tier: (stringOrNull(item.tier) as RegistryEntry["tier"] | null) ?? "NEEDS_REVIEW",
+    scan_pool: scanPoolOrNull(item.scan_pool),
     sample_url: stringOrNull(item.sample_url),
     last_checked: stringOrNull(item.last_checked) ?? stringOrNull(item.updatedAt),
   };

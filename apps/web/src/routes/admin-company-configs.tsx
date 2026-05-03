@@ -1,5 +1,5 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { Database, RefreshCw, Save, Trash2 } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
@@ -28,10 +28,30 @@ const REGISTRY_TIER_OPTIONS = [
   { value: "TIER3_LOW", label: "Tier 3 low" },
   { value: "NEEDS_REVIEW", label: "Needs review" },
 ] as const;
+const SCHEDULING_TIER_OPTIONS = [
+  { value: "hot", label: "Hot" },
+  { value: "warm", label: "Warm" },
+  { value: "cold", label: "Cold" },
+] as const;
+const ATS_LABEL_BY_ID = new Map<string, string>(ALL_ATS_ADAPTERS.map((adapter) => [adapter.id, adapter.label]));
 const SUPPORTED_ATS_REFERENCE = ALL_ATS_ADAPTERS.map((adapter) => ({
   id: adapter.id,
   label: adapter.label,
 }));
+
+function toTitleCase(value: string): string {
+  return value
+    .split(/[\s_-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function formatAtsLabel(value: string | null | undefined): string {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (!normalized) return "Unknown ATS";
+  return ATS_LABEL_BY_ID.get(normalized) ?? toTitleCase(normalized);
+}
 
 function validateRegistryConfigJson(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -45,6 +65,13 @@ function validateRegistryConfigJson(value: unknown): string | null {
   const tier = typeof record.tier === "string" ? record.tier.trim() : "";
   if (!["TIER1_VERIFIED", "TIER2_MEDIUM", "TIER3_LOW", "NEEDS_REVIEW"].includes(tier)) {
     return "tier must be one of TIER1_VERIFIED, TIER2_MEDIUM, TIER3_LOW, NEEDS_REVIEW.";
+  }
+  if (record.scan_pool !== undefined && record.scan_pool !== null && typeof record.scan_pool !== "string") {
+    return "scan_pool must be a string or null when provided.";
+  }
+  const scanPool = typeof record.scan_pool === "string" ? record.scan_pool.trim() : "";
+  if (scanPool && !["hot", "warm", "cold"].includes(scanPool)) {
+    return "scan_pool must be one of hot, warm, cold when provided.";
   }
 
   const numberFields = ["rank", "total_jobs"] as const;
@@ -113,8 +140,12 @@ function AdminCompanyConfigsRoute() {
   const [page, setPage] = useState(0);
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
   const [editorValue, setEditorValue] = useState("");
+  const [editMode, setEditMode] = useState<"fields" | "json">("fields");
   const [companyNameValue, setCompanyNameValue] = useState("");
+  const [boardUrlValue, setBoardUrlValue] = useState("");
+  const [atsValue, setAtsValue] = useState<string>("");
   const [tierValue, setTierValue] = useState<string>("");
+  const [scanPoolValue, setScanPoolValue] = useState<string>("");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const detailQuery = useAdminRegistryCompanyConfig(selectedRegistryId, isAdmin);
@@ -131,9 +162,18 @@ function AdminCompanyConfigsRoute() {
     });
   }, [atsFilter, companyFilter, data?.rows, tierFilter]);
 
-  const atsOptions = useMemo(() => (
-    [...new Set((data?.rows ?? []).map((row) => (row.ats ?? "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b))
-  ), [data?.rows]);
+  const atsOptions = useMemo(() => {
+    const normalizedIds = new Set<string>();
+    for (const adapter of ALL_ATS_ADAPTERS) normalizedIds.add(adapter.id);
+    for (const row of data?.rows ?? []) {
+      const normalized = row.ats?.trim().toLowerCase();
+      if (normalized) normalizedIds.add(normalized);
+    }
+    return [...normalizedIds]
+      .filter(Boolean)
+      .sort((left, right) => formatAtsLabel(left).localeCompare(formatAtsLabel(right)))
+      .map((id) => ({ id, label: formatAtsLabel(id) }));
+  }, [data?.rows]);
 
   const totalPages = Math.max(1, Math.ceil(filteredRows.length / pageSize));
   const safePage = Math.min(page, totalPages - 1);
@@ -155,7 +195,10 @@ function AdminCompanyConfigsRoute() {
     if (detailQuery.data?.config) {
       setEditorValue(JSON.stringify(detailQuery.data.config, null, 2));
       setCompanyNameValue(detailQuery.data.config.company ?? "");
+      setBoardUrlValue(detailQuery.data.config.board_url ?? "");
+      setAtsValue(detailQuery.data.config.ats ?? "");
       setTierValue(detailQuery.data.config.tier ?? "");
+      setScanPoolValue(detailQuery.data.config.scan_pool ?? "");
       setParseError(null);
       setSaveMessage(null);
     }
@@ -208,6 +251,7 @@ function AdminCompanyConfigsRoute() {
       setSelectedRegistryId(null);
       setEditorValue("");
       setParseError(null);
+      setScanPoolValue("");
       toast(`${result.deletedCompany} deleted`, "info");
     } catch (error) {
       const message = error instanceof Error ? error.message : "Failed to delete company config";
@@ -238,24 +282,51 @@ function AdminCompanyConfigsRoute() {
   }
 
   /**
+   * Keep the field editor and raw JSON editor synchronized so admins can flip
+   * between structured and free-form editing without losing in-progress work.
+   */
+  function handleFieldPatch(patch: Partial<AdminRegistryCompanyConfig>) {
+    setSaveMessage(null);
+    setParseError(null);
+
+    try {
+      const parsed = JSON.parse(editorValue) as AdminRegistryCompanyConfig;
+      const nextConfig = {
+        ...parsed,
+        ...patch,
+      };
+      setEditorValue(JSON.stringify(nextConfig, null, 2));
+    } catch {
+      // Leave the raw editor untouched while the JSON is temporarily invalid.
+    }
+  }
+
+  /**
    * Tier changes are common operational edits, so keep a dedicated control in
    * sync with the raw JSON editor just like the company-name field.
    */
   function handleTierChange(nextTier: string) {
     setTierValue(nextTier);
-    setSaveMessage(null);
-    setParseError(null);
+    handleFieldPatch({ tier: nextTier as AdminRegistryCompanyConfig["tier"] });
+  }
 
-    try {
-      const parsed = JSON.parse(editorValue) as Record<string, unknown>;
-      const nextConfig = {
-        ...parsed,
-        tier: nextTier,
-      };
-      setEditorValue(JSON.stringify(nextConfig, null, 2));
-    } catch {
-      // Leave the raw editor untouched when the JSON is currently invalid.
-    }
+  /**
+   * Scheduling cadence is operationally distinct from the confidence tier, so
+   * keep a dedicated hot/warm/cold control synced into the raw JSON payload.
+   */
+  function handleScanPoolChange(nextScanPool: string) {
+    setScanPoolValue(nextScanPool);
+    handleFieldPatch({ scan_pool: (nextScanPool || null) as AdminRegistryCompanyConfig["scan_pool"] });
+  }
+
+  function handleBoardUrlChange(nextBoardUrl: string) {
+    setBoardUrlValue(nextBoardUrl);
+    handleFieldPatch({ board_url: nextBoardUrl || null });
+  }
+
+  function handleAtsChange(nextAts: string) {
+    setAtsValue(nextAts);
+    handleFieldPatch({ ats: nextAts || null });
   }
 
   if (!isAdmin) {
@@ -322,7 +393,7 @@ function AdminCompanyConfigsRoute() {
                 >
                   <option value="">All ATS</option>
                   {atsOptions.map((ats) => (
-                    <option key={ats} value={ats.toLowerCase()}>{ats}</option>
+                    <option key={ats.id} value={ats.id}>{ats.label}</option>
                   ))}
                 </Select>
                 <Select
@@ -447,7 +518,7 @@ function AdminCompanyConfigsRoute() {
                 <div className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--accent))]/20 px-4 py-3 text-sm">
                   <div className="font-medium">{selectedSummary.company}</div>
                   <div className="mt-1 text-[hsl(var(--muted-foreground))]">
-                    {(selectedSummary.ats ?? "Unknown ATS")} · {selectedSummary.tier} · {selectedSummary.board_url ?? "No board URL"}
+                    {formatAtsLabel(selectedSummary.ats)} · {selectedSummary.tier} · {(selectedSummary.scan_pool ?? "auto")} · {selectedSummary.board_url ?? "No board URL"}
                   </div>
                 </div>
               ) : (
@@ -456,66 +527,118 @@ function AdminCompanyConfigsRoute() {
                 </div>
               )}
 
-              <div className="grid gap-2">
-                <label htmlFor="company-config-company-name" className="text-sm font-medium">
-                  Company name
-                </label>
-                <Input
-                  id="company-config-company-name"
-                  value={companyNameValue}
-                  onChange={(event) => handleCompanyNameChange(event.target.value)}
-                  placeholder="Enter company name"
-                  disabled={!selectedRegistryId}
-                />
-                <div className="text-xs text-[hsl(var(--muted-foreground))]">
-                  Editing this field updates the <code>company</code> value in the JSON below before save.
-                </div>
-              </div>
-
-              <div className="grid gap-2">
-                <label className="text-sm font-medium">
-                  Registry tier
-                </label>
-                <Select
-                  value={tierValue}
-                  onChange={(event) => handleTierChange(event.target.value)}
-                  disabled={!selectedRegistryId}
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  variant={editMode === "fields" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setEditMode("fields")}
                 >
-                  <option value="">Select tier</option>
-                  {REGISTRY_TIER_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </Select>
-                <div className="text-xs text-[hsl(var(--muted-foreground))]">
-                  Updating this control writes the canonical <code>tier</code> value into the JSON below before save.
-                </div>
+                  Edit fields
+                </Button>
+                <Button
+                  type="button"
+                  variant={editMode === "json" ? "default" : "outline"}
+                  size="sm"
+                  onClick={() => setEditMode("json")}
+                >
+                  Edit JSON
+                </Button>
               </div>
 
-              <textarea
-                value={editorValue}
-                onChange={(event) => {
-                  setEditorValue(event.target.value);
-                  try {
-                    const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
-                    if (typeof parsed.company === "string") {
-                      setCompanyNameValue(parsed.company);
+              {editMode === "fields" ? (
+                <div className="overflow-hidden rounded-md border border-[hsl(var(--border))]">
+                  <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-x-4 border-b border-[hsl(var(--border))] bg-[hsl(var(--accent))]/20 px-4 py-3 text-[11px] uppercase tracking-[0.16em] text-[hsl(var(--muted-foreground))]">
+                    <div>Field</div>
+                    <div>Current value</div>
+                  </div>
+                  <FieldEditorRow
+                    label="Company name"
+                    control={(
+                      <Input
+                        id="company-config-company-name"
+                        value={companyNameValue}
+                        onChange={(event) => handleCompanyNameChange(event.target.value)}
+                        placeholder="Enter company name"
+                        disabled={!selectedRegistryId}
+                      />
+                    )}
+                  />
+                  <FieldEditorRow
+                    label="ATS"
+                    control={(
+                      <Select value={atsValue} onChange={(event) => handleAtsChange(event.target.value)} disabled={!selectedRegistryId}>
+                        <option value="">Select ATS</option>
+                        {atsOptions.map((option) => (
+                          <option key={option.id} value={option.id}>{option.label}</option>
+                        ))}
+                      </Select>
+                    )}
+                  />
+                  <FieldEditorRow
+                    label="Board URL"
+                    control={(
+                      <Input
+                        value={boardUrlValue}
+                        onChange={(event) => handleBoardUrlChange(event.target.value)}
+                        placeholder="https://..."
+                        disabled={!selectedRegistryId}
+                      />
+                    )}
+                  />
+                  <FieldEditorRow
+                    label="Registry tier"
+                    control={(
+                      <Select value={tierValue} onChange={(event) => handleTierChange(event.target.value)} disabled={!selectedRegistryId}>
+                        <option value="">Select tier</option>
+                        {REGISTRY_TIER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </Select>
+                    )}
+                  />
+                  <FieldEditorRow
+                    label="Schedule tier"
+                    control={(
+                      <Select value={scanPoolValue} onChange={(event) => handleScanPoolChange(event.target.value)} disabled={!selectedRegistryId}>
+                        <option value="">Auto / derived</option>
+                        {SCHEDULING_TIER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>{option.label}</option>
+                        ))}
+                      </Select>
+                    )}
+                  />
+                </div>
+              ) : (
+                <textarea
+                  value={editorValue}
+                  onChange={(event) => {
+                    setEditorValue(event.target.value);
+                    try {
+                      const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
+                      if (typeof parsed.company === "string") setCompanyNameValue(parsed.company);
+                      if (typeof parsed.board_url === "string") setBoardUrlValue(parsed.board_url);
+                      else if (parsed.board_url === null || parsed.board_url === undefined) setBoardUrlValue("");
+                      if (typeof parsed.ats === "string") setAtsValue(parsed.ats);
+                      else if (parsed.ats === null || parsed.ats === undefined) setAtsValue("");
+                      if (typeof parsed.tier === "string") setTierValue(parsed.tier);
+                      if (typeof parsed.scan_pool === "string") {
+                        setScanPoolValue(parsed.scan_pool);
+                      } else if (parsed.scan_pool === null || parsed.scan_pool === undefined) {
+                        setScanPoolValue("");
+                      }
+                    } catch {
+                      // Keep the dedicated field editor stable while admins are
+                      // in the middle of typing temporarily invalid JSON.
                     }
-                    if (typeof parsed.tier === "string") {
-                      setTierValue(parsed.tier);
-                    }
-                  } catch {
-                    // Keep the dedicated input stable while admins are in the
-                    // middle of editing invalid JSON.
-                  }
-                  setParseError(null);
-                  setSaveMessage(null);
-                }}
-                spellCheck={false}
-                className="min-h-[560px] w-full rounded-md border border-[hsl(var(--border))] bg-transparent px-3 py-2 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
-                placeholder={selectedRegistryId ? "Loading full registry config..." : "Select a company to view its config JSON"}
-              />
+                    setParseError(null);
+                    setSaveMessage(null);
+                  }}
+                  spellCheck={false}
+                  className="min-h-[560px] w-full rounded-md border border-[hsl(var(--border))] bg-transparent px-3 py-2 font-mono text-sm outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--ring))]"
+                  placeholder={selectedRegistryId ? "Loading full registry config..." : "Select a company to view its config JSON"}
+                />
+              )}
 
               {parseError ? <div className="text-sm text-red-600">{parseError}</div> : null}
               {saveMessage ? <div className="text-sm text-[hsl(var(--muted-foreground))]">{saveMessage}</div> : null}
@@ -566,8 +689,23 @@ function CompanyRow({
         <div className="truncate font-medium">{row.company}</div>
         <div className="truncate text-xs text-[hsl(var(--muted-foreground))]">{row.board_url ?? "No board URL"}</div>
       </div>
-      <div className="truncate">{row.ats ?? "Unknown"}</div>
+      <div className="truncate">{formatAtsLabel(row.ats)}</div>
       <div className="truncate">{row.tier}</div>
     </button>
+  );
+}
+
+function FieldEditorRow({
+  label,
+  control,
+}: {
+  label: string;
+  control: ReactNode;
+}) {
+  return (
+    <div className="grid grid-cols-[180px_minmax(0,1fr)] gap-x-4 border-b border-[hsl(var(--border))]/60 px-4 py-3 last:border-b-0">
+      <div className="pt-2 text-sm font-medium">{label}</div>
+      <div>{control}</div>
+    </div>
   );
 }

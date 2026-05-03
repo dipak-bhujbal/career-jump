@@ -202,7 +202,7 @@ export function useResetData() {
       const emptyJobs: JobsEnvelope = {
         ok: true,
         total: 0,
-        pagination: { offset: 0, limit: 0, nextOffset: 0, hasMore: false },
+        pagination: { limit: 0, nextCursor: null, hasMore: false },
         totals: { availableJobs: 0, newJobs: 0, updatedJobs: 0 },
         companyOptions: [],
         jobs: [],

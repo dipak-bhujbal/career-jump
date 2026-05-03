@@ -158,7 +158,7 @@ async function handle(url: URL, init?: RequestInit): Promise<Response | null> {
       ok: true,
       runAt: new Date().toISOString(),
       total: list.length,
-      pagination: { offset: 0, limit: 100, nextOffset: list.length, hasMore: false },
+      pagination: { limit: 100, nextCursor: null, hasMore: false },
       totals,
       companyOptions,
       jobs: list,

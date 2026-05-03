@@ -846,14 +846,16 @@ function DangerSection() {
 
 async function fetchAllJobsForExport(): Promise<JobsEnvelope> {
   const limit = 500;
-  let offset = 0;
+  let cursor: string | null = null;
   const pages: JobsEnvelope[] = [];
 
   do {
     // Walk every jobs page so export does not silently truncate large scans.
-    const page = await api.get<JobsEnvelope>(`/api/jobs?limit=${limit}&offset=${offset}`);
+    const query = new URLSearchParams({ limit: String(limit) });
+    if (cursor) query.set("cursor", cursor);
+    const page = await api.get<JobsEnvelope>(`/api/jobs?${query.toString()}`);
     pages.push(page);
-    offset = page.pagination.nextOffset;
+    cursor = page.pagination.nextCursor;
   } while (pages.at(-1)?.pagination.hasMore);
 
   const first = pages[0];
@@ -861,7 +863,7 @@ async function fetchAllJobsForExport(): Promise<JobsEnvelope> {
     ok: true,
     runAt: first?.runAt,
     total: pages.reduce((sum, page) => sum + page.jobs.length, 0),
-    pagination: { offset: 0, limit, nextOffset: 0, hasMore: false },
+    pagination: { limit, nextCursor: null, hasMore: false },
     totals: first?.totals ?? { availableJobs: 0, newJobs: 0, updatedJobs: 0 },
     companyOptions: first?.companyOptions ?? [],
     jobs: pages.flatMap((page) => page.jobs),

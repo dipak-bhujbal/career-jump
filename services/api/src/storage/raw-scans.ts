@@ -82,6 +82,10 @@ function stableDetectedToken(detected: DetectedConfig): string {
   }
 }
 
+function normalizeRawScanCompanyKey(company: string): string {
+  return company.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
 function rawScanPk(detected: DetectedConfig): string {
   return `RAW_SCAN#${detected.source}#${stableDetectedToken(detected)}`;
 }
@@ -122,6 +126,58 @@ async function queryCurrentRawScanRows(): Promise<RawScanCurrentRow[]> {
       consistentRead: false,
     },
   );
+}
+
+type CurrentRawScanAggregate = {
+  company: string;
+  detected: DetectedConfig;
+  jobs: JobPosting[];
+  fetchedCount: number;
+  scannedAt: string | null;
+};
+
+/**
+ * CURRENT summary rows are compact on purpose, so admin reporting must be able
+ * to rebuild authoritative counts from the per-job inventory when a summary
+ * row is stale, missing, or was written before the compact-row migration.
+ */
+async function loadCurrentRawScanJobAggregates(): Promise<Map<string, CurrentRawScanAggregate>> {
+  const jobRows = await scanAllRows<RawScanJobRow>(rawScansTableName(), {
+    filterExpression: "entityType = :jobType",
+    expressionAttributeValues: {
+      ":jobType": "RAW_SCAN_JOB",
+    },
+  });
+
+  const byCompanyKey = new Map<string, CurrentRawScanAggregate>();
+  for (const row of jobRows) {
+    const key = normalizeRawScanCompanyKey(row.company);
+    const existing = byCompanyKey.get(key);
+    if (!existing) {
+      byCompanyKey.set(key, {
+        company: row.company,
+        detected: row.detected,
+        jobs: [row.job],
+        fetchedCount: 1,
+        scannedAt: row.scannedAt,
+      });
+      continue;
+    }
+
+    existing.jobs.push(row.job);
+    existing.fetchedCount += 1;
+    if (!existing.scannedAt || row.scannedAt.localeCompare(existing.scannedAt) > 0) {
+      existing.scannedAt = row.scannedAt;
+      existing.company = row.company;
+      existing.detected = row.detected;
+    }
+  }
+
+  for (const aggregate of byCompanyKey.values()) {
+    aggregate.jobs = sortJobsForStorage(aggregate.jobs);
+  }
+
+  return byCompanyKey;
 }
 
 function sortJobsForStorage(jobs: JobPosting[]): JobPosting[] {
@@ -263,20 +319,57 @@ export async function saveRawScan(
  * the table remains bounded to one live row per company/source.
  */
 export async function listCurrentRawScans(): Promise<Array<{ company: string; detected: DetectedConfig; jobs: JobPosting[]; scannedAt: string }>> {
+  const jobAggregates = await loadCurrentRawScanJobAggregates();
   const currentRows = await queryCurrentRawScanRows();
-  const currentRowsWithEmbeddedJobs = currentRows.filter((row): row is RawScanCurrentRow =>
-    isRawScanCurrentRow(row) &&
-    Array.isArray(row.jobs) &&
-    typeof row.company === "string" &&
-    typeof row.scannedAt === "string"
-  );
-  if (currentRowsWithEmbeddedJobs.length > 0) {
-    return currentRowsWithEmbeddedJobs.map((row) => ({
+  const mergedByCompanyKey = new Map<string, CurrentRawScanAggregate>(jobAggregates);
+
+  for (const row of currentRows) {
+    if (!isRawScanCurrentRow(row) || typeof row.company !== "string" || typeof row.scannedAt !== "string") continue;
+    const key = normalizeRawScanCompanyKey(row.company);
+    const existing = mergedByCompanyKey.get(key);
+    if (existing) {
+      if (!existing.scannedAt || row.scannedAt.localeCompare(existing.scannedAt) > 0) {
+        existing.company = row.company;
+        existing.detected = row.detected;
+        existing.scannedAt = row.scannedAt;
+      }
+      // Per-job rows are authoritative when present. Keep them, but make sure
+      // true zero-job scans still surface via the compact CURRENT row.
+      if (existing.jobs.length === 0 && Number.isFinite(row.fetchedCount)) {
+        existing.fetchedCount = row.fetchedCount;
+      }
+      continue;
+    }
+
+    if (Array.isArray(row.jobs)) {
+      mergedByCompanyKey.set(key, {
+        company: row.company,
+        detected: row.detected,
+        jobs: sortJobsForStorage(row.jobs as JobPosting[]),
+        fetchedCount: row.jobs.length,
+        scannedAt: row.scannedAt,
+      });
+      continue;
+    }
+
+    mergedByCompanyKey.set(key, {
       company: row.company,
       detected: row.detected,
-      jobs: row.jobs as JobPosting[],
+      jobs: [],
+      fetchedCount: Number.isFinite(row.fetchedCount) ? row.fetchedCount : 0,
       scannedAt: row.scannedAt,
-    }));
+    });
+  }
+
+  if (mergedByCompanyKey.size > 0) {
+    return [...mergedByCompanyKey.values()]
+      .filter((row) => typeof row.scannedAt === "string")
+      .map((row) => ({
+        company: row.company,
+        detected: row.detected,
+        jobs: row.jobs,
+        scannedAt: row.scannedAt as string,
+      }));
   }
 
   // Transitional fallback for prod rows written before the durable CURRENT
@@ -305,18 +398,18 @@ export async function summarizeCurrentRawScans(): Promise<{
   currentJobs: number;
   lastScannedAt: string | null;
 }> {
-  const rows = await listCurrentRawScans();
+  const rows = await listCurrentRawScanSummaries();
   let lastScannedAt: string | null = null;
 
   for (const row of rows) {
-    if (!lastScannedAt || row.scannedAt.localeCompare(lastScannedAt) > 0) {
-      lastScannedAt = row.scannedAt;
+    if (row.lastScannedAt && (!lastScannedAt || row.lastScannedAt.localeCompare(lastScannedAt) > 0)) {
+      lastScannedAt = row.lastScannedAt;
     }
   }
 
   return {
     currentCompanies: rows.length,
-    currentJobs: rows.reduce((sum, row) => sum + row.jobs.length, 0),
+    currentJobs: rows.reduce((sum, row) => sum + row.totalJobs, 0),
     lastScannedAt,
   };
 }
@@ -326,19 +419,47 @@ export async function listCurrentRawScanSummaries(): Promise<Array<{
   totalJobs: number;
   lastScannedAt: string | null;
 }>> {
+  const jobAggregates = await loadCurrentRawScanJobAggregates();
   const currentRows = await queryCurrentRawScanRows();
-  if (currentRows.length > 0) {
-    return currentRows
-      .filter((row): row is RawScanCurrentRow =>
-        isRawScanCurrentRow(row) &&
-        typeof row.company === "string" &&
-        typeof row.scannedAt === "string"
-      )
-      .map((row) => ({
-        company: row.company,
-        totalJobs: Number.isFinite(row.fetchedCount) ? row.fetchedCount : Array.isArray(row.jobs) ? row.jobs.length : 0,
-        lastScannedAt: row.scannedAt ?? null,
-      }));
+  const mergedByCompanyKey = new Map<string, {
+    company: string;
+    totalJobs: number;
+    lastScannedAt: string | null;
+  }>();
+
+  for (const row of currentRows) {
+    if (!isRawScanCurrentRow(row) || typeof row.company !== "string") continue;
+    const key = normalizeRawScanCompanyKey(row.company);
+    mergedByCompanyKey.set(key, {
+      company: row.company,
+      totalJobs: Number.isFinite(row.fetchedCount) ? row.fetchedCount : Array.isArray(row.jobs) ? row.jobs.length : 0,
+      lastScannedAt: row.scannedAt ?? null,
+    });
+  }
+
+  for (const [key, aggregate] of jobAggregates.entries()) {
+    const existing = mergedByCompanyKey.get(key);
+    if (!existing) {
+      mergedByCompanyKey.set(key, {
+        company: aggregate.company,
+        totalJobs: aggregate.fetchedCount,
+        lastScannedAt: aggregate.scannedAt,
+      });
+      continue;
+    }
+
+    // Per-job rows are the real shared inventory. When they disagree with the
+    // compact CURRENT row, prefer the job-row count so registry status cannot
+    // claim "0 jobs" for companies whose raw inventory is already visible.
+    existing.totalJobs = aggregate.fetchedCount;
+    if (aggregate.scannedAt && (!existing.lastScannedAt || aggregate.scannedAt.localeCompare(existing.lastScannedAt) > 0)) {
+      existing.lastScannedAt = aggregate.scannedAt;
+      existing.company = aggregate.company;
+    }
+  }
+
+  if (mergedByCompanyKey.size > 0) {
+    return [...mergedByCompanyKey.values()];
   }
 
   const rows = await listCurrentRawScans();

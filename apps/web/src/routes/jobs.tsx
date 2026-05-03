@@ -23,10 +23,10 @@ import { DateRangePicker, type DateRangeValue } from "@/components/ui/date-range
 import { JobsTable, type SortCol, type SortDir } from "@/features/jobs/JobsTable";
 import { JobDetailsDrawer } from "@/features/jobs/JobDetailsDrawer";
 import { BulkActionBar } from "@/features/jobs/BulkActionBar";
-import { useApplyJob, useDiscardJob, useJobs, useManualAddJob, type JobsFilter } from "@/features/jobs/queries";
+import { useApplyJob, useDiscardJob, useJobDetails, useJobs, useManualAddJob, type JobsFilter } from "@/features/jobs/queries";
 import { useSavedFilters, useSaveFilter, useDeleteFilter } from "@/features/filters/queries";
 import { Dialog } from "@/components/ui/dialog";
-import { ApiError, type Job } from "@/lib/api";
+import { api, ApiError, type Job, type JobsEnvelope } from "@/lib/api";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useHotkey } from "@/lib/hotkeys";
@@ -58,7 +58,8 @@ function JobsRoute() {
     updatedOnly: search.updated === "1",
   });
   const [pageSize, setPageSize] = useState<number>(10);
-  const [page, setPage] = useState(0);
+  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
+  const [previousCursors, setPreviousCursors] = useState<string[]>([]);
 
   const [dateRange, setDateRange] = useState<DateRangeValue>({ from: null, to: null });
   const [selected, setSelected] = useState<Job | null>(null);
@@ -117,9 +118,9 @@ function JobsRoute() {
     () => ({
       ...filter,
       limit: pageSize,
-      offset: page * pageSize,
+      cursor: currentCursor,
     }),
-    [filter, page, pageSize],
+    [currentCursor, filter, pageSize],
   );
   const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
@@ -140,7 +141,7 @@ function JobsRoute() {
   // postedFrom/postedTo support is a backend follow-up.
   const allJobs = data?.jobs ?? [];
   const filteredJobs = useMemoFilter(allJobs, dateRange);
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageNumber = previousCursors.length + 1;
 
   // Client-side column sort — default: newest posted first.
   const jobs = useMemo(() => {
@@ -161,8 +162,17 @@ function JobsRoute() {
     });
     return arr;
   }, [filteredJobs, sortBy, sortDir]);
-  const pageStart = total === 0 ? 0 : page * pageSize + 1;
-  const pageEnd = total === 0 ? 0 : Math.min(total, page * pageSize + jobs.length);
+  // Always resolve the selected job from live query data so note/round
+  // mutations are reflected immediately without requiring the user to re-open
+  // the drawer after each invalidation.
+  const freshSelected = selected ? (allJobs.find((j) => j.jobKey === selected.jobKey) ?? selected) : null;
+  const selectedJobDetails = useJobDetails(selected?.jobKey ?? null, Boolean(selected));
+  const selectedAvailableJob = selectedJobDetails.data?.job ?? freshSelected;
+  const pageStart = total === 0 ? 0 : ((pageNumber - 1) * pageSize) + 1;
+  const pageEnd = total === 0 ? 0 : Math.min(total, pageStart + Math.max(jobs.length - 1, 0));
+  const resultsSummary = totals
+    ? `${(totals.availableJobs ?? total).toLocaleString()} available · ${totals.newJobs} new · ${totals.updatedJobs} updated`
+    : `${jobs.length.toLocaleString()} jobs loaded`;
 
   function handleSort(col: SortCol) {
     setSortBy((prev) => {
@@ -172,17 +182,14 @@ function JobsRoute() {
     });
   }
 
-  // Always resolve the selected job from live query data so note/round mutations
-  // are reflected immediately without requiring the user to re-click the row.
-  const freshSelected = selected ? (allJobs.find((j) => j.jobKey === selected.jobKey) ?? selected) : null;
-
   // Reset focus when filters change.
   useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
   useEffect(() => {
     // Filter changes can dramatically shrink the result set. Jump back to the
-    // first page so the user does not land on an empty offset from the old
-    // broader query.
-    setPage(0);
+    // first cursor so the user does not land on a stale later slice from the
+    // broader previous query.
+    setCurrentCursor(null);
+    setPreviousCursors([]);
   }, [
     filter.companies,
     filter.duration,
@@ -196,19 +203,43 @@ function JobsRoute() {
     dateRange.to,
   ]);
   useEffect(() => {
-    // Changing page size invalidates the prior offset math, so restart from
-    // page one to keep the visible slice predictable.
-    setPage(0);
+    // Changing page size invalidates the current cursor chain, so restart from
+    // the first page to keep the visible slice predictable.
+    setCurrentCursor(null);
+    setPreviousCursors([]);
   }, [pageSize]);
-  useEffect(() => {
-    if (page >= totalPages) setPage(Math.max(0, totalPages - 1));
-  }, [page, totalPages]);
   useEffect(() => {
     // Multi-select and drawer state should follow the visible page rather than
     // pointing at jobs that are no longer mounted.
     setChecked(new Set());
     setSelected(null);
-  }, [page, pageSize]);
+  }, [currentCursor, pageSize]);
+
+  useEffect(() => {
+    if (!pagination?.nextCursor) return;
+    const nextFilter = {
+      ...jobsQueryFilter,
+      cursor: pagination.nextCursor,
+    };
+    void qc.prefetchQuery({
+      queryKey: ["jobs", nextFilter],
+      queryFn: () => {
+        const params = new URLSearchParams();
+        for (const c of nextFilter.companies ?? []) if (c) params.append("company", c);
+        if (nextFilter.location) params.set("location", nextFilter.location);
+        if (nextFilter.keyword) params.set("keyword", nextFilter.keyword);
+        if (nextFilter.duration) params.set("duration", nextFilter.duration);
+        if (nextFilter.source) params.set("source", nextFilter.source);
+        if (nextFilter.usOnly) params.set("usOnly", "true");
+        if (nextFilter.newOnly) params.set("newOnly", "true");
+        if (nextFilter.updatedOnly) params.set("updatedOnly", "true");
+        params.set("limit", String(nextFilter.limit ?? 100));
+        if (pagination.nextCursor) params.set("cursor", pagination.nextCursor);
+        return api.get<JobsEnvelope>(`/api/jobs?${params.toString()}`);
+      },
+      staleTime: 5 * 60_000,
+    });
+  }, [jobsQueryFilter, pagination?.nextCursor, qc]);
 
   function openUpgrade() {
     setUpgradeOpen(true);
@@ -259,7 +290,11 @@ function JobsRoute() {
     row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [focusedIndex, jobs]);
 
-  function refresh() { qc.invalidateQueries({ queryKey: ["jobs"] }); }
+  function refresh() {
+    setCurrentCursor(null);
+    setPreviousCursors([]);
+    qc.invalidateQueries({ queryKey: ["jobs"] });
+  }
 
   function toggleChecked(key: string, options?: { range?: boolean }) {
     const idx = jobs.findIndex((j) => j.jobKey === key);
@@ -284,12 +319,8 @@ function JobsRoute() {
   return (
     <>
       <Topbar
-        title="Available Jobs"
-        subtitle={
-          totals
-            ? `${total.toLocaleString()} matching · ${totals.newJobs} new · ${totals.updatedJobs} updated`
-            : "Fresh listings from your tracked companies"
-        }
+          title="Available Jobs"
+          subtitle={resultsSummary}
         actions={
           <>
             <Button variant="outline" size="sm" onClick={refresh}>
@@ -311,7 +342,9 @@ function JobsRoute() {
           label={
             <span className="inline-flex items-center gap-2">
               <Briefcase size={14} />
-              {jobs.length.toLocaleString()} of {total.toLocaleString()} matching
+              {pagination?.hasMore
+                ? `${jobs.length.toLocaleString()} loaded on this page`
+                : `${jobs.length.toLocaleString()} matching`}
             </span>
           }
           advanced={advancedOpen}
@@ -518,7 +551,9 @@ function JobsRoute() {
               {filter.newOnly ? "New jobs" : filter.updatedOnly ? "Updated jobs" : "All jobs"}
             </CardTitle>
             <CardDescription className="text-sm">
-              Showing {pageStart.toLocaleString()}-{pageEnd.toLocaleString()} of {total.toLocaleString()}
+              {pagination?.hasMore
+                ? `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()}`
+                : `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} of ${total.toLocaleString()}`}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -536,7 +571,7 @@ function JobsRoute() {
             />
             <div className="flex flex-col gap-3 border-t border-[hsl(var(--border))] px-4 py-3 md:flex-row md:items-center md:justify-between">
               <div className="text-sm text-[hsl(var(--muted-foreground))]">
-                Page {Math.min(page + 1, totalPages).toLocaleString()} of {totalPages.toLocaleString()}
+                Page {pageNumber.toLocaleString()}
                 {pagination?.hasMore ? " · more results available" : ""}
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -556,8 +591,15 @@ function JobsRoute() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setPage((current) => Math.max(0, current - 1))}
-                    disabled={page === 0}
+                    onClick={() => {
+                      setPreviousCursors((history) => {
+                        if (history.length === 0) return history;
+                        const nextHistory = history.slice(0, -1);
+                        setCurrentCursor(history[history.length - 1] || null);
+                        return nextHistory;
+                      });
+                    }}
+                    disabled={previousCursors.length === 0}
                   >
                     <ChevronLeft size={14} />
                     Previous
@@ -565,8 +607,12 @@ function JobsRoute() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setPage((current) => (current + 1 < totalPages ? current + 1 : current))}
-                    disabled={page + 1 >= totalPages}
+                    onClick={() => {
+                      if (!pagination?.nextCursor) return;
+                      setPreviousCursors((history) => [...history, currentCursor ?? ""]);
+                      setCurrentCursor(pagination.nextCursor);
+                    }}
+                    disabled={!pagination?.nextCursor}
                   >
                     Next
                     <ChevronRight size={14} />
@@ -579,7 +625,7 @@ function JobsRoute() {
         </div>{/* end left pane */}
 
         {/* Drag divider + inline right pane (split mode only) */}
-        {freshSelected && (
+        {selectedAvailableJob && (
           <>
             <div
               className="w-1.5 flex-shrink-0 cursor-col-resize bg-[hsl(var(--border))] hover:bg-[hsl(var(--primary))]/40 transition-colors"
@@ -587,7 +633,7 @@ function JobsRoute() {
             />
             <div className="flex-1 min-w-0 overflow-hidden">
               <JobDetailsDrawer
-                source={{ type: "available", job: freshSelected }}
+                source={{ type: "available", job: selectedAvailableJob }}
                 onClose={() => setSelected(null)}
                 inline
               />

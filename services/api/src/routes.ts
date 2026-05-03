@@ -137,11 +137,13 @@ import {
   getLatestRunNotificationJobs,
   loadDiscardRegistry,
   loadInventory,
+  loadInventoryState,
   loadInventoryWithState,
   markJobsAsSeen,
   removeInventoryJobsByKeys,
   runScan,
   saveInventory,
+  streamAvailableJobsPage,
 } from "./services/inventory";
 import { openApiJsonResponse } from "./openapi";
 import type {
@@ -954,9 +956,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
 
-      const [registryEntries, rawScanSummary, currentRows, scanStateRows] = await Promise.all([
+      const [registryEntries, currentRows, scanStateRows] = await Promise.all([
         loadRegistryCache().then(() => listAll()),
-        summarizeCurrentRawScans(),
         listCurrentRawScanSummaries(),
         exportScanStateRecords(),
       ]);
@@ -970,6 +971,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         scanStateRows.map((row) => [normalizeCompanyKey(row.company), row] as const),
       );
       const now = nowISO();
+      const rawScanSummary = currentRows.reduce((summary, row) => {
+        if (row.lastScannedAt && (!summary.lastScannedAt || row.lastScannedAt.localeCompare(summary.lastScannedAt) > 0)) {
+          summary.lastScannedAt = row.lastScannedAt;
+        }
+        summary.currentCompanies += 1;
+        summary.currentJobs += row.totalJobs;
+        return summary;
+      }, {
+        currentCompanies: 0,
+        currentJobs: 0,
+        lastScannedAt: null as string | null,
+      });
 
       const rows = registryEntries.map((entry) => {
         const current = currentByCompanyKey.get(normalizeCompanyKey(entry.company));
@@ -2355,34 +2368,68 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       // Company pause is a manual-run control only. Available Jobs should
       // continue to show the company's already fetched/shared inventory.
+      const runtimeConfigStartedAt = Date.now();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const [{ effectiveInventory, inventoryState }, billing] = await Promise.all([
-        // Keep admin Available Jobs on the same tenant-derived read path as
-        // normal users so scan/cache behavior stays consistent across roles.
-        loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
-        loadBillingSubscription(tenantContext.tenantId).catch(() => null),
+      const runtimeConfigLoadMs = Date.now() - runtimeConfigStartedAt;
+      const inventoryStatePromise = (async () => {
+        const startedAt = Date.now();
+        const result = await loadInventoryState(env, tenantContext.tenantId);
+        return { result, durationMs: Date.now() - startedAt };
+      })();
+      const appliedJobsPromise = (async () => {
+        const startedAt = Date.now();
+        const result = await loadAppliedJobs(env, tenantContext.tenantId);
+        return { result, durationMs: Date.now() - startedAt };
+      })();
+      const billingPromise = (async () => {
+        const startedAt = Date.now();
+        const result = await loadBillingSubscription(tenantContext.tenantId).catch(() => null);
+        return { result, durationMs: Date.now() - startedAt };
+      })();
+      const [{ result: inventoryState, durationMs: inventoryStateLoadMs }, { result: appliedJobs, durationMs: appliedJobsLoadMs }, { result: billing, durationMs: billingLoadMs }] = await Promise.all([
+        inventoryStatePromise,
+        appliedJobsPromise,
+        billingPromise,
       ]);
       const planCfg = billing ? await loadPlanConfig(billing.plan).catch(() => null) : null;
-      const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
-      const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       const newJobKeys = new Set(inventoryState.lastNewJobKeys);
       const updatedJobKeys = new Set(inventoryState.lastUpdatedJobKeys);
       const newOnly = url.searchParams.get("newOnly") === "true";
       const updatedOnly = url.searchParams.get("updatedOnly") === "true";
-      const allAvailableJobs = effectiveInventory.jobs.filter((job) => !appliedJobs[jobKey(job)]);
-      // Admin browsing should reflect the shared registry inventory without
-      // consumer-tier visible-job caps.
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
+      const companyFilters = parseMultiValues(url.searchParams, "company");
+      const companySearch = companyFilters.length ? "" : url.searchParams.get("company")?.trim().toLowerCase() ?? "";
+      const streamStartedAt = Date.now();
       const jobCap = tenantContext.isAdmin ? null : (planCfg?.maxVisibleJobs ?? null);
-      const availableJobs = jobCap !== null ? allAvailableJobs.slice(0, jobCap) : allAvailableJobs;
-      const companyOptions = uniqueSortedCompanies(availableJobs.map((job) => job.company));
-      const totalNewAvailable = availableJobs.filter((job) => newJobKeys.has(jobKey(job))).length;
-      const totalUpdatedAvailable = availableJobs.filter((job) => updatedJobKeys.has(jobKey(job))).length;
-      const jobs = filterJobs(availableJobs, url.searchParams)
-        .filter((job) => !newOnly || newJobKeys.has(jobKey(job)))
-        .filter((job) => !updatedOnly || updatedJobKeys.has(jobKey(job)))
+      const streamedPage = await streamAvailableJobsPage(
+        env,
+        config,
+        inventoryState.inventory,
+        tenantContext.tenantId,
+        limit,
+        url.searchParams.get("cursor"),
+        {
+          companies: companyFilters,
+          companySearch,
+          location: url.searchParams.get("location")?.trim().toLowerCase() ?? "",
+          keyword: url.searchParams.get("keyword")?.trim().toLowerCase() ?? "",
+          durationHours: parseDurationHours(url.searchParams.get("duration")),
+          source: url.searchParams.get("source")?.trim().toLowerCase() ?? "",
+          usOnly: url.searchParams.get("usOnly") === "true",
+          newOnly,
+          updatedOnly,
+          appliedJobKeys: new Set(Object.keys(appliedJobs)),
+          newJobKeys,
+          updatedJobKeys,
+        },
+        jobCap,
+      );
+      const streamPhaseMs = Date.now() - streamStartedAt;
+      const sortStartedAt = Date.now();
+      const jobs = streamedPage.jobs
         .sort((a, b) => {
           const aKey = jobKey(a);
           const bKey = jobKey(b);
@@ -2400,10 +2447,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
           return a.title.localeCompare(b.title);
         });
-
-      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
-      const offset = Math.max(0, Number(url.searchParams.get("offset") || 0) || 0);
-      const pagedJobs = jobs.slice(offset, offset + limit);
+      const sortPhaseMs = Date.now() - sortStartedAt;
+      const storedAvailableJobs = (inventoryState.inventory?.jobs ?? []).filter((job) => !appliedJobs[jobKey(job)]);
+      const visibleStoredJobs = jobCap !== null ? storedAvailableJobs.slice(0, jobCap) : storedAvailableJobs;
+      const approximateVisibleJobs = filterJobs(visibleStoredJobs, url.searchParams)
+        .filter((job) => !newOnly || newJobKeys.has(jobKey(job)))
+        .filter((job) => !updatedOnly || updatedJobKeys.has(jobKey(job)));
+      const companyOptions = uniqueSortedCompanies(visibleStoredJobs.map((job) => job.company));
+      const totalNewAvailable = visibleStoredJobs.filter((job) => newJobKeys.has(jobKey(job))).length;
+      const totalUpdatedAvailable = visibleStoredJobs.filter((job) => updatedJobKeys.has(jobKey(job))).length;
       const filteredCompanies = uniqueSortedCompanies(jobs.map((job) => job.company));
       const companySlug = filteredCompanies.length === 1 ? slugify(filteredCompanies[0]) : "multi";
 
@@ -2411,33 +2463,45 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       // user-facing inventory response on analytics writes.
       void recordEvent(tenantContext, "JOB_VIEWED", {
         companySlug,
-        jobCount: jobs.length,
+        jobCount: approximateVisibleJobs.length,
       }).catch((error) => {
         console.warn("[analytics] failed to record job view event", error);
       });
 
+      console.info("[jobs.list]", {
+        tenantId: tenantContext.tenantId,
+        runtimeConfigLoadMs,
+        inventoryStateLoadMs,
+        appliedJobsLoadMs,
+        billingLoadMs,
+        streamPhaseMs,
+        sortPhaseMs,
+        inspectedCompanies: streamedPage.inspectedCompanies,
+        inspectedJobs: streamedPage.inspectedJobs,
+        matchedJobs: streamedPage.matchedJobs,
+        returnedJobs: jobs.length,
+      });
+
       return jsonResponse({
         ok: true,
-        runAt: effectiveInventory.runAt,
-        total: jobs.length,
+        runAt: inventoryState.inventory?.runAt ?? nowISO(),
+        total: approximateVisibleJobs.length,
         pagination: {
-          offset,
           limit,
-          nextOffset: Math.min(jobs.length, offset + pagedJobs.length),
-          hasMore: offset + pagedJobs.length < jobs.length,
+          nextCursor: streamedPage.nextCursor,
+          hasMore: streamedPage.hasMore,
         },
         totals: {
-          availableJobs: availableJobs.length,
-          totalAvailableJobs: allAvailableJobs.length,
+          availableJobs: visibleStoredJobs.length,
+          totalAvailableJobs: storedAvailableJobs.length,
           newJobs: totalNewAvailable,
           updatedJobs: totalUpdatedAvailable,
-          jobsCapped: jobCap !== null && allAvailableJobs.length > jobCap,
+          jobsCapped: jobCap !== null && storedAvailableJobs.length > jobCap,
           jobCapLimit: jobCap,
         },
         companyOptions,
-        jobs: pagedJobs.map((job) => ({
+        jobs: jobs.map((job) => ({
           jobKey: jobKey(job),
-          notes: jobNotes[jobKey(job)] || "",
           company: job.company,
           source: job.source,
           jobTitle: job.title,
@@ -2450,6 +2514,45 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           isNew: newJobKeys.has(jobKey(job)),
           isUpdated: updatedJobKeys.has(jobKey(job)),
         })),
+      });
+    }
+
+    if (url.pathname === "/api/jobs/details" && request.method === "GET") {
+      const tenantContext = await getTenantContext();
+      const requestedJobKey = url.searchParams.get("jobKey")?.trim();
+      if (!requestedJobKey) {
+        return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
+      }
+
+      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
+      const [{ effectiveInventory }, jobNotes] = await Promise.all([
+        loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
+        loadJobNotes(env, tenantContext.tenantId),
+      ]);
+      const matchedJob = effectiveInventory.jobs.find((job) => jobKey(job) === requestedJobKey);
+      if (!matchedJob) {
+        return jsonResponse({ ok: false, error: "Job not found" }, 404);
+      }
+
+      return jsonResponse({
+        ok: true,
+        job: {
+          jobKey: requestedJobKey,
+          notes: jobNotes[requestedJobKey] || "",
+          noteRecords: [],
+          company: matchedJob.company,
+          source: matchedJob.source,
+          jobTitle: matchedJob.title,
+          postedAt: formatET(matchedJob.postedAt),
+          postedAtDate: formatDateOnly(matchedJob.postedAt),
+          location: matchedJob.location,
+          url: matchedJob.url,
+          usLikely: matchedJob.isUSLikely,
+          detectedCountry: matchedJob.detectedCountry ?? "Unknown",
+        },
       });
     }
 

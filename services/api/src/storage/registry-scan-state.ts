@@ -401,3 +401,27 @@ export async function resumeRegistryCompanyScan(
     failureCount: 0,
   });
 }
+
+/**
+ * Persist the latest registry-derived ATS + scan-pool policy onto the scan
+ * state row so admin config edits take effect immediately in status views and
+ * the next scheduler pass.
+ */
+export async function syncRegistryCompanyScanPolicy(
+  company: string,
+  adapterId?: string | null,
+): Promise<RegistryCompanyScanState> {
+  const previous = await loadRegistryCompanyScanState(company, adapterId);
+  const policy = await loadRegistryPolicyForCompany(company, adapterId ?? previous.adapterId ?? null);
+
+  return saveState({
+    ...previous,
+    adapterId: policy.adapterId ?? previous.adapterId ?? null,
+    scanPool: policy.scanPool,
+    priority: policy.priority,
+    nextScanAt: previous.nextScanAt,
+    staleAfterAt: previous.lastSuccessAt
+      ? futureIso(staleWindowForPool(policy.scanPool))
+      : previous.staleAfterAt,
+  });
+}
