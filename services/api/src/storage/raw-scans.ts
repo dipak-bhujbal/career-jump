@@ -191,6 +191,13 @@ function sortJobsForStorage(jobs: JobPosting[]): JobPosting[] {
   });
 }
 
+function latestJobRowScannedAt(jobRows: RawScanJobRow[]): string | null {
+  return jobRows.reduce<string | null>((latest, row) => {
+    if (!latest || row.scannedAt.localeCompare(latest) > 0) return row.scannedAt;
+    return latest;
+  }, null);
+}
+
 /**
  * Shared raw ATS fetches live outside tenant storage so later users can reuse
  * the same source payload and only re-run their own title/geography filters.
@@ -205,19 +212,32 @@ export async function loadLatestRawScan(
     { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
     true,
   );
-  // Large boards can exceed Dynamo's item size limit if we mirror the full
-  // jobs[] payload into the CURRENT summary row. Prefer the per-job rows as
-  // the durable source of truth and only use embedded jobs[] as a legacy
-  // fallback for older rows that predate the split-row storage model.
+  const currentRows = await loadCurrentRowsForDetected(detected);
+  const jobRows = currentRows.filter(isRawScanJobRow);
   const currentCandidate = current?.scannedAt ? current : null;
+  const latestJobScannedAt = latestJobRowScannedAt(jobRows);
+
   if (currentCandidate && !isUsableScanTimestamp(currentCandidate.scannedAt, options)) {
     return null;
   }
 
-  const currentRows = await loadCurrentRowsForDetected(detected);
-  const jobRows = currentRows.filter(isRawScanJobRow);
   if (jobRows.length > 0) {
-    const scannedAt = currentCandidate?.scannedAt ?? currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
+    // Prefer the newer of the compact CURRENT row and the per-job rows. This
+    // heals stale zero-count CURRENT rows for large boards like AECOM/Airbnb
+    // without losing legitimate "0 jobs" scans when the CURRENT row is newer.
+    const currentIsNewerOrEqual = Boolean(
+      currentCandidate?.scannedAt
+      && latestJobScannedAt
+      && currentCandidate.scannedAt.localeCompare(latestJobScannedAt) >= 0,
+    );
+    if (currentIsNewerOrEqual && Number.isFinite(currentCandidate?.fetchedCount) && (currentCandidate?.fetchedCount ?? 0) === 0) {
+      return {
+        jobs: [],
+        scannedAt: currentCandidate!.scannedAt,
+      };
+    }
+
+    const scannedAt = latestJobScannedAt ?? currentCandidate?.scannedAt ?? currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
     if (!isUsableScanTimestamp(scannedAt, options)) return null;
     return {
       jobs: sortJobsForStorage(jobRows.map((row) => row.job)),
@@ -266,25 +286,30 @@ export async function loadLatestRawScanSummary(
     { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
     true,
   );
-  if (current?.scannedAt) {
-    if (!isUsableScanTimestamp(current.scannedAt, options)) return null;
-    return {
-      fetchedCount: Number.isFinite(current.fetchedCount)
-        ? current.fetchedCount
-        : Array.isArray(current.jobs)
-          ? current.jobs.length
-          : 0,
-      scannedAt: current.scannedAt,
-    };
-  }
-
   const currentRows = await loadCurrentRowsForDetected(detected);
   const jobRows = currentRows.filter(isRawScanJobRow);
+  const latestJobScannedAt = latestJobRowScannedAt(jobRows);
+
+  if (current?.scannedAt) {
+    const currentFetchedCount = Number.isFinite(current.fetchedCount)
+      ? current.fetchedCount
+      : Array.isArray(current.jobs)
+        ? current.jobs.length
+        : 0;
+    const currentIsNewerOrEqual = Boolean(
+      latestJobScannedAt
+      && current.scannedAt.localeCompare(latestJobScannedAt) >= 0,
+    );
+    if ((jobRows.length === 0 || currentIsNewerOrEqual) && isUsableScanTimestamp(current.scannedAt, options)) {
+      return {
+        fetchedCount: currentFetchedCount,
+        scannedAt: current.scannedAt,
+      };
+    }
+  }
+
   if (jobRows.length > 0) {
-    const scannedAt = jobRows.reduce<string | null>((latest, row) => {
-      if (!latest || row.scannedAt.localeCompare(latest) > 0) return row.scannedAt;
-      return latest;
-    }, null);
+    const scannedAt = latestJobScannedAt;
     if (!scannedAt || !isUsableScanTimestamp(scannedAt, options)) return null;
     return {
       fetchedCount: jobRows.length,

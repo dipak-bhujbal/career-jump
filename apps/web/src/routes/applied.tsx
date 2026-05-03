@@ -168,6 +168,18 @@ function AppliedRoute() {
 
   const filteredJobs = useMemo(() => {
     let list = appliedJobs.filter((j) => j.job != null);
+    if (filter.keyword?.trim()) {
+      const keyword = filter.keyword.trim().toLowerCase();
+      list = list.filter((j) => {
+        const title = j.job.jobTitle?.toLowerCase() ?? "";
+        const company = j.job.company?.toLowerCase() ?? "";
+        return title.includes(keyword) || company.includes(keyword);
+      });
+    }
+    if ((filter.companies?.length ?? 0) > 0) {
+      const selectedCompanies = new Set((filter.companies ?? []).map((company) => company.toLowerCase()));
+      list = list.filter((j) => selectedCompanies.has(j.job.company.toLowerCase()));
+    }
     if (selectedStatuses.length > 0) list = list.filter((j) => selectedStatuses.includes(j.status));
     if (location.trim()) {
       const loc = location.trim().toLowerCase();

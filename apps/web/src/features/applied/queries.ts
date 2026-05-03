@@ -109,18 +109,19 @@ function normalizeCompanyAppliedEnvelope(data: CompanyAppliedJobsEnvelope): Comp
   return { ...data, jobs: normalizeAppliedJobs(data.jobs as RawAppliedJob[] | undefined) };
 }
 
-export function useApplied(filter: AppliedFilter) {
+export function useApplied(_filter: AppliedFilter) {
   return useQuery({
-    queryKey: appliedKey(filter),
-    queryFn: () => {
-      const p = new URLSearchParams();
-      for (const c of filter.companies ?? []) if (c) p.append("company", c);
-      if (filter.keyword) p.set("keyword", filter.keyword);
-      for (const s of filter.statuses ?? []) if (s) p.append("status", s);
-      const qs = p.toString();
-      return api.get<AppliedJobsEnvelope>(`/api/applied-jobs${qs ? `?${qs}` : ""}`).then(normalizeAppliedEnvelope);
-    },
-    staleTime: 15_000,
+    // Applied Jobs is now cheap enough to fetch once and refine locally so
+    // stage/company/keyword filters feel instant instead of refetching the
+    // whole page payload on every control change.
+    queryKey: appliedKey({}),
+    queryFn: () => api.get<AppliedJobsEnvelope>("/api/applied-jobs").then(normalizeAppliedEnvelope),
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (prev) => prev,
   });
 }
 
@@ -128,7 +129,12 @@ export function useAppliedKanban(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: appliedKanbanKey(),
     queryFn: () => api.get<AppliedKanbanEnvelope>("/api/applied-jobs/kanban").then(normalizeAppliedKanbanEnvelope),
-    staleTime: 15_000,
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (prev) => prev,
     enabled: options?.enabled ?? true,
   });
 }
@@ -137,7 +143,7 @@ export function useCompanyAppliedJobs(companySlug: string, options?: { enabled?:
   return useQuery({
     queryKey: companyAppliedKey(companySlug),
     queryFn: () => api.get<CompanyAppliedJobsEnvelope>(`/api/companies/${encodeURIComponent(companySlug)}/applied`).then(normalizeCompanyAppliedEnvelope),
-    staleTime: 15_000,
+    staleTime: 5 * 60_000,
     enabled: options?.enabled ?? Boolean(companySlug),
   });
 }

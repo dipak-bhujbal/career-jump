@@ -34,12 +34,21 @@ export function RunProgress() {
   const serverActive = data?.active === true;
   const queuedPending = isQueuedRunPending(latestRun);
   const isActive = serverActive || isStarting || queuedPending;
+  const hasObservedRealCompanyProgress = Boolean(
+    data?.active
+      && (
+        (data.fetchedCompanies ?? 0) > 0
+        || (data.totalCompanies ?? 0) > 0
+        || typeof data.currentCompany === "string"
+      ),
+  );
 
   useEffect(() => {
-    // Fast async scans can finish before the UI ever sees an in-progress
-    // heartbeat. When the server explicitly reports no active run, drop any
-    // stale queued-only snapshot so the banner disappears without a refresh.
-    if (data?.active === false && isAcceptedRun(latestRun)) {
+    // Keep the accepted queued banner alive until the grace window actually
+    // expires. Some async runs briefly report inactive between the initial
+    // request acceptance and the first worker heartbeat, which used to make
+    // the banner disappear and then restart a moment later.
+    if (data?.active === false && isAcceptedRun(latestRun) && !isQueuedRunPending(latestRun)) {
       queryClient.setQueryData(latestRunResultKey, null);
     }
   }, [data?.active, latestRun, queryClient]);
@@ -48,10 +57,13 @@ export function RunProgress() {
     if (serverActive && data) {
       setLastActiveStatus(data);
       setLingerUntil(null);
-      // Only the real server-backed active state is allowed to transition into
-      // the completed linger banner. A 202 Accepted mutation by itself is only
-      // a queued run request, not proof that company scans have started.
-      wasActiveRef.current = true;
+      // Only transition into the completion linger once the backend has shown
+      // real company-level progress. A transient orchestration lock without
+      // counts/currentCompany should stay in the queued state instead of
+      // flashing "finished" before the real worker heartbeat arrives.
+      if (hasObservedRealCompanyProgress) {
+        wasActiveRef.current = true;
+      }
       return;
     }
 
@@ -62,7 +74,7 @@ export function RunProgress() {
       setLingerUntil(Date.now() + COMPLETION_LINGER_MS);
       wasActiveRef.current = false;
     }
-  }, [data, lastActiveStatus, lingerUntil, serverActive]);
+  }, [data, hasObservedRealCompanyProgress, lastActiveStatus, lingerUntil, serverActive]);
 
   useEffect(() => {
     if (lingerUntil === null) return undefined;

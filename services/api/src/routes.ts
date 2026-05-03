@@ -644,6 +644,36 @@ function deriveRegistryLastScanStatus(scanState: {
   return "pass";
 }
 
+function resolveEffectiveRegistrySnapshot(
+  current: { totalJobs: number; lastScannedAt: string | null } | undefined,
+  scanState: { lastSuccessAt?: string | null; lastFetchedCount?: number | null } | undefined,
+): {
+  totalJobs: number;
+  lastScannedAt: string | null;
+} {
+  const currentLastScannedAt = current?.lastScannedAt ?? null;
+  const scanStateLastSuccessAt = scanState?.lastSuccessAt ?? null;
+  const currentTotalJobs = Number.isFinite(current?.totalJobs) ? current?.totalJobs ?? 0 : 0;
+  const scanStateFetchedCount = Number.isFinite(scanState?.lastFetchedCount)
+    ? Number(scanState?.lastFetchedCount ?? 0)
+    : 0;
+
+  // Raw CURRENT rows are the preferred registry-status source, but if scan
+  // state records a newer successful fetch then the compact raw summary has
+  // lagged behind and should not keep showing a stale zero-count snapshot.
+  if (scanStateLastSuccessAt && (!currentLastScannedAt || scanStateLastSuccessAt.localeCompare(currentLastScannedAt) > 0)) {
+    return {
+      totalJobs: Math.max(currentTotalJobs, scanStateFetchedCount),
+      lastScannedAt: scanStateLastSuccessAt,
+    };
+  }
+
+  return {
+    totalJobs: currentTotalJobs || scanStateFetchedCount,
+    lastScannedAt: currentLastScannedAt ?? scanStateLastSuccessAt,
+  };
+}
+
 function categorizeRegistryFailure(
   scanState: {
     status?: string | null;
@@ -1135,7 +1165,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const rows = registryEntries.map((entry) => {
         const current = currentByCompanyKey.get(normalizeCompanyKey(entry.company));
         const scanState = scanStateByCompanyKey.get(normalizeCompanyKey(entry.company));
-        const effectiveLastScannedAt = current?.lastScannedAt ?? scanState?.lastSuccessAt ?? null;
+        const effectiveSnapshot = resolveEffectiveRegistrySnapshot(current, scanState);
+        const effectiveLastScannedAt = effectiveSnapshot.lastScannedAt;
         return {
           registryId: normalizeCompanyKey(entry.company),
           company: entry.company,
@@ -1146,7 +1177,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
             nextScanAt: scanState?.nextScanAt ?? null,
             nowIso: now,
           }),
-          totalJobs: current?.totalJobs ?? 0,
+          totalJobs: effectiveSnapshot.totalJobs,
           lastScannedAt: effectiveLastScannedAt,
           nextScanAt: scanState?.nextScanAt ?? null,
         };
@@ -1246,7 +1277,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         const companyKey = normalizeCompanyKey(entry.company);
         const current = currentByCompanyKey.get(companyKey);
         const scanState = scanStateByCompanyKey.get(companyKey);
-        const effectiveLastScannedAt = current?.lastScannedAt ?? scanState?.lastSuccessAt ?? null;
+        const effectiveSnapshot = resolveEffectiveRegistrySnapshot(current, scanState);
+        const effectiveLastScannedAt = effectiveSnapshot.lastScannedAt;
         const lastScanStatus = deriveRegistryLastScanStatus(scanState, {
           lastScannedAt: effectiveLastScannedAt,
           nextScanAt: scanState?.nextScanAt ?? null,
@@ -1260,7 +1292,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           ats: entry.ats ?? null,
           scanPool: scanState?.scanPool ?? "cold",
           lastScanStatus,
-          totalJobs: current?.totalJobs ?? 0,
+          totalJobs: effectiveSnapshot.totalJobs,
           lastScannedAt: effectiveLastScannedAt,
           nextScanAt: scanState?.nextScanAt ?? null,
           lastFailureAt: scanState?.lastFailureAt ?? null,

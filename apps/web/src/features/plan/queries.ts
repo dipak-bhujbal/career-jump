@@ -7,7 +7,14 @@ export function useActionPlan() {
   return useQuery({
     queryKey: actionPlanKey,
     queryFn: () => api.get<ActionPlanEnvelope>("/api/action-plan"),
-    staleTime: 15_000,
+    // Action Plan filters are local-only, so keep the dataset warm across page
+    // visits instead of refetching while the user tweaks chips and date ranges.
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    placeholderData: (prev) => prev,
   });
 }
 

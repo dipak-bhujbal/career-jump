@@ -1,6 +1,7 @@
 /**
- * Available-jobs hooks. Filters live in component state and feed into
- * the query key so refining filters refetches automatically.
+ * Available-jobs hooks. The interactive page now keeps most filters client-side
+ * so toggles and text inputs feel instant; the query key is reserved for page
+ * traversal and explicit refreshes instead of every UI filter change.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type JobDetailEnvelope, type JobsEnvelope } from "@/lib/api";

@@ -35,6 +35,20 @@ import { useMe } from "@/features/session/queries";
 
 interface JobsSearch { new?: string; updated?: string; q?: string }
 
+function parseClientDurationHours(raw: string | undefined): number | null {
+  switch (raw) {
+    case "1h": return 1;
+    case "3h": return 3;
+    case "1d": return 24;
+    case "3d": return 24 * 3;
+    case "1w": return 24 * 7;
+    case "2w": return 24 * 14;
+    case "1m": return 24 * 30;
+    case "3m": return 24 * 90;
+    default: return null;
+  }
+}
+
 export const Route = createFileRoute("/jobs")({
   component: JobsRoute,
   validateSearch: (s: Record<string, unknown>): JobsSearch => ({
@@ -116,11 +130,10 @@ function JobsRoute() {
 
   const jobsQueryFilter = useMemo(
     () => ({
-      ...filter,
       limit: pageSize,
       cursor: currentCursor,
     }),
-    [currentCursor, filter, pageSize],
+    [currentCursor, pageSize],
   );
   const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
@@ -137,10 +150,8 @@ function JobsRoute() {
   const totals = data?.totals;
   const pagination = data?.pagination;
   const companyOptions = data?.companyOptions ?? [];
-  // Client-side date filter on the loaded page. Server-side
-  // postedFrom/postedTo support is a backend follow-up.
   const allJobs = data?.jobs ?? [];
-  const filteredJobs = useMemoFilter(allJobs, dateRange);
+  const filteredJobs = useMemoFilter(allJobs, filter, dateRange);
   const pageNumber = previousCursors.length + 1;
 
   // Client-side column sort — default: newest posted first.
@@ -168,11 +179,13 @@ function JobsRoute() {
   const freshSelected = selected ? (allJobs.find((j) => j.jobKey === selected.jobKey) ?? selected) : null;
   const selectedJobDetails = useJobDetails(selected?.jobKey ?? null, Boolean(selected));
   const selectedAvailableJob = selectedJobDetails.data?.job ?? freshSelected;
-  const pageStart = total === 0 ? 0 : ((pageNumber - 1) * pageSize) + 1;
-  const pageEnd = total === 0 ? 0 : Math.min(total, pageStart + Math.max(jobs.length - 1, 0));
+  const serverSideFiltersActive = false;
+  const pageStart = jobs.length === 0 ? 0 : 1;
+  const pageEnd = jobs.length;
+  const visibleTotal = jobs.length;
   const resultsSummary = totals
-    ? `${(totals.availableJobs ?? total).toLocaleString()} available · ${totals.newJobs} new · ${totals.updatedJobs} updated`
-    : `${jobs.length.toLocaleString()} jobs loaded`;
+    ? `${visibleTotal.toLocaleString()} matching on this page · ${(totals.availableJobs ?? total).toLocaleString()} available overall`
+    : `${visibleTotal.toLocaleString()} jobs loaded on this page`;
 
   function handleSort(col: SortCol) {
     setSortBy((prev) => {
@@ -184,24 +197,6 @@ function JobsRoute() {
 
   // Reset focus when filters change.
   useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
-  useEffect(() => {
-    // Filter changes can dramatically shrink the result set. Jump back to the
-    // first cursor so the user does not land on a stale later slice from the
-    // broader previous query.
-    setCurrentCursor(null);
-    setPreviousCursors([]);
-  }, [
-    filter.companies,
-    filter.duration,
-    filter.keyword,
-    filter.location,
-    filter.newOnly,
-    filter.source,
-    filter.updatedOnly,
-    filter.usOnly,
-    dateRange.from,
-    dateRange.to,
-  ]);
   useEffect(() => {
     // Changing page size invalidates the current cursor chain, so restart from
     // the first page to keep the visible slice predictable.
@@ -225,14 +220,8 @@ function JobsRoute() {
       queryKey: ["jobs", nextFilter],
       queryFn: () => {
         const params = new URLSearchParams();
-        for (const c of nextFilter.companies ?? []) if (c) params.append("company", c);
-        if (nextFilter.location) params.set("location", nextFilter.location);
-        if (nextFilter.keyword) params.set("keyword", nextFilter.keyword);
-        if (nextFilter.duration) params.set("duration", nextFilter.duration);
-        if (nextFilter.source) params.set("source", nextFilter.source);
-        if (nextFilter.usOnly) params.set("usOnly", "true");
-        if (nextFilter.newOnly) params.set("newOnly", "true");
-        if (nextFilter.updatedOnly) params.set("updatedOnly", "true");
+        // Page prefetch mirrors the lightweight server query exactly: keep the
+        // next cursor warm without reintroducing server-side filter churn.
         params.set("limit", String(nextFilter.limit ?? 100));
         if (pagination.nextCursor) params.set("cursor", pagination.nextCursor);
         return api.get<JobsEnvelope>(`/api/jobs?${params.toString()}`);
@@ -342,9 +331,7 @@ function JobsRoute() {
           label={
             <span className="inline-flex items-center gap-2">
               <Briefcase size={14} />
-              {pagination?.hasMore
-                ? `${jobs.length.toLocaleString()} loaded on this page`
-                : `${jobs.length.toLocaleString()} matching`}
+              {`${jobs.length.toLocaleString()} matching on this page`}
             </span>
           }
           advanced={advancedOpen}
@@ -376,21 +363,21 @@ function JobsRoute() {
                     onClick={() => setFilter((f) => ({ ...f, newOnly: false, updatedOnly: false }))}
                     icon={<Briefcase size={15} />}
                     label="All jobs"
-                    count={total}
+                    count={allJobs.length}
                   />
                   <ChipToggle
                     active={filter.newOnly === true}
                     onClick={() => setFilter((f) => ({ ...f, newOnly: !f.newOnly, updatedOnly: false }))}
                     icon={<Sparkles size={15} />}
                     label="New"
-                    count={totals?.newJobs}
+                    count={allJobs.filter((job) => job.isNew).length}
                   />
                   <ChipToggle
                     active={filter.updatedOnly === true}
                     onClick={() => setFilter((f) => ({ ...f, updatedOnly: !f.updatedOnly, newOnly: false }))}
                     icon={<RefreshCw size={15} />}
                     label="Updated"
-                    count={totals?.updatedJobs}
+                    count={allJobs.filter((job) => job.isUpdated).length}
                   />
                   <ChipToggle
                     active={filter.usOnly === true}
@@ -552,8 +539,8 @@ function JobsRoute() {
             </CardTitle>
             <CardDescription className="text-sm">
               {pagination?.hasMore
-                ? `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()}`
-                : `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} of ${total.toLocaleString()}`}
+                ? `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} on this page`
+                : `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} on this page`}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -573,6 +560,7 @@ function JobsRoute() {
               <div className="text-sm text-[hsl(var(--muted-foreground))]">
                 Page {pageNumber.toLocaleString()}
                 {pagination?.hasMore ? " · more results available" : ""}
+                {!serverSideFiltersActive && advancedOpen ? " · filters apply instantly on the loaded page" : ""}
               </div>
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <label className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
@@ -694,20 +682,56 @@ function ChipToggle({ active, onClick, icon, label, count }: {
   );
 }
 
-/** Client-side date range filter on the loaded jobs page. The job's
- *  `postedAt` field is an ET-formatted string from the backend; we parse
- *  it as a Date and inclusively filter by the chosen range. */
-function useMemoFilter(jobs: Job[], range: DateRangeValue): Job[] {
+/** Client-side Available Jobs filters run against the loaded page payload so
+ *  chips and text inputs feel instant instead of round-tripping through the
+ *  streaming `/api/jobs` endpoint on every interaction. */
+function useMemoFilter(jobs: Job[], filter: JobsFilter, range: DateRangeValue): Job[] {
   return useMemo(() => {
-    if (!range.from && !range.to) return jobs;
+    let filtered = jobs;
+    if (filter.keyword?.trim()) {
+      const keyword = filter.keyword.trim().toLowerCase();
+      filtered = filtered.filter((job) => job.jobTitle.toLowerCase().includes(keyword));
+    }
+    if ((filter.companies?.length ?? 0) > 0) {
+      const selectedCompanies = new Set((filter.companies ?? []).map((company) => company.toLowerCase()));
+      filtered = filtered.filter((job) => selectedCompanies.has(job.company.toLowerCase()));
+    }
+    if (filter.location?.trim()) {
+      const location = filter.location.trim().toLowerCase();
+      filtered = filtered.filter((job) => (job.location ?? "").toLowerCase().includes(location));
+    }
+    if (filter.source?.trim()) {
+      const source = filter.source.trim().toLowerCase();
+      filtered = filtered.filter((job) => job.source.toLowerCase() === source);
+    }
+    if (filter.usOnly) {
+      filtered = filtered.filter((job) => job.usLikely !== false);
+    }
+    if (filter.newOnly) {
+      filtered = filtered.filter((job) => job.isNew);
+    }
+    if (filter.updatedOnly) {
+      filtered = filtered.filter((job) => job.isUpdated);
+    }
+    if (filter.duration) {
+      const durationHours = parseClientDurationHours(filter.duration);
+      if (durationHours) {
+        const cutoffMs = Date.now() - (durationHours * 60 * 60 * 1000);
+        filtered = filtered.filter((job) => {
+          const postedAtMs = job.postedAt ? new Date(job.postedAt).getTime() : NaN;
+          return Number.isNaN(postedAtMs) ? true : postedAtMs >= cutoffMs;
+        });
+      }
+    }
+    if (!range.from && !range.to) return filtered;
     const fromMs = range.from ? range.from.getTime() : -Infinity;
     const toMs = range.to ? range.to.getTime() + 86_399_999 : Infinity;
-    return jobs.filter((j) => {
+    return filtered.filter((j) => {
       const t = j.postedAt ? new Date(j.postedAt).getTime() : NaN;
       if (Number.isNaN(t)) return true; // keep entries with unparseable dates
       return t >= fromMs && t <= toMs;
     });
-  }, [jobs, range]);
+  }, [filter, jobs, range]);
 }
 
 function ManualAddJobDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
