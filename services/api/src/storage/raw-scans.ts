@@ -20,7 +20,7 @@ type RawScanCurrentRow = {
   companySlug: string;
   source: DetectedConfig["source"];
   detected: DetectedConfig;
-  jobs: JobPosting[];
+  jobs?: JobPosting[];
   fetchedCount: number;
   scannedAt: string;
   schemaVersion: number;
@@ -147,22 +147,30 @@ export async function loadLatestRawScan(
     { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
     true,
   );
-  const currentCandidate = current?.scannedAt && Array.isArray(current.jobs) ? current : null;
-  if (currentCandidate && isUsableScanTimestamp(currentCandidate.scannedAt, options)) {
-    return {
-      jobs: sortJobsForStorage(currentCandidate.jobs),
-      scannedAt: currentCandidate.scannedAt,
-    };
+  // Large boards can exceed Dynamo's item size limit if we mirror the full
+  // jobs[] payload into the CURRENT summary row. Prefer the per-job rows as
+  // the durable source of truth and only use embedded jobs[] as a legacy
+  // fallback for older rows that predate the split-row storage model.
+  const currentCandidate = current?.scannedAt ? current : null;
+  if (currentCandidate && !isUsableScanTimestamp(currentCandidate.scannedAt, options)) {
+    return null;
   }
 
   const currentRows = await loadCurrentRowsForDetected(detected);
   const jobRows = currentRows.filter(isRawScanJobRow);
   if (jobRows.length > 0) {
-    const scannedAt = currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
+    const scannedAt = currentCandidate?.scannedAt ?? currentRows.find(isRawScanCurrentRow)?.scannedAt ?? jobRows[0]?.scannedAt;
     if (!isUsableScanTimestamp(scannedAt, options)) return null;
     return {
       jobs: sortJobsForStorage(jobRows.map((row) => row.job)),
       scannedAt,
+    };
+  }
+
+  if (currentCandidate && Array.isArray(currentCandidate.jobs)) {
+    return {
+      jobs: sortJobsForStorage(currentCandidate.jobs),
+      scannedAt: currentCandidate.scannedAt,
     };
   }
 
@@ -239,7 +247,9 @@ export async function saveRawScan(
     companySlug,
     source: detected.source,
     detected,
-    jobs: nextJobs,
+    // Keep CURRENT as a compact company summary row only. The per-job rows are
+    // the real shared inventory so large boards like AECOM do not exceed
+    // Dynamo's 400 KB item-size limit.
     fetchedCount: nextJobs.length,
     scannedAt,
     schemaVersion: RAW_SCAN_SCHEMA_VERSION,
@@ -254,20 +264,19 @@ export async function saveRawScan(
  */
 export async function listCurrentRawScans(): Promise<Array<{ company: string; detected: DetectedConfig; jobs: JobPosting[]; scannedAt: string }>> {
   const currentRows = await queryCurrentRawScanRows();
-  if (currentRows.length > 0) {
-    return currentRows
-      .filter((row): row is RawScanCurrentRow =>
-        isRawScanCurrentRow(row) &&
-        Array.isArray(row.jobs) &&
-        typeof row.company === "string" &&
-        typeof row.scannedAt === "string"
-      )
-      .map((row) => ({
-        company: row.company,
-        detected: row.detected,
-        jobs: row.jobs,
-        scannedAt: row.scannedAt,
-      }));
+  const currentRowsWithEmbeddedJobs = currentRows.filter((row): row is RawScanCurrentRow =>
+    isRawScanCurrentRow(row) &&
+    Array.isArray(row.jobs) &&
+    typeof row.company === "string" &&
+    typeof row.scannedAt === "string"
+  );
+  if (currentRowsWithEmbeddedJobs.length > 0) {
+    return currentRowsWithEmbeddedJobs.map((row) => ({
+      company: row.company,
+      detected: row.detected,
+      jobs: row.jobs as JobPosting[],
+      scannedAt: row.scannedAt,
+    }));
   }
 
   // Transitional fallback for prod rows written before the durable CURRENT
@@ -286,7 +295,7 @@ export async function listCurrentRawScans(): Promise<Array<{ company: string; de
   return [...latestByPk.values()].map((row) => ({
     company: row.company,
     detected: row.detected,
-    jobs: row.jobs,
+    jobs: row.jobs as JobPosting[],
     scannedAt: row.scannedAt,
   }));
 }
@@ -317,6 +326,21 @@ export async function listCurrentRawScanSummaries(): Promise<Array<{
   totalJobs: number;
   lastScannedAt: string | null;
 }>> {
+  const currentRows = await queryCurrentRawScanRows();
+  if (currentRows.length > 0) {
+    return currentRows
+      .filter((row): row is RawScanCurrentRow =>
+        isRawScanCurrentRow(row) &&
+        typeof row.company === "string" &&
+        typeof row.scannedAt === "string"
+      )
+      .map((row) => ({
+        company: row.company,
+        totalJobs: Number.isFinite(row.fetchedCount) ? row.fetchedCount : Array.isArray(row.jobs) ? row.jobs.length : 0,
+        lastScannedAt: row.scannedAt ?? null,
+      }));
+  }
+
   const rows = await listCurrentRawScans();
   return rows.map((row) => ({
     company: row.company,

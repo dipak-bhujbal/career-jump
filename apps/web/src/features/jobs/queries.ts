@@ -50,8 +50,16 @@ export function useJobs(filter: JobsFilter, options: JobsQueryOptions = {}) {
     // lookups while hidden so the app shell does not duplicate `/api/jobs`
     // traffic on every page load.
     enabled: options.enabled !== false,
+    // Users often bounce between Dashboard, Configuration, and Available Jobs
+    // within a single session. Keep the last successful page warm so revisits
+    // feel instant and the user can still force a fresh read with the explicit
+    // Refresh button.
+    staleTime: 5 * 60_000,
+    gcTime: 30 * 60_000,
+    refetchOnMount: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
     placeholderData: (prev) => prev,
-    staleTime: 15_000,
   });
 }
 
