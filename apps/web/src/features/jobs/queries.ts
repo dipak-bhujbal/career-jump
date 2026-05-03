@@ -1,7 +1,7 @@
 /**
- * Available-jobs hooks. The interactive page now keeps most filters client-side
- * so toggles and text inputs feel instant; the query key is reserved for page
- * traversal and explicit refreshes instead of every UI filter change.
+ * Available-jobs hooks. Filters stay in the query key so both admin and
+ * non-admin sessions get the same server-side/global filtering behavior
+ * instead of only refining the current loaded page locally.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type JobDetailEnvelope, type JobsEnvelope } from "@/lib/api";
@@ -15,6 +15,8 @@ export type JobsFilter = {
   usOnly?: boolean;
   newOnly?: boolean;
   updatedOnly?: boolean;
+  dateFrom?: string;
+  dateTo?: string;
   limit?: number;
   cursor?: string | null;
 };
@@ -33,6 +35,8 @@ function buildJobsParams(f: JobsFilter): URLSearchParams {
   if (f.usOnly) p.set("usOnly", "true");
   if (f.newOnly) p.set("newOnly", "true");
   if (f.updatedOnly) p.set("updatedOnly", "true");
+  if (f.dateFrom) p.set("dateFrom", f.dateFrom);
+  if (f.dateTo) p.set("dateTo", f.dateTo);
   p.set("limit", String(f.limit ?? 100));
   if (f.cursor) p.set("cursor", f.cursor);
   return p;

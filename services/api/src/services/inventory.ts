@@ -133,6 +133,8 @@ export type StreamAvailableJobsFilters = {
   source: string;
   usOnly: boolean;
   durationHours: number | null;
+  postedFromMs: number | null;
+  postedToMs: number | null;
   newOnly: boolean;
   updatedOnly: boolean;
   appliedJobKeys: Set<string>;
@@ -276,6 +278,17 @@ function matchesInteractiveAvailableJob(
     if (!Number.isFinite(postedAtMs)) return false;
     const ageMs = Date.now() - postedAtMs;
     if (ageMs < 0 || ageMs > filters.durationHours * 60 * 60 * 1000) {
+      return false;
+    }
+  }
+  if (filters.postedFromMs !== null || filters.postedToMs !== null) {
+    if (!job.postedAt) return false;
+    const postedAtMs = Date.parse(job.postedAt);
+    if (!Number.isFinite(postedAtMs)) return false;
+    if (filters.postedFromMs !== null && postedAtMs < filters.postedFromMs) {
+      return false;
+    }
+    if (filters.postedToMs !== null && postedAtMs > filters.postedToMs) {
       return false;
     }
   }

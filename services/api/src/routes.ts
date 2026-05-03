@@ -236,6 +236,18 @@ function filterJobs(jobs: JobPosting[], params: URLSearchParams): JobPosting[] {
   const keyword = params.get("keyword")?.trim().toLowerCase();
   const usOnly = params.get("usOnly") === "true";
   const durationHours = parseDurationHours(params.get("duration"));
+  const dateFromMs = (() => {
+    const raw = params.get("dateFrom");
+    if (!raw) return null;
+    const value = Date.parse(raw);
+    return Number.isFinite(value) ? value : null;
+  })();
+  const dateToMs = (() => {
+    const raw = params.get("dateTo");
+    if (!raw) return null;
+    const value = Date.parse(raw);
+    return Number.isFinite(value) ? value + 86_399_999 : null;
+  })();
   const now = Date.now();
 
   return jobs.filter((job) => {
@@ -254,6 +266,13 @@ function filterJobs(jobs: JobPosting[], params: URLSearchParams): JobPosting[] {
       if (ageMs < 0) return false;
       const maxAgeMs = durationHours * 60 * 60 * 1000;
       if (ageMs > maxAgeMs) return false;
+    }
+    if (dateFromMs !== null || dateToMs !== null) {
+      if (!job.postedAt) return false;
+      const postedAtMs = new Date(job.postedAt).getTime();
+      if (!Number.isFinite(postedAtMs)) return false;
+      if (dateFromMs !== null && postedAtMs < dateFromMs) return false;
+      if (dateToMs !== null && postedAtMs > dateToMs) return false;
     }
 
     return true;
@@ -2585,7 +2604,19 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const companyFilters = parseMultiValues(url.searchParams, "company");
       const companySearch = companyFilters.length ? "" : url.searchParams.get("company")?.trim().toLowerCase() ?? "";
       const streamStartedAt = Date.now();
-      const jobCap = tenantContext.isAdmin ? null : (planCfg?.maxVisibleJobs ?? null);
+      const jobCap = planCfg?.maxVisibleJobs ?? null;
+      const postedFromMs = (() => {
+        const raw = url.searchParams.get("dateFrom");
+        if (!raw) return null;
+        const value = Date.parse(raw);
+        return Number.isFinite(value) ? value : null;
+      })();
+      const postedToMs = (() => {
+        const raw = url.searchParams.get("dateTo");
+        if (!raw) return null;
+        const value = Date.parse(raw);
+        return Number.isFinite(value) ? value + 86_399_999 : null;
+      })();
       const streamedPage = await streamAvailableJobsPage(
         env,
         config,
@@ -2603,6 +2634,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           usOnly: url.searchParams.get("usOnly") === "true",
           newOnly,
           updatedOnly,
+          postedFromMs,
+          postedToMs,
           appliedJobKeys: new Set(Object.keys(appliedJobs)),
           newJobKeys,
           updatedJobKeys,

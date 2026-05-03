@@ -106,6 +106,10 @@ export function useStartRun() {
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: runStatusKey });
       const previousStatus = qc.getQueryData<RunStatus>(runStatusKey);
+      // Starting a new scan should clear the previous completion snapshot
+      // immediately so the progress shell cannot briefly flash the old
+      // "Scan finished" banner before the new queued/progress state arrives.
+      qc.setQueryData(latestRunResultKey, null);
       // `/api/run` is a long-running request today, so flip the UI into an
       // active polling state immediately instead of waiting for the mutation to
       // finish before the first `/api/run/status` refresh happens.
