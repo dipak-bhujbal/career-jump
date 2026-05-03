@@ -22,6 +22,12 @@ import { cn } from "@/lib/utils";
 export const Route = createFileRoute("/admin-company-configs")({ component: AdminCompanyConfigsRoute });
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+const REGISTRY_TIER_OPTIONS = [
+  { value: "TIER1_VERIFIED", label: "Tier 1 verified" },
+  { value: "TIER2_MEDIUM", label: "Tier 2 medium" },
+  { value: "TIER3_LOW", label: "Tier 3 low" },
+  { value: "NEEDS_REVIEW", label: "Needs review" },
+] as const;
 const SUPPORTED_ATS_REFERENCE = ALL_ATS_ADAPTERS.map((adapter) => ({
   id: adapter.id,
   label: adapter.label,
@@ -108,6 +114,7 @@ function AdminCompanyConfigsRoute() {
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
   const [editorValue, setEditorValue] = useState("");
   const [companyNameValue, setCompanyNameValue] = useState("");
+  const [tierValue, setTierValue] = useState<string>("");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const detailQuery = useAdminRegistryCompanyConfig(selectedRegistryId, isAdmin);
@@ -148,6 +155,7 @@ function AdminCompanyConfigsRoute() {
     if (detailQuery.data?.config) {
       setEditorValue(JSON.stringify(detailQuery.data.config, null, 2));
       setCompanyNameValue(detailQuery.data.config.company ?? "");
+      setTierValue(detailQuery.data.config.tier ?? "");
       setParseError(null);
       setSaveMessage(null);
     }
@@ -222,6 +230,27 @@ function AdminCompanyConfigsRoute() {
       const nextConfig = {
         ...parsed,
         company: nextCompanyName,
+      };
+      setEditorValue(JSON.stringify(nextConfig, null, 2));
+    } catch {
+      // Leave the raw editor untouched when the JSON is currently invalid.
+    }
+  }
+
+  /**
+   * Tier changes are common operational edits, so keep a dedicated control in
+   * sync with the raw JSON editor just like the company-name field.
+   */
+  function handleTierChange(nextTier: string) {
+    setTierValue(nextTier);
+    setSaveMessage(null);
+    setParseError(null);
+
+    try {
+      const parsed = JSON.parse(editorValue) as Record<string, unknown>;
+      const nextConfig = {
+        ...parsed,
+        tier: nextTier,
       };
       setEditorValue(JSON.stringify(nextConfig, null, 2));
     } catch {
@@ -443,6 +472,27 @@ function AdminCompanyConfigsRoute() {
                 </div>
               </div>
 
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">
+                  Registry tier
+                </label>
+                <Select
+                  value={tierValue}
+                  onChange={(event) => handleTierChange(event.target.value)}
+                  disabled={!selectedRegistryId}
+                >
+                  <option value="">Select tier</option>
+                  {REGISTRY_TIER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </Select>
+                <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                  Updating this control writes the canonical <code>tier</code> value into the JSON below before save.
+                </div>
+              </div>
+
               <textarea
                 value={editorValue}
                 onChange={(event) => {
@@ -451,6 +501,9 @@ function AdminCompanyConfigsRoute() {
                     const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
                     if (typeof parsed.company === "string") {
                       setCompanyNameValue(parsed.company);
+                    }
+                    if (typeof parsed.tier === "string") {
+                      setTierValue(parsed.tier);
                     }
                   } catch {
                     // Keep the dedicated input stable while admins are in the
