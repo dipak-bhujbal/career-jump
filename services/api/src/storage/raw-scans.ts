@@ -137,9 +137,11 @@ type CurrentRawScanAggregate = {
 };
 
 /**
- * CURRENT summary rows are compact on purpose, so admin reporting must be able
- * to rebuild authoritative counts from the per-job inventory when a summary
- * row is stale, missing, or was written before the compact-row migration.
+ * CURRENT summary rows are compact on purpose, so offline or repair-style jobs
+ * can still rebuild authoritative counts from the per-job inventory when a
+ * summary row is stale, missing, or predates the compact-row migration.
+ * Interactive admin pages must avoid this helper because a full RAW_SCAN_JOB
+ * scan will time out once shared inventory grows large.
  */
 async function loadCurrentRawScanJobAggregates(): Promise<Map<string, CurrentRawScanAggregate>> {
   const jobRows = await scanAllRows<RawScanJobRow>(rawScansTableName(), {
@@ -474,13 +476,13 @@ export async function summarizeCurrentRawScans(): Promise<{
   };
 }
 
-export async function listCurrentRawScanSummaries(): Promise<Array<{
+function buildCurrentRawScanSummariesFromCurrentRows(
+  currentRows: RawScanCurrentRow[],
+): Array<{
   company: string;
   totalJobs: number;
   lastScannedAt: string | null;
-}>> {
-  const jobAggregates = await loadCurrentRawScanJobAggregates();
-  const currentRows = await queryCurrentRawScanRows();
+}> {
   const mergedByCompanyKey = new Map<string, {
     company: string;
     totalJobs: number;
@@ -490,36 +492,58 @@ export async function listCurrentRawScanSummaries(): Promise<Array<{
   for (const row of currentRows) {
     if (!isRawScanCurrentRow(row) || typeof row.company !== "string") continue;
     const key = normalizeRawScanCompanyKey(row.company);
-    mergedByCompanyKey.set(key, {
-      company: row.company,
-      totalJobs: Number.isFinite(row.fetchedCount) ? row.fetchedCount : Array.isArray(row.jobs) ? row.jobs.length : 0,
-      lastScannedAt: row.scannedAt ?? null,
-    });
-  }
-
-  for (const [key, aggregate] of jobAggregates.entries()) {
+    const nextTotalJobs = Number.isFinite(row.fetchedCount)
+      ? row.fetchedCount
+      : Array.isArray(row.jobs)
+        ? row.jobs.length
+        : 0;
     const existing = mergedByCompanyKey.get(key);
+
     if (!existing) {
       mergedByCompanyKey.set(key, {
-        company: aggregate.company,
-        totalJobs: aggregate.fetchedCount,
-        lastScannedAt: aggregate.scannedAt,
+        company: row.company,
+        totalJobs: nextTotalJobs,
+        lastScannedAt: row.scannedAt ?? null,
       });
       continue;
     }
 
-    // Per-job rows are the real shared inventory. When they disagree with the
-    // compact CURRENT row, prefer the job-row count so registry status cannot
-    // claim "0 jobs" for companies whose raw inventory is already visible.
-    existing.totalJobs = aggregate.fetchedCount;
-    if (aggregate.scannedAt && (!existing.lastScannedAt || aggregate.scannedAt.localeCompare(existing.lastScannedAt) > 0)) {
-      existing.lastScannedAt = aggregate.scannedAt;
-      existing.company = aggregate.company;
+    // Prefer the newest compact CURRENT row for the company. If timestamps are
+    // tied or missing, keep whichever row reports the larger fetched count.
+    if (row.scannedAt && (!existing.lastScannedAt || row.scannedAt.localeCompare(existing.lastScannedAt) > 0)) {
+      existing.company = row.company;
+      existing.totalJobs = nextTotalJobs;
+      existing.lastScannedAt = row.scannedAt;
+      continue;
     }
+
+    existing.totalJobs = Math.max(existing.totalJobs, nextTotalJobs);
   }
 
-  if (mergedByCompanyKey.size > 0) {
-    return [...mergedByCompanyKey.values()];
+  return [...mergedByCompanyKey.values()];
+}
+
+export async function listCurrentRawScanSummaries(): Promise<Array<{
+  company: string;
+  totalJobs: number;
+  lastScannedAt: string | null;
+}>> {
+  const currentRows = await queryCurrentRawScanRows();
+  const currentSummaries = buildCurrentRawScanSummariesFromCurrentRows(currentRows);
+  if (currentSummaries.length > 0) {
+    return currentSummaries;
+  }
+
+  // Transitional fallback only when the compact current index is completely
+  // empty. This preserves older environments without forcing every interactive
+  // admin read to scan the full RAW_SCAN_JOB table.
+  const jobAggregates = await loadCurrentRawScanJobAggregates();
+  if (jobAggregates.size > 0) {
+    return [...jobAggregates.values()].map((aggregate) => ({
+      company: aggregate.company,
+      totalJobs: aggregate.fetchedCount,
+      lastScannedAt: aggregate.scannedAt,
+    }));
   }
 
   const rows = await listCurrentRawScans();
