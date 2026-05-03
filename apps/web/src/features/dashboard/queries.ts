@@ -8,7 +8,11 @@ export function useDashboard() {
   return useQuery({
     queryKey: dashboardKey,
     queryFn: () => api.get<Dashboard>("/api/dashboard"),
-    staleTime: 15_000,
-    refetchInterval: 30_000,
+    // Dashboard now has its own short-lived summary cache, so the client can
+    // also back off and stop hammering the endpoint on every quick revisit.
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 }

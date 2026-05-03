@@ -18,7 +18,6 @@ import { Badge } from "@/components/ui/badge";
 import { useDashboard } from "./queries";
 import { useLatestRunResult, useScanQuota, useRunStatus } from "@/features/run/queries";
 import { formatLastRunSummary } from "@/features/run/presentation";
-import { useApplied } from "@/features/applied/queries";
 import { useActionPlan } from "@/features/plan/queries";
 import { formatNumber, formatPercent, formatShortDate, relativeTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -107,49 +106,42 @@ const ROSE = "text-rose-300 [.light_&]:text-rose-700";
 
 const STATUS_ORDER: AppliedStatus[] = ["Applied", "Interview", "Negotiations", "Offered", "Rejected"];
 
-/** Keep dashboard ratios as fractions because formatPercent multiplies by 100. */
-function ratio(numerator: number, denominator: number): number {
-  return denominator > 0 ? numerator / denominator : 0;
-}
-
-/** Applied-side dashboard widgets use the same source as the Applied Jobs page. */
-function useAppliedStats() {
-  const applied = useApplied({});
+function useAppliedSummary() {
+  const dashboard = useDashboard();
   return useMemo(() => {
-    const jobs = applied.data?.jobs ?? [];
     const statusCounts = STATUS_ORDER.reduce((acc, status) => {
-      acc[status] = 0;
+      acc[status] = dashboard.data?.appliedSummary?.statusCounts?.[status] ?? 0;
       return acc;
     }, {} as Record<AppliedStatus, number>);
-    for (const job of jobs) {
-      const status = job.status as AppliedStatus;
-      if (status in statusCounts) statusCounts[status] += 1;
-    }
     return {
-      jobs,
-      isLoading: applied.isLoading,
-      total: jobs.length,
+      dashboard,
+      isLoading: dashboard.isLoading,
+      total: dashboard.data?.kpis?.appliedJobs ?? 0,
       statusCounts,
-      interviewLike: statusCounts.Interview + statusCounts.Negotiations + statusCounts.Offered,
+      topCompanies: dashboard.data?.appliedSummary?.topCompanies ?? [],
+      topLocations: dashboard.data?.appliedSummary?.topLocations ?? [],
+      recentActivity: dashboard.data?.appliedSummary?.recentActivity ?? [],
+      staleApplications: dashboard.data?.appliedSummary?.staleApplications ?? [],
     };
-  }, [applied.data?.jobs, applied.isLoading]);
+  }, [dashboard]);
 }
 
-/** Available jobs come from scan KPIs; applied jobs come from the Applied list. */
+/** Dashboard widgets should share the same cheap summary endpoint instead of
+ * mounting separate applied-jobs queries for cards that only need counts. */
 function usePipelineStats() {
-  const dashboard = useDashboard();
-  const applied = useAppliedStats();
-  const available = dashboard.data?.kpis?.availableJobs ?? 0;
-  const totalTracked = available + applied.total;
+  const applied = useAppliedSummary();
+  const kpis = applied.dashboard.data?.kpis;
   return {
-    dashboard,
+    dashboard: applied.dashboard,
     applied,
-    available,
-    totalTracked,
-    applicationRatio: ratio(applied.total, totalTracked),
-    interviewRatio: ratio(applied.interviewLike, applied.total),
-    offerRatio: ratio(applied.statusCounts.Offered, applied.total),
-    isLoading: dashboard.isLoading || applied.isLoading,
+    available: kpis?.availableJobs ?? 0,
+    totalTracked: kpis?.totalTrackedJobs ?? 0,
+    // Trust the backend summary payload as the single owner of dashboard ratio
+    // math so widget cards cannot drift from the API over time.
+    applicationRatio: kpis?.applicationRatio ?? 0,
+    interviewRatio: kpis?.interviewRatio ?? 0,
+    offerRatio: kpis?.offerRatio ?? 0,
+    isLoading: applied.isLoading,
   };
 }
 
@@ -157,14 +149,14 @@ const KpiTotalTracked = () => { const s = usePipelineStats(); return <KpiTile ic
 const KpiAvailable = () => { const q = useDashboard(); return <KpiTile icon={<Briefcase size={13} />} title="Available jobs" value={formatNumber(q.data?.kpis?.availableJobs)} isLoading={q.isLoading} link="/jobs" color={BLUE} />; };
 const KpiNew = () => { const q = useDashboard(); return <KpiTile icon={<Sparkles size={13} />} title="New (latest run)" value={formatNumber(q.data?.kpis?.newJobsLatestRun)} isLoading={q.isLoading} link="/jobs?new=1" color={CYAN} />; };
 const KpiUpdated = () => { const q = useDashboard(); return <KpiTile icon={<RefreshCw size={13} />} title="Updated jobs" value={formatNumber(q.data?.kpis?.updatedJobsLatestRun)} isLoading={q.isLoading} link="/jobs?updated=1" color={AMBER} />; };
-const KpiApplied = () => { const s = useAppliedStats(); return <KpiTile icon={<CheckSquare size={13} />} title="Applied" value={formatNumber(s.total)} isLoading={s.isLoading} link="/applied" color={VIOLET} />; };
+const KpiApplied = () => { const s = useAppliedSummary(); return <KpiTile icon={<CheckSquare size={13} />} title="Applied" value={formatNumber(s.total)} isLoading={s.isLoading} link="/applied" color={VIOLET} />; };
 const KpiApplicationRatio = () => { const s = usePipelineStats(); return <KpiTile icon={<TrendingUp size={13} />} title="Application ratio" value={formatPercent(s.applicationRatio)} isLoading={s.isLoading} color={INDIGO} hint="applied / tracked" />; };
 const KpiInterviewRatio = () => { const s = usePipelineStats(); return <KpiTile icon={<TrendingUp size={13} />} title="Interview ratio" value={formatPercent(s.interviewRatio)} isLoading={s.isLoading} color={CYAN} hint="interview+ / applied" />; };
 const KpiOfferRatio = () => { const s = usePipelineStats(); return <KpiTile icon={<TrendingUp size={13} />} title="Offer ratio" value={formatPercent(s.offerRatio)} isLoading={s.isLoading} color={EMERALD} hint="offered / applied" />; };
-const KpiInterviewCount = () => { const s = useAppliedStats(); return <KpiTile icon={<Layers size={13} />} title="Interview" value={formatNumber(s.statusCounts.Interview)} isLoading={s.isLoading} link="/applied?status=Interview" color={CYAN} />; };
-const KpiNegotiationsCount = () => { const s = useAppliedStats(); return <KpiTile icon={<Layers size={13} />} title="Negotiations" value={formatNumber(s.statusCounts.Negotiations)} isLoading={s.isLoading} link="/applied?status=Negotiations" color={AMBER} />; };
-const KpiOfferedCount = () => { const s = useAppliedStats(); return <KpiTile icon={<Award size={13} />} title="Offered" value={formatNumber(s.statusCounts.Offered)} isLoading={s.isLoading} link="/applied?status=Offered" color={EMERALD} />; };
-const KpiRejectedCount = () => { const s = useAppliedStats(); return <KpiTile icon={<Layers size={13} />} title="Rejected" value={formatNumber(s.statusCounts.Rejected)} isLoading={s.isLoading} link="/applied?status=Rejected" color={ROSE} />; };
+const KpiInterviewCount = () => { const s = useAppliedSummary(); return <KpiTile icon={<Layers size={13} />} title="Interview" value={formatNumber(s.statusCounts.Interview)} isLoading={s.isLoading} link="/applied?status=Interview" color={CYAN} />; };
+const KpiNegotiationsCount = () => { const s = useAppliedSummary(); return <KpiTile icon={<Layers size={13} />} title="Negotiations" value={formatNumber(s.statusCounts.Negotiations)} isLoading={s.isLoading} link="/applied?status=Negotiations" color={AMBER} />; };
+const KpiOfferedCount = () => { const s = useAppliedSummary(); return <KpiTile icon={<Award size={13} />} title="Offered" value={formatNumber(s.statusCounts.Offered)} isLoading={s.isLoading} link="/applied?status=Offered" color={EMERALD} />; };
+const KpiRejectedCount = () => { const s = useAppliedSummary(); return <KpiTile icon={<Layers size={13} />} title="Rejected" value={formatNumber(s.statusCounts.Rejected)} isLoading={s.isLoading} link="/applied?status=Rejected" color={ROSE} />; };
 const KpiCompaniesCovered = () => { const q = useDashboard(); const k = q.data?.kpis ?? {}; return <KpiTile icon={<Building2 size={13} />} title="Companies covered" value={`${formatNumber(k.companiesDetected)} / ${formatNumber(k.companiesConfigured)}`} isLoading={q.isLoading} link="/configuration" color={BLUE} />; };
 const KpiTotalFetched = () => { const q = useDashboard(); return <KpiTile icon={<Globe size={13} />} title="Total fetched" value={formatNumber(q.data?.kpis?.totalFetched)} isLoading={q.isLoading} color={INDIGO} hint="across all scans" />; };
 const KpiMatchRate = () => { const q = useDashboard(); return <KpiTile icon={<Target size={13} />} title="Match rate" value={formatPercent(q.data?.kpis?.matchRate)} isLoading={q.isLoading} color={EMERALD} hint="keyword-matched fraction" />; };
@@ -224,7 +216,7 @@ function KpiConversion() {
 }
 
 function KpiStages() {
-  const s = useAppliedStats();
+  const s = useAppliedSummary();
   const items = [
     { label: "Interview", value: formatNumber(s.statusCounts.Interview), to: "/applied?status=Interview", color: CYAN },
     { label: "Negotiations", value: formatNumber(s.statusCounts.Negotiations), to: "/applied?status=Negotiations", color: AMBER },
@@ -287,7 +279,7 @@ function FunnelWidget() {
 /** Stacked bar showing the proportion of applications in each pipeline
  *  stage. Click a segment to navigate to the filtered Applied view. */
 function PipelineBarWidget() {
-  const { statusCounts: counts } = useAppliedStats();
+  const { statusCounts: counts } = useAppliedSummary();
   const total = Object.values(counts).reduce((a, b) => a + b, 0);
   const segs: { status: AppliedStatus; color: string }[] = [
     { status: "Applied", color: "bg-violet-500/60" },
@@ -333,23 +325,17 @@ function PipelineBarWidget() {
 /* ---------- Companies ----------------------------------------------- */
 
 function TopCompaniesWidget() {
-  const { data: applied } = useApplied({});
-  const counts = useMemo(() => {
-    const m: Record<string, number> = {};
-    // This widget ranks actual applications, not merely configured companies.
-    for (const a of applied?.jobs ?? []) if (a.job) m[a.job.company] = (m[a.job.company] ?? 0) + 1;
-    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 7);
-  }, [applied]);
+  const { topCompanies: counts } = useAppliedSummary();
   return (
     <WidgetCard icon={<Building2 size={14} />} title="Top companies" link="/configuration">
       {counts.length === 0 ? (
         <p className="text-sm text-[hsl(var(--muted-foreground))]">No applications yet.</p>
       ) : (
         <ul className="space-y-1.5">
-          {counts.map(([company, count]) => (
-            <li key={company}>
+          {counts.map(({ label, count }) => (
+            <li key={label}>
               <Link to="/applied" className="flex items-center justify-between text-sm rounded-md px-2 py-1 -mx-2 hover:bg-[hsl(var(--accent))] transition-colors">
-                <span className="truncate">{company}</span>
+                <span className="truncate">{label}</span>
                 <span className="text-[hsl(var(--muted-foreground))] tabular-nums">{count}</span>
               </Link>
             </li>
@@ -392,25 +378,17 @@ function AtsBreakdownWidget() {
 }
 
 function TopLocationsWidget() {
-  const { data: applied } = useApplied({});
-  const counts = useMemo(() => {
-    const m: Record<string, number> = {};
-    for (const a of (applied?.jobs ?? []).filter((a) => a.job)) {
-      const loc = (a.job.location ?? "Unknown").trim() || "Unknown";
-      m[loc] = (m[loc] ?? 0) + 1;
-    }
-    return Object.entries(m).sort((a, b) => b[1] - a[1]).slice(0, 6);
-  }, [applied]);
+  const { topLocations: counts } = useAppliedSummary();
   return (
     <WidgetCard icon={<MapPin size={14} />} title="Top locations">
       {counts.length === 0 ? (
         <p className="text-sm text-[hsl(var(--muted-foreground))]">No applications yet.</p>
       ) : (
         <ul className="space-y-1.5">
-          {counts.map(([loc, count]) => (
-            <li key={loc}>
+          {counts.map(({ label, count }) => (
+            <li key={label}>
               <Link to="/applied" className="flex items-center justify-between text-sm rounded-md px-2 py-1 -mx-2 hover:bg-[hsl(var(--accent))] transition-colors">
-                <span className="truncate">{loc}</span>
+                <span className="truncate">{label}</span>
                 <span className="text-[hsl(var(--muted-foreground))] tabular-nums">{count}</span>
               </Link>
             </li>
@@ -424,12 +402,7 @@ function TopLocationsWidget() {
 /* ---------- Activity ------------------------------------------------ */
 
 function RecentActivityWidget() {
-  const { data } = useApplied({});
-  const events = useMemo(() => {
-    return (data?.jobs ?? []).slice().sort((a, b) =>
-      new Date(b.lastStatusChangedAt ?? b.appliedAt).getTime() - new Date(a.lastStatusChangedAt ?? a.appliedAt).getTime()
-    ).slice(0, 6);
-  }, [data]);
+  const { recentActivity: events } = useAppliedSummary();
   return (
     <WidgetCard icon={<Activity size={14} />} title="Recent activity">
       {events.length === 0 ? (
@@ -443,9 +416,9 @@ function RecentActivityWidget() {
                 search={{ jobKey: j.jobKey }}
                 className="block rounded-md px-2 py-1.5 -mx-2 hover:bg-[hsl(var(--accent))] transition-colors group"
               >
-                <div className="text-sm font-medium truncate group-hover:text-[hsl(var(--primary))]">{j.job?.jobTitle}</div>
+                <div className="text-sm font-medium truncate group-hover:text-[hsl(var(--primary))]">{j.jobTitle}</div>
                 <div className="text-xs text-[hsl(var(--muted-foreground))] flex items-center gap-2 mt-0.5">
-                  <span className="truncate">{j.job?.company}</span>
+                  <span className="truncate">{j.company}</span>
                   <Badge variant="secondary">{j.status}</Badge>
                   <span>· {relativeTime(j.lastStatusChangedAt ?? j.appliedAt)}</span>
                 </div>
@@ -459,15 +432,7 @@ function RecentActivityWidget() {
 }
 
 function StaleApplicationsWidget() {
-  const { data } = useApplied({});
-  const stale = useMemo(() => {
-    const cutoff = Date.now() - 14 * 86_400_000;
-    return (data?.jobs ?? [])
-      .filter((j) => j.status !== "Offered" && j.status !== "Rejected")
-      .filter((j) => new Date(j.lastStatusChangedAt ?? j.appliedAt).getTime() < cutoff)
-      .sort((a, b) => new Date(a.lastStatusChangedAt ?? a.appliedAt).getTime() - new Date(b.lastStatusChangedAt ?? b.appliedAt).getTime())
-      .slice(0, 6);
-  }, [data]);
+  const { staleApplications: stale } = useAppliedSummary();
   return (
     <WidgetCard icon={<AlertTriangle size={14} />} title="Stale applications" link="/applied">
       {stale.length === 0 ? (
@@ -481,9 +446,9 @@ function StaleApplicationsWidget() {
                 search={{ jobKey: j.jobKey }}
                 className="block rounded-md px-2 py-1.5 -mx-2 hover:bg-[hsl(var(--accent))] transition-colors group"
               >
-                <div className="text-sm font-medium truncate group-hover:text-[hsl(var(--primary))]">{j.job?.jobTitle}</div>
+                <div className="text-sm font-medium truncate group-hover:text-[hsl(var(--primary))]">{j.jobTitle}</div>
                 <div className="text-xs text-[hsl(var(--muted-foreground))] mt-0.5">
-                  {j.job?.company} · last update {relativeTime(j.lastStatusChangedAt ?? j.appliedAt)}
+                  {j.company} · last update {relativeTime(j.lastStatusChangedAt ?? j.appliedAt)}
                 </div>
               </Link>
             </li>
@@ -605,7 +570,7 @@ function InterviewOutcomesWidget() {
 /* ---------- Tag clouds ---------------------------------------------- */
 
 function StatusBreakdownWidget() {
-  const s = useAppliedStats();
+  const s = useAppliedSummary();
   const entries = STATUS_ORDER
     .map((status) => [status, s.statusCounts[status]] as const)
     .filter(([, value]) => value > 0)

@@ -44,6 +44,12 @@ import {
 } from "../storage";
 import { isScraperApiConfigured, scanWorkdayJobs } from "../ats/core/workday";
 import { fetchJobsForDetectedConfig, getDetectedConfig } from "./discovery";
+import {
+  buildDashboardPayload,
+  buildDashboardSummaryFingerprint,
+  saveCachedDashboardPayload,
+  summarizeCompaniesByAtsFromInventory,
+} from "./dashboard";
 import { normalizeCompanyKey } from "../storage/tenant-keys";
 import type {
   DetectedConfig,
@@ -1669,6 +1675,39 @@ export async function saveInventory(
     await jobStateKv(env).put(inventoryKey, serializedInventory);
   }
   await pruneJobNotesToInventory(env, storageInventory, tenantId);
+
+  // Persist a fresh dashboard summary snapshot alongside inventory writes so
+  // dashboard reads stay cheap and do not need to recompute KPI structures
+  // from scratch on every request.
+  try {
+    const appliedJobs = await loadAppliedJobs(env, tenantId);
+    const companiesByAts = summarizeCompaniesByAtsFromInventory(storageInventory);
+    const dashboardPayload = await buildDashboardPayload(
+      env,
+      storageInventory,
+      appliedJobs,
+      tenantId,
+      undefined,
+      companiesByAts,
+      {
+        inventorySource: "stored-snapshot",
+        freshnessProbeSkipped: false,
+        staleReason: null,
+      },
+    );
+    const dashboardFingerprint = buildDashboardSummaryFingerprint(
+      storageInventory,
+      appliedJobs,
+      companiesByAts,
+      {
+        lastNewJobsCount: dashboardPayload.kpis.newJobsLatestRun,
+        lastUpdatedJobsCount: dashboardPayload.kpis.updatedJobsLatestRun,
+      },
+    );
+    await saveCachedDashboardPayload(env, tenantId, dashboardFingerprint, dashboardPayload);
+  } catch (error) {
+    console.error("[dashboard.summary] failed to refresh after inventory save", error);
+  }
 
   // Trend collection is disabled until the UI renders it; this avoids unused KV write/read churn.
 }

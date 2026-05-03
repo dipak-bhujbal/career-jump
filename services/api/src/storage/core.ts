@@ -1,8 +1,14 @@
-import { ACTIVE_RUN_LOCK_KEY, ACTIVE_RUN_LOCK_TTL_SECONDS, ACTIVE_RUN_STALE_AFTER_SECONDS, APPLIED_KEY, APP_LOG_PREFIX, APP_LOG_TTL_SECONDS, ATS_CACHE_PREFIX, COMPANY_SCAN_OVERRIDES_KEY, DEFAULT_APP_LOG_LIMIT, EMAIL_ATTEMPT_PREFIX, EMAIL_WEBHOOK_CONFIG_KEY, FIRST_SEEN_PREFIX, JOB_NOTES_KEY, MAX_APP_LOG_LIMIT, PROTECTED_DISCOVERY_PREFIX, SAVED_FILTERS_KEY, SEEN_PREFIX, VALID_INTERVIEW_OUTCOMES } from "../constants";
+import { ACTIVE_RUN_LOCK_KEY, ACTIVE_RUN_LOCK_TTL_SECONDS, ACTIVE_RUN_STALE_AFTER_SECONDS, APPLIED_KEY, APP_LOG_PREFIX, APP_LOG_TTL_SECONDS, ATS_CACHE_PREFIX, COMPANY_SCAN_OVERRIDES_KEY, DASHBOARD_SUMMARY_KEY, DEFAULT_APP_LOG_LIMIT, EMAIL_ATTEMPT_PREFIX, EMAIL_WEBHOOK_CONFIG_KEY, FIRST_SEEN_PREFIX, INVENTORY_KEY, JOB_NOTES_KEY, MAX_APP_LOG_LIMIT, PROTECTED_DISCOVERY_PREFIX, SAVED_FILTERS_KEY, SEEN_PREFIX, VALID_INTERVIEW_OUTCOMES } from "../constants";
 import { atsCacheKv, configStoreKv, jobStateKv } from "../lib/bindings";
 import { tenantScopedKey, tenantScopedPrefix } from "../lib/tenant";
 import { hyphenSlug, jobKey, jobStableFingerprint, normalizeAppliedStatus, normalizeText, nowISO, slugify } from "../lib/utils";
 import { deleteRow, jobsTableName, putRow, queryRows } from "../aws/dynamo";
+import {
+  buildDashboardPayload,
+  buildDashboardSummaryFingerprint,
+  saveCachedDashboardPayload,
+  summarizeCompaniesByAtsFromInventory,
+} from "../services/dashboard";
 import type {
   AppliedJobRecord,
   AppLogEntry,
@@ -17,6 +23,7 @@ import type {
   InterviewRoundDesignation,
   JobSource,
   JobPosting,
+  InventorySnapshot,
   NoteRecord,
   ProtectedDiscoveryRecord,
   SavedFilterRecord,
@@ -434,6 +441,44 @@ export async function saveAppliedJobsForTenant(
   tenantId?: string
 ): Promise<void> {
   await saveAppliedJobs(env, data, tenantId);
+  const inventory = await jobStateKv(env).get(
+    tenantScopedKey(tenantId, INVENTORY_KEY),
+    "json",
+  ) as InventorySnapshot | null;
+  if (!inventory || typeof inventory !== "object") {
+    await jobStateKv(env).delete(tenantScopedKey(tenantId, DASHBOARD_SUMMARY_KEY));
+    return;
+  }
+
+  try {
+    const companiesByAts = summarizeCompaniesByAtsFromInventory(inventory);
+    const dashboardPayload = await buildDashboardPayload(
+      env,
+      inventory,
+      data,
+      tenantId,
+      undefined,
+      companiesByAts,
+      {
+        inventorySource: "stored-snapshot",
+        freshnessProbeSkipped: false,
+        staleReason: null,
+      },
+    );
+    const dashboardFingerprint = buildDashboardSummaryFingerprint(
+      inventory,
+      data,
+      companiesByAts,
+      {
+        lastNewJobsCount: dashboardPayload.kpis.newJobsLatestRun,
+        lastUpdatedJobsCount: dashboardPayload.kpis.updatedJobsLatestRun,
+      },
+    );
+    await saveCachedDashboardPayload(env, tenantId, dashboardFingerprint, dashboardPayload);
+  } catch (error) {
+    console.error("[dashboard.summary] failed to refresh after applied-jobs save", error);
+    await jobStateKv(env).delete(tenantScopedKey(tenantId, DASHBOARD_SUMMARY_KEY));
+  }
 }
 
 export async function loadJobNotes(env: Env, tenantId?: string): Promise<Record<string, string>> {

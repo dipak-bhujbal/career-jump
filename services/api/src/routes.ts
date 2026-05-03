@@ -1,5 +1,6 @@
 import {
   APPLIED_KEY,
+  DASHBOARD_SUMMARY_KEY,
   FIRST_SEEN_PREFIX,
   INVENTORY_KEY,
   LAST_NEW_JOB_KEYS_KEY,
@@ -79,6 +80,7 @@ import {
   loadCompanyScanOverrides,
   loadEmailWebhookConfig,
   loadJobNotes,
+  loadLatestRawScanSummary,
   loadUserProfile,
   loadUserSettings,
   recordAppLog,
@@ -119,7 +121,12 @@ import {
   validateAndPromoteCustomCompany,
 } from "./storage/registry-admin";
 import { normalizeCompanyKey } from "./storage/tenant-keys";
-import { buildDashboardPayload } from "./services/dashboard";
+import {
+  buildDashboardPayload,
+  buildDashboardSummaryFingerprint,
+  loadCachedDashboardPayload,
+  saveCachedDashboardPayload,
+} from "./services/dashboard";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
   fetchJobsForDetectedConfig,
@@ -422,6 +429,147 @@ async function loadDerivedAvailableInventory(
     options,
   );
   return { storedInventory, effectiveInventory, inventoryState };
+}
+
+async function loadStoredAvailableInventory(
+  env: Env,
+  config: RuntimeConfig,
+  tenantId: string | undefined,
+): Promise<{
+  inventory: InventorySnapshot;
+  inventoryState: Awaited<ReturnType<typeof loadInventoryWithState>>["state"];
+}> {
+  // Dashboard-like surfaces should prefer the tenant's persisted snapshot so
+  // they can render quickly instead of rebuilding the shared inventory on every
+  // read. The interactive jobs page already has its own optimized read path.
+  const { inventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantId);
+  return { inventory, inventoryState };
+}
+
+type DashboardInventoryResolution = {
+  inventory: InventorySnapshot;
+  inventoryState: Awaited<ReturnType<typeof loadInventoryWithState>>["state"];
+  source: "stored" | "shared-fallback";
+  freshnessProbeSkipped: boolean;
+  staleReason: string | null;
+};
+
+const DASHBOARD_FRESHNESS_PROBE_LIMIT = 40;
+
+/**
+ * Dashboard should stay fast, but it also cannot silently drift away from the
+ * shared inventory that powers Available Jobs. Probe a bounded set of current
+ * raw-scan summaries first, then only pay the rebuild cost when the tenant's
+ * stored snapshot is clearly stale.
+ */
+async function resolveDashboardInventory(
+  env: Env,
+  config: RuntimeConfig,
+  tenantId: string | undefined,
+  options: { isAdmin?: boolean } = {},
+): Promise<DashboardInventoryResolution> {
+  const { inventory: storedInventory, inventoryState } = await loadStoredAvailableInventory(env, config, tenantId);
+  const storedRunAtMs = Date.parse(storedInventory.runAt ?? "");
+  const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
+
+  if (!Number.isFinite(storedRunAtMs)) {
+    const effectiveInventory = await buildAvailableJobsFromSharedInventory(
+      env,
+      config,
+      inventoryState.inventory ?? storedInventory,
+      tenantId,
+      options,
+    );
+    void saveInventory(env, effectiveInventory, tenantId, inventoryState).catch((error) => {
+      console.error("[dashboard.summary] failed to persist fallback inventory", error);
+    });
+    return {
+      inventory: effectiveInventory,
+      inventoryState,
+      source: "shared-fallback",
+      freshnessProbeSkipped: true,
+      staleReason: "invalid-stored-runAt",
+    };
+  }
+
+  if (Date.parse(config.updatedAt) > storedRunAtMs) {
+    const effectiveInventory = await buildAvailableJobsFromSharedInventory(
+      env,
+      config,
+      inventoryState.inventory ?? storedInventory,
+      tenantId,
+      options,
+    );
+    void saveInventory(env, effectiveInventory, tenantId, inventoryState).catch((error) => {
+      console.error("[dashboard.summary] failed to persist config-refresh inventory", error);
+    });
+    return {
+      inventory: effectiveInventory,
+      inventoryState,
+      source: "shared-fallback",
+      freshnessProbeSkipped: true,
+      staleReason: "config-newer-than-stored",
+    };
+  }
+
+  if (enabledCompanies.length === 0 || enabledCompanies.length > DASHBOARD_FRESHNESS_PROBE_LIMIT) {
+    return {
+      inventory: storedInventory,
+      inventoryState,
+      source: "stored",
+      freshnessProbeSkipped: enabledCompanies.length > DASHBOARD_FRESHNESS_PROBE_LIMIT,
+      staleReason: null,
+    };
+  }
+
+  const detectedConfigs = enabledCompanies
+    .map((company) => companyToDetectedConfig(company))
+    .filter((detected): detected is NonNullable<typeof detected> => Boolean(detected));
+  if (detectedConfigs.length === 0) {
+    return {
+      inventory: storedInventory,
+      inventoryState,
+      source: "stored",
+      freshnessProbeSkipped: false,
+      staleReason: null,
+    };
+  }
+
+  const rawScanSummaries = await Promise.all(
+    detectedConfigs.map((detected) => loadLatestRawScanSummary(detected, { allowStale: true })),
+  );
+  const latestSharedScanAtMs = rawScanSummaries.reduce<number>((latest, summary) => {
+    const scannedAtMs = Date.parse(summary?.scannedAt ?? "");
+    return Number.isFinite(scannedAtMs) ? Math.max(latest, scannedAtMs) : latest;
+  }, 0);
+
+  if (latestSharedScanAtMs > storedRunAtMs) {
+    const effectiveInventory = await buildAvailableJobsFromSharedInventory(
+      env,
+      config,
+      inventoryState.inventory ?? storedInventory,
+      tenantId,
+      options,
+    );
+    void saveInventory(env, effectiveInventory, tenantId, inventoryState).catch((error) => {
+      console.error("[dashboard.summary] failed to persist shared-refresh inventory", error);
+    });
+    return {
+      inventory: effectiveInventory,
+      inventoryState,
+      source: "shared-fallback",
+      freshnessProbeSkipped: false,
+      staleReason: "shared-scan-newer-than-stored",
+    };
+  }
+
+  return {
+    inventory: storedInventory,
+    inventoryState,
+    source: "stored",
+    freshnessProbeSkipped: false,
+    staleReason: null,
+  };
 }
 
 function summarizeInventoryJobs(jobs: JobPosting[], inventory: InventorySnapshot): InventorySnapshot["stats"] {
@@ -1963,6 +2111,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
       await saveJobNotes(env, {}, tenantContext.tenantId);
+      await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, DASHBOARD_SUMMARY_KEY));
 
       return jsonResponse({ ok: true, cleared: "available jobs cache", retained: ["applied jobs", "saved company ATS configuration"] });
     }
@@ -1990,6 +2139,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
       await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, "discardedJobKeys"));
       await saveJobNotes(env, {}, tenantContext.tenantId);
+      await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, DASHBOARD_SUMMARY_KEY));
       return jsonResponse({ ok: true, cleared: "inventory and pipeline state", retained: ["saved company ATS configuration", "saved filters", "logs"] });
     }
 
@@ -2666,24 +2816,37 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/applied-jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
-        isAdmin: tenantContext.isAdmin,
-        updatedByUserId: tenantContext.userId,
-      });
-      const { effectiveInventory } = await loadDerivedAvailableInventory(
-        env,
-        config,
-        tenantContext.tenantId,
-        { isAdmin: tenantContext.isAdmin },
-      );
+      const appliedJobsLoadStartedAt = Date.now();
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const appliedJobsLoadMs = Date.now() - appliedJobsLoadStartedAt;
+
+      const notesLoadStartedAt = Date.now();
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
+      const notesLoadMs = Date.now() - notesLoadStartedAt;
+
+      const markersLoadStartedAt = Date.now();
       const { updatedJobKeys } = await loadLatestRunMarkers(env, tenantContext.tenantId);
-      const mergedRows = mergeAppliedJobsWithInventory(appliedJobs, effectiveInventory);
-      const companyOptions = uniqueSortedCompanies(mergedRows.map((row) => row.job.company));
-      const rows = filterAppliedJobs(mergedRows, url.searchParams).sort(
+      const markersLoadMs = Date.now() - markersLoadStartedAt;
+
+      // Applied jobs already persist a durable job snapshot, so this endpoint
+      // should not block on rebuilding the live available inventory first.
+      const appliedRows = Object.values(appliedJobs);
+      const companyOptions = uniqueSortedCompanies(appliedRows.map((row) => row.job.company));
+      const filterSortStartedAt = Date.now();
+      const rows = filterAppliedJobs(appliedRows, url.searchParams).sort(
         (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
       );
+      const filterSortMs = Date.now() - filterSortStartedAt;
+
+      console.info("[applied.list]", {
+        tenantId: tenantContext.tenantId,
+        appliedJobsLoadMs,
+        notesLoadMs,
+        markersLoadMs,
+        filterSortMs,
+        appliedRows: appliedRows.length,
+        returnedRows: rows.length,
+      });
 
       return jsonResponse({
         ok: true,
@@ -3064,8 +3227,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
-      // Dashboard should reflect the tenant's visible inventory, not hide a
-      // company simply because the user paused it for future manual scans.
+      const configLoadStartedAt = Date.now();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
@@ -3073,23 +3235,59 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         // expanding every registry company into runtime config first.
         expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
-      const { effectiveInventory, inventoryState } = await loadDerivedAvailableInventory(
+      const runtimeConfigLoadMs = Date.now() - configLoadStartedAt;
+
+      const inventoryLoadStartedAt = Date.now();
+      const dashboardInventory = await resolveDashboardInventory(
         env,
         config,
         tenantContext.tenantId,
         { isAdmin: tenantContext.isAdmin },
       );
+      const inventoryLoadMs = Date.now() - inventoryLoadStartedAt;
+
+      const appliedJobsLoadStartedAt = Date.now();
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
+      const appliedJobsLoadMs = Date.now() - appliedJobsLoadStartedAt;
+
       let companiesByAts = summarizeCompaniesByAts(config.companies);
-      const payload = await buildDashboardPayload(
+      const cacheFingerprint = buildDashboardSummaryFingerprint(
+        dashboardInventory.inventory,
+        appliedJobs,
+        companiesByAts,
+        {
+          lastNewJobsCount: dashboardInventory.inventoryState.lastNewJobsCount,
+          lastUpdatedJobsCount: dashboardInventory.inventoryState.lastUpdatedJobsCount,
+        },
+      );
+      const cacheLoadStartedAt = Date.now();
+      const cachedPayload = await loadCachedDashboardPayload(env, tenantContext.tenantId, cacheFingerprint);
+      const cacheLoadMs = Date.now() - cacheLoadStartedAt;
+      const payloadBuildStartedAt = Date.now();
+      const payload = cachedPayload ?? await buildDashboardPayload(
         env,
-        effectiveInventory,
+        dashboardInventory.inventory,
         appliedJobs,
         tenantContext.tenantId,
-        inventoryState,
+        dashboardInventory.inventoryState,
         companiesByAts,
+        {
+          inventorySource: dashboardInventory.source,
+          freshnessProbeSkipped: dashboardInventory.freshnessProbeSkipped,
+          staleReason: dashboardInventory.staleReason,
+        },
       );
+      const payloadBuildMs = Date.now() - payloadBuildStartedAt;
+      if (!cachedPayload) {
+        // Let the first useful dashboard response return immediately; cache
+        // persistence is valuable, but it should not extend the user-visible
+        // critical path on a cold miss.
+        void saveCachedDashboardPayload(env, tenantContext.tenantId, cacheFingerprint, payload).catch((error) => {
+          console.error("[dashboard.summary] failed to write cache", error);
+        });
+      }
       if (tenantContext.isAdmin && config.adminRegistryMode !== "none") {
+        const adminSummaryStartedAt = Date.now();
         const [registryEntries, rawScanSummary] = await Promise.all([
           loadRegistryCache().then(() => listAll()),
           summarizeCurrentRawScans(),
@@ -3109,9 +3307,31 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           // registry companies currently have a successful shared raw fetch.
           companiesConfigured: registryEntries.length,
           companiesDetected: rawScanSummary.currentCompanies,
+          totalFetched: rawScanSummary.currentJobs,
         };
         payload.companiesByAts = companiesByAts;
+        console.info("[dashboard.admin.summary]", {
+          tenantId: tenantContext.tenantId,
+          registryCompanies: registryEntries.length,
+          rawScanCompanies: rawScanSummary.currentCompanies,
+          rawScanJobs: rawScanSummary.currentJobs,
+          adminSummaryMs: Date.now() - adminSummaryStartedAt,
+        });
       }
+      console.info("[dashboard.summary]", {
+        tenantId: tenantContext.tenantId,
+        runtimeConfigLoadMs,
+        inventoryLoadMs,
+        appliedJobsLoadMs,
+        cacheLoadMs,
+        cacheHit: Boolean(cachedPayload),
+        payloadBuildMs,
+        inventorySource: dashboardInventory.source,
+        freshnessProbeSkipped: dashboardInventory.freshnessProbeSkipped,
+        staleReason: dashboardInventory.staleReason,
+        inventoryJobs: dashboardInventory.inventory.jobs.length,
+        appliedRows: Object.keys(appliedJobs).length,
+      });
       return jsonResponse({
         ok: true,
         ...payload,

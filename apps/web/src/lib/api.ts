@@ -174,11 +174,40 @@ export type DashboardKpis = {
 
 export type Dashboard = {
   ok?: boolean;
+  generatedAt?: string;
+  summaryBuiltAt?: string;
+  dashboardAsOf?: string;
+  inventorySource?: string;
+  freshnessProbeSkipped?: boolean;
+  staleReason?: string | null;
   kpis?: DashboardKpis;
   lastRunAt?: string;
   companiesByAts?: Array<{ ats: string; count: number }>;
   statusBreakdown?: Record<string, number>;
   keywordCounts?: Record<string, number>;
+  appliedSummary?: {
+    statusCounts?: Record<string, number>;
+    topCompanies?: Array<{ label: string; count: number }>;
+    topLocations?: Array<{ label: string; count: number }>;
+    recentActivity?: Array<{
+      jobKey: string;
+      company: string;
+      jobTitle: string;
+      status: AppliedStatus;
+      appliedAt: string;
+      lastStatusChangedAt?: string;
+      location?: string;
+    }>;
+    staleApplications?: Array<{
+      jobKey: string;
+      company: string;
+      jobTitle: string;
+      status: AppliedStatus;
+      appliedAt: string;
+      lastStatusChangedAt?: string;
+      location?: string;
+    }>;
+  };
 };
 
 export type MeEnvelope = {

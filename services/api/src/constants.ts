@@ -10,6 +10,7 @@ export const LAST_NEW_JOBS_COUNT_KEY = "runtime:last_new_jobs_count";
 export const LAST_NEW_JOB_KEYS_KEY = "runtime:last_new_job_keys";
 export const LAST_UPDATED_JOBS_COUNT_KEY = "runtime:last_updated_jobs_count";
 export const LAST_UPDATED_JOB_KEYS_KEY = "runtime:last_updated_job_keys";
+export const DASHBOARD_SUMMARY_KEY = "runtime:dashboard_summary";
 export const SAVED_FILTERS_KEY = "runtime:saved_filters";
 export const DISCARDED_JOB_KEYS_KEY = "runtime:discarded_job_keys";
 export const ACTIVE_RUN_LOCK_KEY = "runtime:active_run_lock";

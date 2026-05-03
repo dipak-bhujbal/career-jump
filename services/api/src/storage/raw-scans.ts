@@ -250,6 +250,66 @@ export async function loadLatestRawScan(
   };
 }
 
+/**
+ * Dashboard and other summary surfaces only need lightweight freshness/count
+ * metadata. Reading the compact CURRENT row avoids loading every per-job row
+ * just to decide whether a tenant snapshot is stale.
+ */
+export async function loadLatestRawScanSummary(
+  detected: DetectedConfig,
+  options: { allowStale?: boolean; maxAgeMs?: number } = {},
+): Promise<{ fetchedCount: number; scannedAt: string } | null> {
+  const current = await getRow<RawScanCurrentRow>(
+    rawScansTableName(),
+    { pk: rawScanPk(detected), sk: RAW_SCAN_CURRENT_SK },
+    true,
+  );
+  if (current?.scannedAt) {
+    if (!isUsableScanTimestamp(current.scannedAt, options)) return null;
+    return {
+      fetchedCount: Number.isFinite(current.fetchedCount)
+        ? current.fetchedCount
+        : Array.isArray(current.jobs)
+          ? current.jobs.length
+          : 0,
+      scannedAt: current.scannedAt,
+    };
+  }
+
+  const currentRows = await loadCurrentRowsForDetected(detected);
+  const jobRows = currentRows.filter(isRawScanJobRow);
+  if (jobRows.length > 0) {
+    const scannedAt = jobRows.reduce<string | null>((latest, row) => {
+      if (!latest || row.scannedAt.localeCompare(latest) > 0) return row.scannedAt;
+      return latest;
+    }, null);
+    if (!scannedAt || !isUsableScanTimestamp(scannedAt, options)) return null;
+    return {
+      fetchedCount: jobRows.length,
+      scannedAt,
+    };
+  }
+
+  const rows = await queryRows<RawScanCurrentRow>(
+    rawScansTableName(),
+    "pk = :pk",
+    { ":pk": rawScanPk(detected) },
+    { scanIndexForward: false, limit: 1, consistentRead: true },
+  );
+  const latest = rows[0];
+  if (!latest?.scannedAt) return null;
+  if (!isUsableScanTimestamp(latest.scannedAt, options)) return null;
+
+  return {
+    fetchedCount: Number.isFinite(latest.fetchedCount)
+      ? latest.fetchedCount
+      : Array.isArray(latest.jobs)
+        ? latest.jobs.length
+        : 0,
+    scannedAt: latest.scannedAt,
+  };
+}
+
 export async function saveRawScan(
   company: string,
   detected: DetectedConfig,
