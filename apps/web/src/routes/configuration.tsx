@@ -231,15 +231,15 @@ function ConfigurationRoute() {
     toast(`Added ${entry.company}`);
   }
 
-  /** Add a blank custom row. Closes the picker and lets the user fill
-   *  in name + ATS + boardUrl directly in the table. */
-  function handleAddCustom() {
+  /**
+   * Add a validated custom company as a registry-backed row immediately so the
+   * draft mirrors the shared registry entry the backend just promoted.
+   */
+  function handleAddCustom(company: CompanyConfig) {
     setPickerOpen(false);
-    setTab("custom");
-    setDraftCompanies((prev) => [
-      ...prev,
-      { company: "", enabled: true, source: "", boardUrl: "", sampleUrl: "", isRegistry: false },
-    ]);
+    setTab("all");
+    setDraftCompanies((prev) => [...prev, company]);
+    toast(`Added ${company.company}`);
   }
 
   function handleEdit(index: number, patch: Partial<CompanyConfig>) {
@@ -571,11 +571,11 @@ function ConfigurationRoute() {
           </div>
         )}
       </div>
-      <CompanyPicker
-        open={pickerOpen}
-        onClose={() => setPickerOpen(false)}
-        trackedCompanies={draftCompanies}
-        onAddRegistry={handleAddRegistry}
+        <CompanyPicker
+          open={pickerOpen}
+          onClose={() => setPickerOpen(false)}
+          trackedCompanies={draftCompanies}
+          onAddRegistry={handleAddRegistry}
         onAddCustom={handleAddCustom}
       />
       <UpgradePrompt

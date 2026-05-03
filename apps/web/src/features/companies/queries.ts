@@ -1,5 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { api, registryApi, type ConfigEnvelope, type RegistryEntry, type RegistryMeta, type CompanyConfig } from "@/lib/api";
+import {
+  api,
+  registryApi,
+  type ConfigEnvelope,
+  type RegistryEntry,
+  type RegistryMeta,
+  type CompanyConfig,
+  type ValidateCompanyEnvelope,
+  type ValidateCompanyRequest,
+} from "@/lib/api";
 import { REGISTRY_META } from "@/data/companies-registry";
 import { isLocalDevHost } from "@/lib/runtime-config";
 
@@ -107,6 +116,13 @@ export function useSaveConfig() {
       }));
       await qc.invalidateQueries({ queryKey: configKey });
     },
+  });
+}
+
+export function useValidateCompany() {
+  return useMutation({
+    mutationFn: (payload: ValidateCompanyRequest) =>
+      api.post<ValidateCompanyEnvelope>("/api/config/validate-company", payload),
   });
 }
 

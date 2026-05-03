@@ -138,6 +138,20 @@ export type ConfigEnvelope = {
   companyScanOverrides: Record<string, { company: string; paused: boolean; updatedAt: string }>;
 };
 
+export type ValidateCompanyRequest = {
+  company: string;
+  source: string;
+  boardUrl: string;
+};
+
+export type ValidateCompanyEnvelope = {
+  ok: boolean;
+  company: CompanyConfig;
+  registryEntry: RegistryEntry;
+  totalJobs: number;
+  message?: string;
+};
+
 // ---------- Dashboard ----------
 export type DashboardKpis = {
   availableJobs?: number;

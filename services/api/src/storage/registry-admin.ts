@@ -1,4 +1,6 @@
 import { countJobs, type RegistryEntry } from "../ats/registry";
+import { getAdapter } from "../ats/shared/types";
+import { normalizeAtsId } from "../ats/shared/normalize";
 import { deleteRow, getRow, registryTableName, putRow } from "../aws/dynamo";
 import { canonicalBoardUrlForCompany } from "../config";
 import { hyphenSlug, nowISO } from "../lib/utils";
@@ -9,6 +11,12 @@ type PromotionResult = {
   promoted: boolean;
   entry?: RegistryEntry;
   reason?: string;
+};
+
+export type CompanyValidationResult = {
+  company: CompanyInput;
+  entry: RegistryEntry;
+  totalJobs: number;
 };
 
 export function companyRegistryKey(company: string): string {
@@ -172,13 +180,19 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
     });
   }
 
+  const normalizedAts = coerceString(input.ats);
+  const canonicalAts = normalizedAts ? normalizeAtsId(normalizedAts) : null;
+  if (normalizedAts && !canonicalAts) {
+    throw new Error("ats must use a supported adapter id such as greenhouse, ashby, workday, lever, or oracle");
+  }
+
   return {
     ...next,
     rank: coerceNumber(input.rank),
     sheet: typeof input.sheet === "string" && input.sheet.trim() ? input.sheet.trim() : "Registry",
     company,
     board_url: coerceString(input.board_url),
-    ats: coerceString(input.ats),
+    ats: canonicalAts,
     total_jobs: coerceNumber(input.total_jobs),
     source: coerceString(input.source),
     tier: tier as RegistryEntry["tier"],
@@ -187,6 +201,64 @@ function normalizeRegistryCompanyConfig(input: Record<string, unknown>): Registr
     boards,
     sample_url: coerceString(input.sample_url),
     last_checked: coerceString(input.last_checked),
+  };
+}
+
+/**
+ * Validate a user-supplied ATS board URL against the selected adapter, then
+ * immediately promote the canonical row into the shared registry once it
+ * proves both shape and non-zero inventory.
+ */
+export async function validateAndPromoteCustomCompany(company: CompanyInput): Promise<CompanyValidationResult> {
+  const entry = toPromotableRegistryEntry(company);
+  if (!entry?.ats || !entry.board_url) {
+    throw new Error("Company, ATS, and a canonical job board URL are required.");
+  }
+
+  const adapterId = normalizeAtsId(entry.ats);
+  const adapter = adapterId ? getAdapter(adapterId) : null;
+  if (!adapter) {
+    throw new Error(`Unsupported ATS '${entry.ats}'.`);
+  }
+
+  const isValid = await adapter.validate({ boardUrl: entry.board_url });
+  if (!isValid) {
+    throw new Error(`The URL does not match the expected ${adapter.id} board format or could not be validated.`);
+  }
+
+  const totalJobs = await adapter.count({ boardUrl: entry.board_url });
+  if (!Number.isFinite(totalJobs) || totalJobs <= 0) {
+    throw new Error("Validation succeeded, but the board returned zero jobs so it was not added.");
+  }
+
+  const verifiedEntry: RegistryEntry = {
+    ...entry,
+    ats: adapter.id,
+    total_jobs: totalJobs,
+    last_checked: nowISO(),
+  };
+
+  await putRow(registryTableName(), {
+    pk: "REGISTRY",
+    sk: companyRegistryKey(verifiedEntry.company),
+    ...verifiedEntry,
+    updatedAt: nowISO(),
+  });
+  await loadRegistryCache({ force: true });
+
+  return {
+    company: {
+      ...company,
+      enabled: true,
+      isRegistry: true,
+      source: adapter.id as CompanyInput["source"],
+      boardUrl: verifiedEntry.board_url ?? company.boardUrl,
+      sampleUrl: verifiedEntry.board_url ?? company.sampleUrl,
+      registryAts: adapter.id,
+      registryTier: verifiedEntry.tier,
+    },
+    entry: verifiedEntry,
+    totalJobs,
   };
 }
 

@@ -116,6 +116,7 @@ import {
   listRegistryCompanyConfigs,
   loadRegistryCompanyConfigByRegistryId,
   saveRegistryCompanyConfig,
+  validateAndPromoteCustomCompany,
 } from "./storage/registry-admin";
 import { normalizeCompanyKey } from "./storage/tenant-keys";
 import { buildDashboardPayload } from "./services/dashboard";
@@ -1721,6 +1722,72 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         updatedByUserId: tenantContext.userId,
       });
       return jsonResponse({ ok: true, config: savedConfig });
+    }
+
+    if (url.pathname === "/api/config/validate-company" && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const candidate = sanitizeCompanies([{ ...body, enabled: true, isRegistry: false }])[0];
+      const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
+        isAdmin: tenantContext.isAdmin,
+        updatedByUserId: tenantContext.userId,
+      });
+
+      if (!candidate?.company.trim()) {
+        return jsonResponse({ ok: false, error: "Company name is required." }, 400);
+      }
+      if (!candidate.source) {
+        return jsonResponse({ ok: false, error: "ATS is required." }, 400);
+      }
+      if (!candidate.boardUrl) {
+        return jsonResponse({ ok: false, error: "Job board URL is required." }, 400);
+      }
+
+      await loadRegistryCache({ force: true });
+      if (getByCompany(candidate.company)) {
+        return jsonResponse({
+          ok: false,
+          error: `Company '${candidate.company}' already exists in the registry. Use Add company to pick it from the catalog instead.`,
+        }, 409);
+      }
+
+      const detected = companyToDetectedConfig(candidate);
+      if (!detected) {
+        // Fail fast on malformed ATS/URL pairs before hitting the expensive
+        // adapter validation path so users get immediate shape feedback.
+        return jsonResponse({
+          ok: false,
+          error: `The URL does not match the expected ${candidate.source} board format.`,
+        }, 422);
+      }
+
+      if (!tenantContext.isAdmin) {
+        try {
+          const maxCompanies = await loadCompanyLimitForUser(tenantContext.userId);
+          const currentEnabled = enabledCompanyKeys(currentConfig.companies);
+          const nextKey = slugify(candidate.company);
+          if (maxCompanies !== null && !currentEnabled.has(nextKey) && currentEnabled.size >= maxCompanies) {
+            return jsonResponse(maxCompaniesError(maxCompanies, currentEnabled.size), 403);
+          }
+        } catch {
+          // Preserve validation if billing config is temporarily unavailable.
+        }
+      }
+
+      try {
+        const result = await validateAndPromoteCustomCompany(candidate);
+        return jsonResponse({
+          ok: true,
+          company: result.company,
+          registryEntry: result.entry,
+          totalJobs: result.totalJobs,
+          message: `${result.entry.company} validated with ${result.totalJobs} jobs.`,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Company validation failed";
+        const status = message.includes("already exists") ? 409 : 422;
+        return jsonResponse({ ok: false, error: message }, status);
+      }
     }
 
     const companyToggleMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/toggle$/);

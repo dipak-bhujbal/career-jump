@@ -15,12 +15,17 @@ import {
   useDeleteAdminRegistryCompanyConfig,
   useSaveAdminRegistryCompanyConfig,
 } from "@/features/support/queries";
+import { ALL_ATS_ADAPTERS } from "@/lib/job-filters";
 import type { AdminRegistryCompanyConfig, AdminRegistryCompanyConfigSummary } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/admin-company-configs")({ component: AdminCompanyConfigsRoute });
 
 const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
+const SUPPORTED_ATS_REFERENCE = ALL_ATS_ADAPTERS.map((adapter) => ({
+  id: adapter.id,
+  label: adapter.label,
+}));
 
 function validateRegistryConfigJson(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -49,6 +54,15 @@ function validateRegistryConfigJson(value: unknown): string | null {
     const current = record[field];
     if (current !== undefined && current !== null && typeof current !== "string") {
       return `${field} must be a string or null.`;
+    }
+  }
+
+  if (typeof record.ats === "string" && record.ats.trim()) {
+    const normalized = record.ats.trim().toLowerCase();
+    const matchesKnownAts = SUPPORTED_ATS_REFERENCE.some((adapter) => adapter.id === normalized);
+    const matchesKnownAlias = ["oracle cloud hcm", "oracle cloud", "smartrecruiters"].includes(normalized);
+    if (!matchesKnownAts && !matchesKnownAlias) {
+      return "ats must use a supported adapter id. See the ATS reference legend below the editor.";
     }
   }
 
@@ -404,6 +418,23 @@ function AdminCompanyConfigsRoute() {
 
               {parseError ? <div className="text-sm text-red-600">{parseError}</div> : null}
               {saveMessage ? <div className="text-sm text-[hsl(var(--muted-foreground))]">{saveMessage}</div> : null}
+              <div className="rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--accent))]/20 px-4 py-3">
+                <div className="text-sm font-medium">ATS reference</div>
+                <div className="mt-1 text-xs text-[hsl(var(--muted-foreground))]">
+                  Use canonical adapter ids in JSON. Friendly values like "Oracle Cloud HCM" are normalized to <code>oracle</code> on save.
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {SUPPORTED_ATS_REFERENCE.map((adapter) => (
+                    <span
+                      key={adapter.id}
+                      className="inline-flex items-center gap-1 rounded-full border border-[hsl(var(--border))] bg-[hsl(var(--background))] px-2.5 py-1 text-xs"
+                    >
+                      <code>{adapter.id}</code>
+                      <span className="text-[hsl(var(--muted-foreground))]">= {adapter.label}</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
             </CardContent>
           </Card>
         </div>

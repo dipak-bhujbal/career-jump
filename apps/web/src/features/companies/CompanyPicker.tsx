@@ -5,17 +5,19 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TierTag } from "@/components/ui/tier-tag";
-import { useRegistryMeta, useRegistrySearch } from "./queries";
+import { useRegistryMeta, useRegistrySearch, useValidateCompany } from "./queries";
 import { Select } from "@/components/ui/select";
 import { type RegistryEntry, type CompanyConfig } from "@/lib/api";
 import { cn, companyKey, formatAtsLabel } from "@/lib/utils";
+import { ALL_ATS_ADAPTERS } from "@/lib/job-filters";
+import { toast } from "@/components/ui/toast";
 
 interface CompanyPickerProps {
   open: boolean;
   onClose: () => void;
   trackedCompanies: CompanyConfig[];
   onAddRegistry: (entry: RegistryEntry) => void;
-  onAddCustom: () => void;
+  onAddCustom: (company: CompanyConfig) => void;
 }
 
 const TIERS = [
@@ -32,6 +34,11 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
   const [debounced, setDebounced] = useState("");
   const [tier, setTier] = useState("");
   const [ats, setAts] = useState("");
+  const [customMode, setCustomMode] = useState(false);
+  const [customCompany, setCustomCompany] = useState("");
+  const [customAts, setCustomAts] = useState("");
+  const [customBoardUrl, setCustomBoardUrl] = useState("");
+  const validateCompany = useValidateCompany();
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(search), 200);
@@ -44,6 +51,10 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
       setDebounced("");
       setTier("");
       setAts("");
+      setCustomMode(false);
+      setCustomCompany("");
+      setCustomAts("");
+      setCustomBoardUrl("");
     }
   }, [open]);
 
@@ -57,6 +68,7 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
   const resultTotal = results.data?.total ?? resultEntries.length;
 
   const trackedKeys = useMemo(() => new Set(trackedCompanies.map((c) => companyKey(c.company))), [trackedCompanies]);
+  const customTracked = trackedKeys.has(companyKey(customCompany));
   // Keep already-tracked companies visible, but push them to the bottom so
   // the next actionable companies are always listed first.
   const sortedEntries = useMemo(
@@ -115,9 +127,128 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
     );
   };
 
+  async function handleValidateCustom() {
+    if (!customCompany.trim()) {
+      toast("Company name is required", "error");
+      return;
+    }
+    if (!customAts) {
+      toast("ATS is required", "error");
+      return;
+    }
+    if (!customBoardUrl.trim()) {
+      toast("Job board URL is required", "error");
+      return;
+    }
+    if (customTracked) {
+      toast(`${customCompany.trim()} is already tracked`, "info");
+      return;
+    }
+
+    try {
+      const result = await validateCompany.mutateAsync({
+        company: customCompany.trim(),
+        source: customAts,
+        boardUrl: customBoardUrl.trim(),
+      });
+      onAddCustom(result.company);
+      setCustomMode(false);
+      setCustomCompany("");
+      setCustomAts("");
+      setCustomBoardUrl("");
+      toast(result.message ?? `${result.company.company} validated`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Validation failed", "error");
+    }
+  }
+
   return (
     <Dialog open={open} onClose={onClose} size="lg" className="overflow-hidden">
       <div className="flex flex-col max-h-[80vh]">
+        {customMode ? (
+          <>
+            <div className="px-6 pt-6 pb-4 border-b border-[hsl(var(--border))]">
+              <div className="flex items-center gap-2 mb-1.5">
+                <h2 className="text-xl font-semibold">Validate company</h2>
+                <Badge variant="secondary">Required before add</Badge>
+              </div>
+              <p className="text-base text-[hsl(var(--muted-foreground))]">
+                Enter the company, ATS, and canonical job board URL. We only add it after the selected adapter validates the URL and returns non-zero jobs.
+              </p>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Company</label>
+                <Input
+                  autoFocus
+                  value={customCompany}
+                  onChange={(event) => setCustomCompany(event.target.value)}
+                  placeholder="Anthropic"
+                  className="h-11 text-base"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">ATS</label>
+                <Select
+                  value={customAts}
+                  onChange={(event) => setCustomAts(event.target.value)}
+                  className="h-11 text-sm"
+                >
+                  <option value="">Select ATS</option>
+                  {ALL_ATS_ADAPTERS.map((adapter) => (
+                    <option key={adapter.id} value={adapter.id}>
+                      {adapter.label} ({adapter.id})
+                    </option>
+                  ))}
+                </Select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium">Job board URL</label>
+                <Input
+                  value={customBoardUrl}
+                  onChange={(event) => setCustomBoardUrl(event.target.value)}
+                  placeholder="https://job-boards.greenhouse.io/embed/job_board?for=airbnb"
+                  className="h-11 text-sm"
+                />
+                <p className="text-xs text-[hsl(var(--muted-foreground))]">
+                  Use the canonical board URL for the selected ATS. For example, Greenhouse accepts either the embed URL or the boards-api URL.
+                </p>
+              </div>
+
+              {customTracked ? (
+                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                  {customCompany.trim()} is already tracked in this configuration.
+                </div>
+              ) : null}
+            </div>
+
+            <div className="px-6 py-4 border-t border-[hsl(var(--border))] flex items-center justify-between gap-3 bg-[hsl(var(--card))]/40">
+              <div className="text-sm text-[hsl(var(--muted-foreground))]">
+                Validation also promotes the company into the shared registry once a real job inventory is confirmed.
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="warning" onClick={() => setCustomMode(false)} disabled={validateCompany.isPending}>
+                  Cancel
+                </Button>
+                <Button variant="success" onClick={() => void handleValidateCustom()} disabled={validateCompany.isPending}>
+                  {validateCompany.isPending ? (
+                    <>
+                      <Loader2 size={15} className="animate-spin" /> Validating…
+                    </>
+                  ) : (
+                    <>
+                      <Check size={15} /> Validate
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
         <div className="px-6 pt-6 pb-4 border-b border-[hsl(var(--border))]">
           <div className="flex items-center gap-2 mb-1.5">
             <h2 className="text-xl font-semibold">Add company</h2>
@@ -178,7 +309,7 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
           {results.isError && !results.isFetching && (
             <div className="px-4 py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
               Search requires a connection to the registry.{" "}
-              <button className="underline hover:text-[hsl(var(--foreground))]" onClick={onAddCustom}>
+              <button className="underline hover:text-[hsl(var(--foreground))]" onClick={() => setCustomMode(true)}>
                 Add a custom company
               </button>{" "}instead.
             </div>
@@ -186,7 +317,7 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
           {!results.isError && totalRegistry > 0 && resultEntries.length === 0 && !results.isFetching && (
             <div className="px-4 py-12 text-center text-sm text-[hsl(var(--muted-foreground))]">
               No matches in {activeTierLabel}. Try a different search or
-              <button className="ml-1 underline hover:text-[hsl(var(--foreground))]" onClick={onAddCustom}>
+              <button className="ml-1 underline hover:text-[hsl(var(--foreground))]" onClick={() => setCustomMode(true)}>
                 add a custom company
               </button>.
             </div>
@@ -198,12 +329,14 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
 
         <div className="px-6 py-4 border-t border-[hsl(var(--border))] flex items-center justify-between gap-3 bg-[hsl(var(--card))]/40">
           <div className="text-sm text-[hsl(var(--muted-foreground))]">
-            Don't see your company? Add it manually with a sample job URL.
+            Don't see your company? Add it manually with a canonical ATS job board URL.
           </div>
-          <Button onClick={onAddCustom}>
+          <Button onClick={() => setCustomMode(true)}>
             <Plus size={15} /> Custom company
           </Button>
         </div>
+          </>
+        )}
       </div>
     </Dialog>
   );
