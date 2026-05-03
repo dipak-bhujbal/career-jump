@@ -113,17 +113,38 @@ export async function queryRows<T>(
   options: QueryOptions = {},
   expressionAttributeNames?: Record<string, string>
 ): Promise<T[]> {
-  const response = await client.send(new QueryCommand({
-    TableName: tableName,
-    IndexName: options.indexName,
-    KeyConditionExpression: keyConditionExpression,
-    ExpressionAttributeValues: marshall(expressionAttributeValues, { removeUndefinedValues: true }),
-    ExpressionAttributeNames: expressionAttributeNames,
-    Limit: options.limit,
-    ScanIndexForward: options.scanIndexForward,
-    ConsistentRead: options.consistentRead,
-  }));
-  return (response.Items ?? []).map((item) => unmarshall(item) as T);
+  const items: T[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+  let remaining = typeof options.limit === "number" ? options.limit : undefined;
+
+  do {
+    const pageLimit = typeof remaining === "number" ? Math.max(remaining, 0) : undefined;
+    const response = await client.send(new QueryCommand({
+      TableName: tableName,
+      IndexName: options.indexName,
+      KeyConditionExpression: keyConditionExpression,
+      ExpressionAttributeValues: marshall(expressionAttributeValues, { removeUndefinedValues: true }),
+      ExpressionAttributeNames: expressionAttributeNames,
+      Limit: pageLimit,
+      ScanIndexForward: options.scanIndexForward,
+      ConsistentRead: options.consistentRead,
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+
+    const pageItems = (response.Items ?? []).map((item) => unmarshall(item) as T);
+    items.push(...pageItems);
+
+    if (typeof remaining === "number") {
+      remaining -= pageItems.length;
+      if (remaining <= 0) break;
+    }
+
+    // Query-based admin views like registry status need the full result set
+    // once the current-row index grows beyond Dynamo's 1 MB page size.
+    exclusiveStartKey = response.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
 }
 
 export async function scanRows<T>(

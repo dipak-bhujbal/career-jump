@@ -107,6 +107,7 @@ function AdminCompanyConfigsRoute() {
   const [page, setPage] = useState(0);
   const [selectedRegistryId, setSelectedRegistryId] = useState<string | null>(null);
   const [editorValue, setEditorValue] = useState("");
+  const [companyNameValue, setCompanyNameValue] = useState("");
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const detailQuery = useAdminRegistryCompanyConfig(selectedRegistryId, isAdmin);
@@ -146,6 +147,7 @@ function AdminCompanyConfigsRoute() {
   useEffect(() => {
     if (detailQuery.data?.config) {
       setEditorValue(JSON.stringify(detailQuery.data.config, null, 2));
+      setCompanyNameValue(detailQuery.data.config.company ?? "");
       setParseError(null);
       setSaveMessage(null);
     }
@@ -203,6 +205,27 @@ function AdminCompanyConfigsRoute() {
       const message = error instanceof Error ? error.message : "Failed to delete company config";
       setSaveMessage(message);
       toast(message, "error");
+    }
+  }
+
+  /**
+   * Keep the dedicated company-name input and the raw JSON editor in sync so
+   * admins can rename a record without having to hand-edit the JSON blob.
+   */
+  function handleCompanyNameChange(nextCompanyName: string) {
+    setCompanyNameValue(nextCompanyName);
+    setSaveMessage(null);
+    setParseError(null);
+
+    try {
+      const parsed = JSON.parse(editorValue) as Record<string, unknown>;
+      const nextConfig = {
+        ...parsed,
+        company: nextCompanyName,
+      };
+      setEditorValue(JSON.stringify(nextConfig, null, 2));
+    } catch {
+      // Leave the raw editor untouched when the JSON is currently invalid.
     }
   }
 
@@ -404,10 +427,35 @@ function AdminCompanyConfigsRoute() {
                 </div>
               )}
 
+              <div className="grid gap-2">
+                <label htmlFor="company-config-company-name" className="text-sm font-medium">
+                  Company name
+                </label>
+                <Input
+                  id="company-config-company-name"
+                  value={companyNameValue}
+                  onChange={(event) => handleCompanyNameChange(event.target.value)}
+                  placeholder="Enter company name"
+                  disabled={!selectedRegistryId}
+                />
+                <div className="text-xs text-[hsl(var(--muted-foreground))]">
+                  Editing this field updates the <code>company</code> value in the JSON below before save.
+                </div>
+              </div>
+
               <textarea
                 value={editorValue}
                 onChange={(event) => {
                   setEditorValue(event.target.value);
+                  try {
+                    const parsed = JSON.parse(event.target.value) as Record<string, unknown>;
+                    if (typeof parsed.company === "string") {
+                      setCompanyNameValue(parsed.company);
+                    }
+                  } catch {
+                    // Keep the dedicated input stable while admins are in the
+                    // middle of editing invalid JSON.
+                  }
                   setParseError(null);
                   setSaveMessage(null);
                 }}
