@@ -584,6 +584,14 @@ export type AdminActionsNeededEnvelope = {
   rows: AdminActionsNeededRow[];
 };
 
+export type ResumeAdminActionEnvelope = {
+  ok: boolean;
+  company: string;
+  nextScanAt: string | null;
+  status: "healthy" | "pending" | "failing" | "paused" | "misconfigured" | "stale";
+  failureCount: number;
+};
+
 export type AdminRegistryCompanyConfig = {
   rank: number | null;
   sheet: string;

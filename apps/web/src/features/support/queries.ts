@@ -5,6 +5,7 @@ import {
   type AnnouncementsEnvelope,
   type AdminAnalyticsEnvelope,
   type AdminActionsNeededEnvelope,
+  type ResumeAdminActionEnvelope,
   type AdminRegistryCompanyConfig,
   type AdminRegistryCompanyConfigDeleteEnvelope,
   type AdminRegistryCompanyConfigEnvelope,
@@ -101,6 +102,19 @@ export function useAdminActionsNeeded(enabled = true) {
     queryFn: () => api.get<AdminActionsNeededEnvelope>("/api/admin/actions-needed"),
     enabled,
     staleTime: 30_000,
+  });
+}
+
+export function useResumeAdminAction() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (company: string) =>
+      api.post<ResumeAdminActionEnvelope>(`/api/admin/actions-needed/${encodeURIComponent(company)}/resume`),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["admin-actions-needed"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-registry-status"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-summary"] });
+    },
   });
 }
 

@@ -21,7 +21,7 @@ import {
 } from "./config";
 import { registeredAdapterIds } from "./ats/registry";
 import { getByCompany, listAll, listByAts, loadRegistryCache } from "./storage/registry-cache";
-import { updateActiveTrackers } from "./storage/registry-scan-state";
+import { resumeRegistryCompanyScan, updateActiveTrackers } from "./storage/registry-scan-state";
 import { scrapeOne } from "./services/registry-scraper";
 import { confirmPasswordReset, requestPasswordReset } from "./services/password-reset";
 import { writeAnalytics } from "./lib/analytics";
@@ -1121,6 +1121,40 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           overdueCompanies: rows.filter((row) => row.lastScannedAt === null && row.nextScanAt && row.nextScanAt.localeCompare(now) <= 0).length,
         },
         rows,
+      });
+    }
+
+    const adminActionResetMatch = url.pathname.match(/^\/api\/admin\/actions-needed\/(.+)\/resume$/);
+    if (adminActionResetMatch && request.method === "POST") {
+      const tenantContext = await getTenantContext();
+      const gate = requireAdminContext(tenantContext);
+      if (gate) return gate;
+
+      const company = decodeURIComponent(adminActionResetMatch[1] ?? "").trim();
+      if (!company) {
+        return jsonResponse({ ok: false, error: "company name is required" }, 400);
+      }
+
+      await loadRegistryCache({ force: true });
+      const entry = getByCompany(company);
+      if (!entry) {
+        return jsonResponse({ ok: false, error: "Registry company not found" }, 404);
+      }
+
+      const state = await resumeRegistryCompanyScan(company, entry.ats);
+      await recordEvent(tenantContext, "ADMIN_RESUME_REGISTRY_COMPANY", {
+        company,
+        ats: entry.ats ?? null,
+        nextScanAt: state.nextScanAt,
+        scanPool: state.scanPool,
+      });
+
+      return jsonResponse({
+        ok: true,
+        company,
+        nextScanAt: state.nextScanAt,
+        status: state.status,
+        failureCount: state.failureCount,
       });
     }
 

@@ -374,3 +374,30 @@ export async function updateActiveTrackers(
     activeTrackers,
   });
 }
+
+/**
+ * After an admin reviews a repeatedly failing company, they need a one-click
+ * way to put it back into the automated scheduler. Reset the failure state,
+ * keep any historical success metadata, and make the company due immediately.
+ */
+export async function resumeRegistryCompanyScan(
+  company: string,
+  adapterId?: string | null,
+): Promise<RegistryCompanyScanState> {
+  const previous = await loadRegistryCompanyScanState(company, adapterId);
+  const policy = await loadRegistryPolicyForCompany(company, adapterId ?? previous.adapterId ?? null);
+  const nextScanAt = nowISO();
+
+  return saveState({
+    ...previous,
+    adapterId: policy.adapterId ?? previous.adapterId ?? null,
+    scanPool: policy.scanPool,
+    priority: policy.priority,
+    status: previous.lastSuccessAt ? "healthy" : "pending",
+    nextScanAt,
+    staleAfterAt: futureIso(staleWindowForPool(policy.scanPool)),
+    lastFailureAt: null,
+    lastFailureReason: null,
+    failureCount: 0,
+  });
+}

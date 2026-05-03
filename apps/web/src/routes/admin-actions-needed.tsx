@@ -1,6 +1,6 @@
 import { createFileRoute, useLocation } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, ArrowDownAZ, ArrowUpAZ, RefreshCw } from "lucide-react";
+import { AlertTriangle, ArrowDownAZ, ArrowUpAZ, RefreshCw, RotateCcw } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/admin-shell";
 import { Topbar } from "@/components/layout/topbar";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,9 +9,10 @@ import { Select } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import { DateRangePicker, type DateRangeValue } from "@/components/ui/date-range-picker";
 import { useMe } from "@/features/session/queries";
-import { useAdminActionsNeeded } from "@/features/support/queries";
+import { useAdminActionsNeeded, useResumeAdminAction } from "@/features/support/queries";
 import type { AdminActionsNeededRow } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { toast } from "@/components/ui/toast";
 
 export const Route = createFileRoute("/admin-actions-needed")({ component: AdminActionsNeededRoute });
 
@@ -32,6 +33,7 @@ function AdminActionsNeededRoute() {
   const { data: me } = useMe();
   const isAdmin = me?.actor?.isAdmin === true;
   const { data, isLoading, isFetching, refetch } = useAdminActionsNeeded(isAdmin);
+  const resumeAction = useResumeAdminAction();
   const location = useLocation();
   const [companyFilter, setCompanyFilter] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("");
@@ -98,6 +100,15 @@ function AdminActionsNeededRoute() {
     pausedCompanies: filteredRows.filter((row) => row.nextScanAt === null).length,
     overdueCompanies: filteredRows.filter((row) => row.lastScannedAt === null && row.nextScanAt !== null).length,
   }), [filteredRows]);
+
+  async function handleResume(company: string) {
+    try {
+      const result = await resumeAction.mutateAsync(company);
+      toast(`${result.company} returned to schedule`);
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Failed to return company to schedule", "error");
+    }
+  }
 
   useEffect(() => {
     if (safePage !== page) setPage(safePage);
@@ -252,6 +263,7 @@ function AdminActionsNeededRoute() {
                     <SortableHeader column="lastScannedAt" label="Last Scanned" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <SortableHeader column="nextScanAt" label="Next Scheduled Scan" sortBy={sortBy} sortDir={sortDir} onSort={handleSort} />
                     <th className="px-3 py-2">Reason</th>
+                    <th className="px-3 py-2 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -266,6 +278,19 @@ function AdminActionsNeededRoute() {
                       <td className="px-3 py-2">{formatTimestamp(row.lastScannedAt, "Not scanned yet")}</td>
                       <td className="px-3 py-2">{formatTimestamp(row.nextScanAt, "Removed from scheduler")}</td>
                       <td className="px-3 py-2 text-[hsl(var(--muted-foreground))]">{row.failureReason ?? row.failureCategory}</td>
+                      <td className="px-3 py-2">
+                        <div className="flex justify-end">
+                          <Button
+                            variant="success"
+                            size="sm"
+                            disabled={resumeAction.isPending}
+                            onClick={() => void handleResume(row.company)}
+                          >
+                            <RotateCcw size={13} />
+                            {resumeAction.isPending ? "Resetting…" : "Return to schedule"}
+                          </Button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
