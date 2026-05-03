@@ -11,7 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createFileRoute } from "@tanstack/react-router";
-import { RefreshCw, Sparkles, Plus, Briefcase, Globe, Clock, X, ChevronLeft, ChevronRight } from "lucide-react";
+import { RefreshCw, Sparkles, Plus, Briefcase, Globe, Clock, X } from "lucide-react";
 import { FilterToolbar } from "@/components/filter-toolbar";
 import { Select } from "@/components/ui/select";
 import { Topbar } from "@/components/layout/topbar";
@@ -26,7 +26,7 @@ import { BulkActionBar } from "@/features/jobs/BulkActionBar";
 import { useApplyJob, useDiscardJob, useJobDetails, useJobs, useManualAddJob, type JobsFilter } from "@/features/jobs/queries";
 import { useSavedFilters, useSaveFilter, useDeleteFilter } from "@/features/filters/queries";
 import { Dialog } from "@/components/ui/dialog";
-import { api, ApiError, type Job, type JobsEnvelope } from "@/lib/api";
+import { ApiError, type Job } from "@/lib/api";
 import { toast } from "@/components/ui/toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { useHotkey } from "@/lib/hotkeys";
@@ -45,7 +45,6 @@ export const Route = createFileRoute("/jobs")({
 });
 
 function JobsRoute() {
-  const PAGE_SIZE_OPTIONS = [10, 25, 50] as const;
   const search = Route.useSearch();
   const [filter, setFilter] = useState<JobsFilter>({
     companies: [],
@@ -57,9 +56,6 @@ function JobsRoute() {
     newOnly: search.new === "1",
     updatedOnly: search.updated === "1",
   });
-  const [pageSize, setPageSize] = useState<number>(10);
-  const [currentCursor, setCurrentCursor] = useState<string | null>(null);
-  const [previousCursors, setPreviousCursors] = useState<string[]>([]);
 
   const [dateRange, setDateRange] = useState<DateRangeValue>({ from: null, to: null });
   const [selected, setSelected] = useState<Job | null>(null);
@@ -119,10 +115,11 @@ function JobsRoute() {
       ...filter,
       dateFrom: dateRange.from?.toISOString(),
       dateTo: dateRange.to?.toISOString(),
-      limit: pageSize,
-      cursor: currentCursor,
+      // Available Jobs now loads the full filtered result set so filters stay
+      // global and the user no longer has to page to find matching rows.
+      fetchAll: true,
     }),
-    [currentCursor, dateRange.from, dateRange.to, filter, pageSize],
+    [dateRange.from, dateRange.to, filter],
   );
   const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
@@ -137,10 +134,8 @@ function JobsRoute() {
 
   const total = data?.total ?? 0;
   const totals = data?.totals;
-  const pagination = data?.pagination;
   const companyOptions = data?.companyOptions ?? [];
   const allJobs = data?.jobs ?? [];
-  const pageNumber = previousCursors.length + 1;
 
   // Client-side column sort — default: newest posted first.
   const jobs = useMemo(() => {
@@ -167,8 +162,6 @@ function JobsRoute() {
   const freshSelected = selected ? (allJobs.find((j) => j.jobKey === selected.jobKey) ?? selected) : null;
   const selectedJobDetails = useJobDetails(selected?.jobKey ?? null, Boolean(selected));
   const selectedAvailableJob = selectedJobDetails.data?.job ?? freshSelected;
-  const pageStart = total === 0 ? 0 : ((pageNumber - 1) * pageSize) + 1;
-  const pageEnd = total === 0 ? 0 : Math.min(total, pageStart + Math.max(jobs.length - 1, 0));
   const resultsSummary = totals
     ? `${(totals.availableJobs ?? total).toLocaleString()} available · ${totals.newJobs} new · ${totals.updatedJobs} updated`
     : `${jobs.length.toLocaleString()} jobs loaded`;
@@ -184,10 +177,10 @@ function JobsRoute() {
   // Reset focus when filters change.
   useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
   useEffect(() => {
-    // Global server-side filtering changes the whole cursor space, so restart
-    // from page 1 whenever the filter set changes.
-    setCurrentCursor(null);
-    setPreviousCursors([]);
+    // Server-side filters replace the full dataset, so any stale selection
+    // state should be cleared when the filter set changes.
+    setChecked(new Set());
+    setSelected(null);
   }, [
     filter.companies,
     filter.duration,
@@ -201,45 +194,11 @@ function JobsRoute() {
     dateRange.to,
   ]);
   useEffect(() => {
-    // Changing page size invalidates the current cursor chain, so restart from
-    // the first page to keep the visible slice predictable.
-    setCurrentCursor(null);
-    setPreviousCursors([]);
-  }, [pageSize]);
-  useEffect(() => {
     // Multi-select and drawer state should follow the visible page rather than
     // pointing at jobs that are no longer mounted.
     setChecked(new Set());
     setSelected(null);
-  }, [currentCursor, pageSize]);
-
-  useEffect(() => {
-    if (!pagination?.nextCursor) return;
-    const nextFilter = {
-      ...jobsQueryFilter,
-      cursor: pagination.nextCursor,
-    };
-    void qc.prefetchQuery({
-      queryKey: ["jobs", nextFilter],
-      queryFn: () => {
-        const params = new URLSearchParams();
-        for (const c of nextFilter.companies ?? []) if (c) params.append("company", c);
-        if (nextFilter.location) params.set("location", nextFilter.location);
-        if (nextFilter.keyword) params.set("keyword", nextFilter.keyword);
-        if (nextFilter.duration) params.set("duration", nextFilter.duration);
-        if (nextFilter.source) params.set("source", nextFilter.source);
-        if (nextFilter.usOnly) params.set("usOnly", "true");
-        if (nextFilter.newOnly) params.set("newOnly", "true");
-        if (nextFilter.updatedOnly) params.set("updatedOnly", "true");
-        if (nextFilter.dateFrom) params.set("dateFrom", nextFilter.dateFrom);
-        if (nextFilter.dateTo) params.set("dateTo", nextFilter.dateTo);
-        params.set("limit", String(nextFilter.limit ?? 100));
-        if (pagination.nextCursor) params.set("cursor", pagination.nextCursor);
-        return api.get<JobsEnvelope>(`/api/jobs?${params.toString()}`);
-      },
-      staleTime: 5 * 60_000,
-    });
-  }, [jobsQueryFilter, pagination?.nextCursor, qc]);
+  }, [jobs.length]);
 
   function openUpgrade() {
     setUpgradeOpen(true);
@@ -291,8 +250,6 @@ function JobsRoute() {
   }, [focusedIndex, jobs]);
 
   function refresh() {
-    setCurrentCursor(null);
-    setPreviousCursors([]);
     qc.invalidateQueries({ queryKey: ["jobs"] });
   }
 
@@ -342,9 +299,7 @@ function JobsRoute() {
           label={
             <span className="inline-flex items-center gap-2">
               <Briefcase size={14} />
-              {pagination?.hasMore
-                ? `${jobs.length.toLocaleString()} loaded on this page`
-                : `${jobs.length.toLocaleString()} matching`}
+              {jobs.length.toLocaleString()} matching
             </span>
           }
           advanced={advancedOpen}
@@ -551,9 +506,7 @@ function JobsRoute() {
               {filter.newOnly ? "New jobs" : filter.updatedOnly ? "Updated jobs" : "All jobs"}
             </CardTitle>
             <CardDescription className="text-sm">
-              {pagination?.hasMore
-                ? `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()}`
-                : `Showing ${pageStart.toLocaleString()}-${pageEnd.toLocaleString()} of ${total.toLocaleString()}`}
+              Showing {jobs.length.toLocaleString()} of {total.toLocaleString()}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -569,57 +522,6 @@ function JobsRoute() {
               sortDir={sortDir}
               onSort={handleSort}
             />
-            <div className="flex flex-col gap-3 border-t border-[hsl(var(--border))] px-4 py-3 md:flex-row md:items-center md:justify-between">
-              <div className="text-sm text-[hsl(var(--muted-foreground))]">
-                Page {pageNumber.toLocaleString()}
-                {pagination?.hasMore ? " · more results available" : ""}
-              </div>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-                <label className="flex items-center gap-2 text-sm text-[hsl(var(--muted-foreground))]">
-                  <span>Jobs per page</span>
-                  <Select
-                    value={String(pageSize)}
-                    onChange={(e) => setPageSize(Number(e.target.value) || 10)}
-                    className="w-[92px]"
-                  >
-                    {PAGE_SIZE_OPTIONS.map((option) => (
-                      <option key={option} value={option}>{option}</option>
-                    ))}
-                  </Select>
-                </label>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setPreviousCursors((history) => {
-                        if (history.length === 0) return history;
-                        const nextHistory = history.slice(0, -1);
-                        setCurrentCursor(history[history.length - 1] || null);
-                        return nextHistory;
-                      });
-                    }}
-                    disabled={previousCursors.length === 0}
-                  >
-                    <ChevronLeft size={14} />
-                    Previous
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      if (!pagination?.nextCursor) return;
-                      setPreviousCursors((history) => [...history, currentCursor ?? ""]);
-                      setCurrentCursor(pagination.nextCursor);
-                    }}
-                    disabled={!pagination?.nextCursor}
-                  >
-                    Next
-                    <ChevronRight size={14} />
-                  </Button>
-                </div>
-              </div>
-            </div>
           </CardContent>
         </Card>
         </div>{/* end left pane */}

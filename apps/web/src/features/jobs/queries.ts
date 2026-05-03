@@ -19,6 +19,7 @@ export type JobsFilter = {
   dateTo?: string;
   limit?: number;
   cursor?: string | null;
+  fetchAll?: boolean;
 };
 
 type JobsQueryOptions = {
@@ -39,6 +40,7 @@ function buildJobsParams(f: JobsFilter): URLSearchParams {
   if (f.dateTo) p.set("dateTo", f.dateTo);
   p.set("limit", String(f.limit ?? 100));
   if (f.cursor) p.set("cursor", f.cursor);
+  if (f.fetchAll) p.set("all", "true");
   return p;
 }
 

@@ -2600,7 +2600,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const updatedJobKeys = new Set(inventoryState.lastUpdatedJobKeys);
       const newOnly = url.searchParams.get("newOnly") === "true";
       const updatedOnly = url.searchParams.get("updatedOnly") === "true";
-      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
+      const fetchAll = url.searchParams.get("all") === "true";
+      const limit = fetchAll
+        ? Math.max(1, Math.min(5000, Number(url.searchParams.get("limit") || 5000) || 5000))
+        : Math.max(1, Math.min(200, Number(url.searchParams.get("limit") || 100) || 100));
       const companyFilters = parseMultiValues(url.searchParams, "company");
       const companySearch = companyFilters.length ? "" : url.searchParams.get("company")?.trim().toLowerCase() ?? "";
       const streamStartedAt = Date.now();
@@ -2703,8 +2706,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         total: approximateVisibleJobs.length,
         pagination: {
           limit,
-          nextCursor: streamedPage.nextCursor,
-          hasMore: streamedPage.hasMore,
+          // Full-list mode removes paging controls from the UI, so keep the
+          // response contract stable while reporting an exhausted cursor chain.
+          nextCursor: fetchAll ? null : streamedPage.nextCursor,
+          hasMore: fetchAll ? false : streamedPage.hasMore,
         },
         totals: {
           availableJobs: visibleStoredJobs.length,
