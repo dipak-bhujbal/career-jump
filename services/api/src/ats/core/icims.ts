@@ -154,7 +154,14 @@ export async function countIcimsJobs(boardUrl: string): Promise<number> {
   if (!normalizedUrl) return 0;
   const result = await fetchIcimsPage(normalizedUrl);
   if (!result) return 0;
-  return parseCount(result.html);
+  const parsedCount = parseCount(result.html);
+  if (parsedCount > 0) return parsedCount;
+
+  // Some modern iCIMS boards only expose pagination like "Page 1 of 39"
+  // without rendering a direct total-job count in the HTML header. Fall back
+  // to the real paginated fetch path so validation and registry counts do not
+  // incorrectly collapse to zero for boards such as Acadia Healthcare.
+  return (await fetchIcimsJobs(normalizedUrl, "iCIMS", { maxPages: 100 })).length;
 }
 
 export async function fetchIcimsJobs(
@@ -165,7 +172,9 @@ export async function fetchIcimsJobs(
   const normalizedUrl = normalizeIcimsBoardUrl(boardUrl);
   if (!normalizedUrl) return [];
 
-  const maxPages = options.maxPages ?? 20;
+  // Large healthcare boards regularly exceed 20 listing pages. Use a more
+  // generous default so shared raw inventory reflects the real board size.
+  const maxPages = options.maxPages ?? 100;
   const jobs: JobPosting[] = [];
   const seen = new Set<string>();
   let nextPageUrl: string | null = normalizedUrl;

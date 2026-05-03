@@ -44,7 +44,7 @@ function normalizeRunStartResponse(result: RunStartResponse): RunStartResponse {
 }
 
 export function useRunStatus() {
-  return useQuery({
+  return useQuery<RunStatus>({
     queryKey: runStatusKey,
     queryFn: async () => {
       const result = await api.get<RunStatus & { activeRun?: RunStatus }>("/api/run/status");

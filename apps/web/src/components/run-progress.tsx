@@ -7,8 +7,8 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { useIsMutating, useQueryClient } from "@tanstack/react-query";
-import { useLatestRunResult, useRunStatus, useScanQuota, runStatusKey, startRunMutationKey } from "@/features/run/queries";
-import { formatFullyBlockedBanner, formatRunCompletionToast, isQueuedRunPending, wasRunFullyQuotaBlocked } from "@/features/run/presentation";
+import { latestRunResultKey, useLatestRunResult, useRunStatus, useScanQuota, runStatusKey, startRunMutationKey } from "@/features/run/queries";
+import { formatFullyBlockedBanner, formatRunCompletionToast, isAcceptedRun, isQueuedRunPending, wasRunFullyQuotaBlocked } from "@/features/run/presentation";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import type { RunStatus } from "@/lib/api";
 
@@ -34,6 +34,15 @@ export function RunProgress() {
   const serverActive = data?.active === true;
   const queuedPending = isQueuedRunPending(latestRun);
   const isActive = serverActive || isStarting || queuedPending;
+
+  useEffect(() => {
+    // Fast async scans can finish before the UI ever sees an in-progress
+    // heartbeat. When the server explicitly reports no active run, drop any
+    // stale queued-only snapshot so the banner disappears without a refresh.
+    if (data?.active === false && isAcceptedRun(latestRun)) {
+      queryClient.setQueryData(latestRunResultKey, null);
+    }
+  }, [data?.active, latestRun, queryClient]);
 
   useEffect(() => {
     if (serverActive && data) {
