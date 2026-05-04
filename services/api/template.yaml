@@ -925,6 +925,11 @@ Resources:
             TableName: !Ref UsersTable
         - DynamoDBCrudPolicy:
             TableName: !Ref JobsTable
+        # CQRS dashboard/jobs/admin reads now source persisted snapshots from
+        # SummariesTable, so the API must be able to read and update those
+        # rows during normal request handling and cache-refresh flows.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
         - DynamoDBCrudPolicy:
             TableName: !Ref EventsTable
         - DynamoDBCrudPolicy:
