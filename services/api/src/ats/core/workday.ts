@@ -763,6 +763,8 @@ async function fetchWorkdayJobsForSearchText(
   const all: JobPosting[] = [];
   let offset = 0;
   let totalPages = 1;
+  let trustedReportedTotal: number | null = null;
+  const seenPageJobKeys = new Set<string>();
 
   for (let pageIndex = 0; pageIndex < MAX_PAGES_PER_QUERY; pageIndex += 1) {
     if (pageIndex >= totalPages) {
@@ -781,21 +783,37 @@ async function fetchWorkdayJobsForSearchText(
     const reportedTotal = typeof page.response.total === "number" && Number.isFinite(page.response.total)
       ? Math.max(0, page.response.total)
       : null;
-    if (reportedTotal !== null) {
-      // The first successful page tells us how many 20-job pages the board
-      // actually has, so follow Workday's own total instead of guessing.
+    if (trustedReportedTotal === null && reportedTotal !== null && reportedTotal > 0) {
+      // Some Workday boards return a valid total on page 1, then lie with
+      // total=0 on later pages. Trust only the first credible non-zero total
+      // so later broken totals cannot collapse the scan to a 40-job subset.
+      trustedReportedTotal = reportedTotal;
       totalPages = Math.min(MAX_PAGES_PER_QUERY, Math.max(1, Math.ceil(reportedTotal / WORKDAY_PAGE_SIZE)));
     }
     if (postings.length === 0) {
       break;
     }
 
+    let pageNewJobCount = 0;
     for (const posting of postings) {
-      all.push(normalizeWorkdayJob(companyName, cfg, posting));
+      const normalized = normalizeWorkdayJob(companyName, cfg, posting);
+      const pageJobKey = `${normalized.id}::${normalized.url}`;
+      if (seenPageJobKeys.has(pageJobKey)) {
+        continue;
+      }
+      seenPageJobKeys.add(pageJobKey);
+      pageNewJobCount += 1;
+      all.push(normalized);
+    }
+
+    if (pageNewJobCount === 0) {
+      // Some boards wrap around and repeat earlier pages instead of ending
+      // cleanly. Stop as soon as a page contributes nothing new.
+      break;
     }
 
     offset += postings.length;
-    if (reportedTotal !== null && offset >= reportedTotal) {
+    if (trustedReportedTotal !== null && offset >= trustedReportedTotal) {
       break;
     }
     if (postings.length < WORKDAY_PAGE_SIZE) {
