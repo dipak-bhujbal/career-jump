@@ -28,7 +28,6 @@ import { useSavedFilters, useSaveFilter, useDeleteFilter } from "@/features/filt
 import { Dialog } from "@/components/ui/dialog";
 import { ApiError, type Job } from "@/lib/api";
 import { toast } from "@/components/ui/toast";
-import { useQueryClient } from "@tanstack/react-query";
 import { useHotkey } from "@/lib/hotkeys";
 import { UpgradeBanner, UpgradePrompt } from "@/features/billing/upgrade";
 import { useMe } from "@/features/session/queries";
@@ -80,7 +79,6 @@ function JobsRoute() {
   const [upgradeOpen, setUpgradeOpen] = useState(false);
   const lastCheckedIndexRef = useRef<number | null>(null);
   const keywordInputRef = useRef<HTMLInputElement>(null);
-  const qc = useQueryClient();
   const { data: me } = useMe();
 
   // Resizable split pane — persists list-pane width across sessions.
@@ -112,16 +110,13 @@ function JobsRoute() {
 
   const jobsQueryFilter = useMemo(
     () => ({
-      ...filter,
-      dateFrom: dateRange.from?.toISOString(),
-      dateTo: dateRange.to?.toISOString(),
-      // Available Jobs now loads the full filtered result set so filters stay
-      // global and the user no longer has to page to find matching rows.
+      // Load the full visible inventory once, then keep all filter toggles
+      // local so changing a chip or date range feels instant during the session.
       fetchAll: true,
     }),
-    [dateRange.from, dateRange.to, filter],
+    [],
   );
-  const { data, isLoading, isFetching } = useJobs(jobsQueryFilter);
+  const { data, isLoading } = useJobs(jobsQueryFilter);
   const apply = useApplyJob();
   const discard = useDiscardJob();
   // Saved filters only matter while the advanced drawer is open, so defer the
@@ -134,12 +129,48 @@ function JobsRoute() {
 
   const total = data?.total ?? 0;
   const totals = data?.totals;
-  const companyOptions = data?.companyOptions ?? [];
   const allJobs = data?.jobs ?? [];
+  const companyOptions = useMemo(
+    () => (data?.companyOptions?.length ? data.companyOptions : Array.from(new Set(allJobs.map((job) => job.company))).sort()),
+    [allJobs, data?.companyOptions],
+  );
 
-  // Client-side column sort — default: newest posted first.
+  const filteredJobs = useMemo(() => {
+    const companyKeys = new Set((filter.companies ?? []).map((company) => company.trim().toLowerCase()));
+    const keyword = filter.keyword?.trim().toLowerCase() ?? "";
+    const location = filter.location?.trim().toLowerCase() ?? "";
+    const source = filter.source?.trim().toLowerCase() ?? "";
+    const durationHours = parseClientDurationHours(filter.duration);
+    const postedAfterMs = durationHours === null ? null : Date.now() - (durationHours * 60 * 60 * 1000);
+    const dateFromMs = dateRange.from ? dateRange.from.getTime() : null;
+    const dateToMs = dateRange.to ? dateRange.to.getTime() + 86_399_999 : null;
+
+    return allJobs.filter((job) => {
+      const company = job.company?.toLowerCase() ?? "";
+      const title = job.jobTitle?.toLowerCase() ?? "";
+      const jobLocation = job.location?.toLowerCase() ?? "";
+      const jobSource = job.source?.toLowerCase() ?? "";
+      const postedAtRaw = job.postedAtDate ?? job.postedAt ?? null;
+      const postedAtMs = postedAtRaw ? Date.parse(postedAtRaw) : NaN;
+
+      if (companyKeys.size > 0 && !companyKeys.has(company)) return false;
+      if (keyword && !title.includes(keyword) && !company.includes(keyword)) return false;
+      if (location && !jobLocation.includes(location)) return false;
+      if (source && jobSource !== source) return false;
+      if (filter.usOnly && job.usLikely === false) return false;
+      if (filter.newOnly && !job.isNew) return false;
+      if (filter.updatedOnly && !job.isUpdated) return false;
+      if (postedAfterMs !== null && (!Number.isFinite(postedAtMs) || postedAtMs < postedAfterMs)) return false;
+      if (dateFromMs !== null && (!Number.isFinite(postedAtMs) || postedAtMs < dateFromMs)) return false;
+      if (dateToMs !== null && (!Number.isFinite(postedAtMs) || postedAtMs > dateToMs)) return false;
+      return true;
+    });
+  }, [allJobs, dateRange.from, dateRange.to, filter]);
+
+  // Column sorting stays local too so the full table can react instantly once
+  // the session dataset has been loaded.
   const jobs = useMemo(() => {
-    const arr = [...allJobs];
+    const arr = [...filteredJobs];
     const dir = sortDir === "asc" ? 1 : -1;
     arr.sort((a, b) => {
       let cmp: number;
@@ -155,16 +186,16 @@ function JobsRoute() {
       return cmp * dir;
     });
     return arr;
-  }, [allJobs, sortBy, sortDir]);
+  }, [filteredJobs, sortBy, sortDir]);
   // Always resolve the selected job from live query data so note/round
   // mutations are reflected immediately without requiring the user to re-open
   // the drawer after each invalidation.
   const freshSelected = selected ? (allJobs.find((j) => j.jobKey === selected.jobKey) ?? selected) : null;
   const selectedJobDetails = useJobDetails(selected?.jobKey ?? null, Boolean(selected));
   const selectedAvailableJob = selectedJobDetails.data?.job ?? freshSelected;
-  const resultsSummary = totals
-    ? `${(totals.availableJobs ?? total).toLocaleString()} available · ${totals.newJobs} new · ${totals.updatedJobs} updated`
-    : `${jobs.length.toLocaleString()} jobs loaded`;
+  const filteredNewCount = useMemo(() => filteredJobs.filter((job) => job.isNew).length, [filteredJobs]);
+  const filteredUpdatedCount = useMemo(() => filteredJobs.filter((job) => job.isUpdated).length, [filteredJobs]);
+  const resultsSummary = `${jobs.length.toLocaleString()} matching · ${filteredNewCount.toLocaleString()} new · ${filteredUpdatedCount.toLocaleString()} updated`;
 
   function handleSort(col: SortCol) {
     setSortBy((prev) => {
@@ -175,7 +206,7 @@ function JobsRoute() {
   }
 
   // Reset focus when filters change.
-  useEffect(() => { setFocusedIndex(0); }, [data?.jobs?.length]);
+  useEffect(() => { setFocusedIndex(0); }, [jobs.length]);
   useEffect(() => {
     // Server-side filters replace the full dataset, so any stale selection
     // state should be cleared when the filter set changes.
@@ -249,10 +280,6 @@ function JobsRoute() {
     row?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [focusedIndex, jobs]);
 
-  function refresh() {
-    qc.invalidateQueries({ queryKey: ["jobs"] });
-  }
-
   function toggleChecked(key: string, options?: { range?: boolean }) {
     const idx = jobs.findIndex((j) => j.jobKey === key);
     setChecked((prev) => {
@@ -280,9 +307,6 @@ function JobsRoute() {
           subtitle={resultsSummary}
         actions={
           <>
-            <Button variant="outline" size="sm" onClick={refresh}>
-              <RefreshCw size={13} className={isFetching ? "animate-spin" : ""} /> Refresh
-            </Button>
             <Button size="sm" onClick={() => setManualOpen(true)}>
               <Plus size={13} /> Add manually
             </Button>
@@ -331,21 +355,21 @@ function JobsRoute() {
                     onClick={() => setFilter((f) => ({ ...f, newOnly: false, updatedOnly: false }))}
                     icon={<Briefcase size={15} />}
                     label="All jobs"
-                    count={total}
+                    count={allJobs.length}
                   />
                   <ChipToggle
                     active={filter.newOnly === true}
                     onClick={() => setFilter((f) => ({ ...f, newOnly: !f.newOnly, updatedOnly: false }))}
                     icon={<Sparkles size={15} />}
                     label="New"
-                    count={totals?.newJobs}
+                    count={allJobs.filter((job) => job.isNew).length}
                   />
                   <ChipToggle
                     active={filter.updatedOnly === true}
                     onClick={() => setFilter((f) => ({ ...f, updatedOnly: !f.updatedOnly, newOnly: false }))}
                     icon={<RefreshCw size={15} />}
                     label="Updated"
-                    count={totals?.updatedJobs}
+                    count={allJobs.filter((job) => job.isUpdated).length}
                   />
                   <ChipToggle
                     active={filter.usOnly === true}
@@ -506,7 +530,7 @@ function JobsRoute() {
               {filter.newOnly ? "New jobs" : filter.updatedOnly ? "Updated jobs" : "All jobs"}
             </CardTitle>
             <CardDescription className="text-sm">
-              Showing {jobs.length.toLocaleString()} of {total.toLocaleString()}
+              Showing {jobs.length.toLocaleString()} of {allJobs.length.toLocaleString()}
             </CardDescription>
           </CardHeader>
           <CardContent className="p-0">
@@ -646,6 +670,20 @@ function Field({ label, children, className }: { label: string; children: React.
       {children}
     </div>
   );
+}
+
+function parseClientDurationHours(raw: string | undefined): number | null {
+  switch (raw) {
+    case "1h": return 1;
+    case "3h": return 3;
+    case "1d": return 24;
+    case "3d": return 72;
+    case "1w": return 24 * 7;
+    case "2w": return 24 * 14;
+    case "1m": return 24 * 30;
+    case "3m": return 24 * 90;
+    default: return null;
+  }
 }
 
 import type { SavedFilter } from "@/features/filters/queries";
