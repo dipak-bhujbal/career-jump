@@ -303,7 +303,12 @@ function ConfigurationRoute() {
   }
 
   function handleSave(options?: { onSuccess?: () => void }) {
-    saveDraft(draftCompanies, draftKeywords, adminRegistryMode, options);
+    // Manual admin edits on the configuration page should persist the visible
+    // subset the admin curated. The separate all-registry notification/browse
+    // behavior is handled outside this page and should not collapse freshly
+    // added rows back to an empty config after save.
+    const effectiveAdminMode = me?.actor.isAdmin ? "none" : adminRegistryMode;
+    saveDraft(draftCompanies, draftKeywords, effectiveAdminMode, options);
   }
 
   function handleCancel() {

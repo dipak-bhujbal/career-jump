@@ -59,9 +59,14 @@ export function useRunStatus() {
         active: true,
       };
     },
-    refetchInterval: (q) => (q.state.data?.active ? 2000 : 30_000),
+    // Idle polling is intentionally slow because this query is mounted from
+    // shell-level UI on every route. Fast polling only matters during a live
+    // scan when users expect progress movement.
+    refetchInterval: (q) => (q.state.data?.active ? 2000 : 5 * 60_000),
     refetchOnWindowFocus: true,
     staleTime: 0,
+    retry: (failureCount, error) => error instanceof ApiError && error.status === 429 && failureCount < 1,
+    retryDelay: 750,
   });
 }
 
@@ -84,8 +89,10 @@ export function useScanQuota() {
     queryFn: () => api.get<ScanQuotaEnvelope>("/api/scan-quota"),
     // Refresh quota passively while a run is active so the remaining count
     // updates soon after completion without forcing manual reloads.
-    refetchInterval: () => (qc.getQueryData<RunStatus>(runStatusKey)?.active ? 5_000 : 60_000),
+    refetchInterval: () => (qc.getQueryData<RunStatus>(runStatusKey)?.active ? 5_000 : 5 * 60_000),
     staleTime: 10_000,
+    retry: (failureCount, error) => error instanceof ApiError && error.status === 429 && failureCount < 1,
+    retryDelay: 750,
   });
 }
 

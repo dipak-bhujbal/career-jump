@@ -38,6 +38,10 @@ type ConfigQueryOptions = {
   enabled?: boolean;
 };
 
+type RegistryMetaQueryOptions = {
+  enabled?: boolean;
+};
+
 export type RegistrySearchResult = { ok: boolean; total: number; entries: RegistryEntry[] };
 
 function normalizeRegistryEntries(result: Partial<RegistrySearchResult> & Record<string, unknown>): RegistryEntry[] {
@@ -61,7 +65,7 @@ export function useConfig(options: ConfigQueryOptions = {}) {
   });
 }
 
-export function useRegistryMeta() {
+export function useRegistryMeta(options: RegistryMetaQueryOptions = {}) {
   return useQuery({
     queryKey: registryMetaKey,
     queryFn: async () => {
@@ -73,10 +77,33 @@ export function useRegistryMeta() {
         if ((result.counts?.total ?? 0) < 100 && isLocalDevHost()) return localRegistryMeta();
         return result;
       } catch {
-        return localRegistryMeta();
+        // The bundled registry metadata is only a local/dev convenience. In
+        // production, falling back to it lies about the real registry size and
+        // makes throttles look like "1230 available" counts. Return an empty
+        // shape instead so prod stays honest when the registry endpoint fails.
+        return isLocalDevHost()
+          ? localRegistryMeta()
+          : {
+              ok: false,
+              meta: { version: "unavailable", total: 0 },
+              loadedAt: Date.now(),
+              adapters: [],
+              counts: {
+                total: 0,
+                tier1: 0,
+                tier2: 0,
+                tier3: 0,
+                needsReview: 0,
+              },
+            } satisfies RegistryMeta;
       }
     },
+    enabled: options.enabled !== false,
+    // Registry meta is informational for the picker badge, so keep it quiet
+    // and tolerant under transient throttles instead of hammering the API.
     staleTime: 5 * 60_000,
+    retry: (failureCount, error) => error instanceof ApiError && error.status === 429 && failureCount < 1,
+    retryDelay: 750,
   });
 }
 

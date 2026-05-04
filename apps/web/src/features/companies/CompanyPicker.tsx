@@ -58,7 +58,9 @@ export function CompanyPicker({ open, onClose, trackedCompanies, onAddRegistry, 
     }
   }, [open]);
 
-  const meta = useRegistryMeta();
+  // Only fetch registry metadata while the picker is open so background page
+  // loads do not spend API budget on a dialog the user is not viewing.
+  const meta = useRegistryMeta({ enabled: open });
   const adapters = meta.data?.adapters ?? [];
   const totalRegistry = meta.data?.counts.total ?? 0;
 
