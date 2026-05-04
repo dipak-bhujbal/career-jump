@@ -242,15 +242,11 @@ Resources:
           AttributeType: S
         - AttributeName: gsi2sk
           AttributeType: S
-        # gsi3/gsi4 — VISIBLEJOB entity family (visible-company-index, visible-source-index)
+        # gsi3 — VISIBLEJOB entity family (visible-company-index)
         # Distinct attributes from gsi1/gsi2 — entity families cannot mix in queries.
         - AttributeName: gsi3pk
           AttributeType: S
         - AttributeName: gsi3sk
-          AttributeType: S
-        - AttributeName: gsi4pk
-          AttributeType: S
-        - AttributeName: gsi4sk
           AttributeType: S
       KeySchema:
         - AttributeName: pk
@@ -275,21 +271,13 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-        # VISIBLEJOB indexes (gsi3/gsi4) — GSI SK begins with VISIBLEJOB# so
+        # VISIBLEJOB index (gsi3) — GSI SK begins with VISIBLEJOB# so
         # a begins_with filter prevents any future row family from leaking in.
         - IndexName: visible-company-index
           KeySchema:
             - AttributeName: gsi3pk
               KeyType: HASH
             - AttributeName: gsi3sk
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-        - IndexName: visible-source-index
-          KeySchema:
-            - AttributeName: gsi4pk
-              KeyType: HASH
-            - AttributeName: gsi4sk
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
