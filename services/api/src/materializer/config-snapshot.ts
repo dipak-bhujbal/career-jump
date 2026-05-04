@@ -43,11 +43,12 @@ function effectiveEnabledCompanySlugs(
     return null;
   }
 
-  // The snapshot needs the tenant-visible company set, not the raw config set,
-  // so paused overrides are folded in before materialization.
+  // Pause is a scan-control only. Tenant visibility should continue to include
+  // paused companies so already-fetched jobs remain visible until the user
+  // explicitly clears data or removes the company from config.
+  void overrides;
   const enabled = companies
     .filter((company) => company.enabled !== false)
-    .filter((company) => overrides[slugify(company.company)]?.paused !== true)
     .map((company) => slugify(company.company))
     .filter(Boolean);
 

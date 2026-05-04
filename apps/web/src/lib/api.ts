@@ -333,6 +333,7 @@ export type Job = {
   detectedCountry?: string;
   isNew?: boolean;
   isUpdated?: boolean;
+  updatedReason?: string;
   changes?: { field: string; from: string; to: string }[];
 };
 

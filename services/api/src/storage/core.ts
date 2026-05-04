@@ -690,7 +690,7 @@ export async function loadActiveRunLock(env: Env, tenantId?: string): Promise<Ac
   if (!raw || typeof raw !== "object") return null;
   const lock = raw as Partial<ActiveRunLock>;
   if (!lock.runId || !lock.triggerType || !lock.startedAt || !lock.expiresAt) return null;
-  return {
+  const parsed: ActiveRunLock = {
     runId: String(lock.runId),
     triggerType: lock.triggerType === "scheduled" ? "scheduled" : "manual",
     startedAt: String(lock.startedAt),
@@ -704,6 +704,13 @@ export async function loadActiveRunLock(env: Env, tenantId?: string): Promise<Ac
     currentPage: typeof lock.currentPage === "number" && Number.isFinite(lock.currentPage) ? lock.currentPage : undefined,
     lastEvent: typeof lock.lastEvent === "string" ? lock.lastEvent : undefined,
   };
+  if (isRunLockExpired(parsed) || isRunLockStale(parsed)) {
+    // Treat expired/stale locks as gone on read so the shell cannot get stuck
+    // showing a phantom queued scan after workers have already stopped.
+    await jobStateKv(env).delete(activeRunLockKey(tenantId)).catch(() => undefined);
+    return null;
+  }
+  return parsed;
 }
 
 function isRunLockExpired(lock: ActiveRunLock): boolean {

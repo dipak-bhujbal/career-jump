@@ -119,6 +119,8 @@ export function useStartRun() {
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: runStatusKey });
       const previousStatus = qc.getQueryData<RunStatus>(runStatusKey);
+      const cachedScanContext = qc.getQueryData<ScanContextEnvelope>(scanContextKey);
+      const optimisticTotalCompanies = cachedScanContext?.enabledCompanyCount ?? previousStatus?.totalCompanies;
       // Starting a new scan should clear the previous completion snapshot
       // immediately so the progress shell cannot briefly flash the old
       // "Scan finished" banner before the new queued/progress state arrives.
@@ -132,7 +134,7 @@ export function useStartRun() {
         triggerType: "manual",
         startedAt: new Date().toISOString(),
         fetchedCompanies: 0,
-        totalCompanies: previousStatus?.totalCompanies,
+        totalCompanies: optimisticTotalCompanies,
         detail: "starting scan",
         message: "scan starting",
         percent: 0,

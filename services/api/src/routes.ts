@@ -158,13 +158,16 @@ import {
   buildAvailableJobsFromSharedInventory,
   buildInventory,
   getLatestRunNotificationJobs,
+  isPrimaryInventoryResetPending,
   loadDiscardRegistry,
   loadInventory,
   loadInventoryState,
+  loadPrimaryInventoryResetAt,
   loadInventoryWithState,
   markJobsAsSeen,
   removeInventoryJobsByKeys,
   runScan,
+  savePrimaryInventoryResetAt,
   saveInventory,
   streamAvailableJobsPage,
 } from "./services/inventory";
@@ -565,6 +568,13 @@ async function loadDerivedAvailableInventory(
   inventoryState: Awaited<ReturnType<typeof loadInventoryWithState>>["state"];
 }> {
   const { inventory: storedInventory, state: inventoryState } = await loadInventoryWithState(env, config, tenantId);
+  const resetAt = await loadPrimaryInventoryResetAt(env, tenantId);
+  if (isPrimaryInventoryResetPending(storedInventory, resetAt)) {
+    // Honor an explicit tenant reset until a later scan or rebuild writes a
+    // newer snapshot, instead of silently resurrecting jobs from shared raw
+    // scans on the very next page load.
+    return { storedInventory, effectiveInventory: storedInventory, inventoryState };
+  }
   const effectiveInventory = await buildAvailableJobsFromSharedInventory(
     env,
     config,
@@ -613,6 +623,16 @@ async function resolveDashboardInventory(
   options: { isAdmin?: boolean } = {},
 ): Promise<DashboardInventoryResolution> {
   const { inventory: storedInventory, inventoryState } = await loadStoredAvailableInventory(env, config, tenantId);
+  const resetAt = await loadPrimaryInventoryResetAt(env, tenantId);
+  if (isPrimaryInventoryResetPending(storedInventory, resetAt)) {
+    return {
+      inventory: storedInventory,
+      inventoryState,
+      source: "stored",
+      freshnessProbeSkipped: true,
+      staleReason: "tenant-inventory-reset-pending",
+    };
+  }
   const storedRunAtMs = Date.parse(storedInventory.runAt ?? "");
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
 
@@ -864,6 +884,9 @@ async function loadLatestRunMarkers(
     updatedJobKeys: new Set(Array.isArray(lastUpdatedJobKeysRaw) ? lastUpdatedJobKeysRaw.map(String) : []),
   };
 }
+
+const UPDATED_JOB_REASON =
+  "Tracked fields changed since the previous snapshot, such as title, location, URL, or geography metadata.";
 
 function isBrokenJobResponseStatus(status: number): boolean {
   return status === 404 || status === 410;
@@ -2425,6 +2448,17 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
       await saveJobNotes(env, {}, tenantContext.tenantId);
       await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, DASHBOARD_SUMMARY_KEY));
+      await savePrimaryInventoryResetAt(env, tenantContext.tenantId, emptyInventory.runAt);
+      await saveTenantConfigSnapshot({
+        tenantId: tenantContext.tenantId,
+        config,
+        overrides: await loadCompanyScanOverrides(env, tenantContext.tenantId),
+        configVersion: versionFromIso(config.updatedAt),
+        // Clearing cache resets the tenant inventory baseline immediately, so
+        // force CQRS readers to treat older ready rows as stale until the next
+        // scan or config-driven rebuild catches up.
+        inventoryVersion: versionFromIso(emptyInventory.runAt),
+      });
 
       return jsonResponse({ ok: true, cleared: "available jobs cache", retained: ["applied jobs", "saved company ATS configuration"] });
     }
@@ -2455,6 +2489,16 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, "discardedJobKeys"));
       await saveJobNotes(env, {}, tenantContext.tenantId);
       await jobStateKv(env).delete(tenantScopedKey(tenantContext.tenantId, DASHBOARD_SUMMARY_KEY));
+      await savePrimaryInventoryResetAt(env, tenantContext.tenantId, emptyInventory.runAt);
+      await saveTenantConfigSnapshot({
+        tenantId: tenantContext.tenantId,
+        config,
+        overrides: await loadCompanyScanOverrides(env, tenantContext.tenantId),
+        configVersion: versionFromIso(config.updatedAt),
+        // Full data clears intentionally invalidate tenant CQRS rows so stale
+        // visible jobs and dashboard summaries cannot outlive the reset.
+        inventoryVersion: versionFromIso(emptyInventory.runAt),
+      });
       return jsonResponse({ ok: true, cleared: "inventory and pipeline state", retained: ["saved company ATS configuration", "saved filters", "logs"] });
     }
 
@@ -2897,15 +2941,21 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (env.CQRS_JOBS_READ === "1") {
         const cqrsStartedAt = Date.now();
         const currentConfigVersion = versionFromIso(config.updatedAt);
-        const [allVisibleRows, readyRow] = await Promise.all([
+        const [allVisibleRows, readyRow, configSnapshot] = await Promise.all([
           queryAllVisibleJobRows(tenantContext.tenantId),
           queryCqrsJobsReadyRow(tenantContext.tenantId),
+          loadTenantConfigSnapshot(tenantContext.tenantId),
         ]);
         // Readiness gate: a complete build must have finished for the current
-        // configVersion. A partial backfill may produce non-empty rows but
-        // without a marker the set is not provably complete.
-        const isReady = readyRow !== null && readyRow.configVersion === currentConfigVersion;
-        if (isReady && allVisibleRows.length > 0) {
+        // configVersion and the tenant's latest inventoryVersion. That keeps
+        // clear-cache / clear-data resets from re-serving stale CQRS rows.
+        const inventoryVersionMatches = configSnapshot
+          ? readyRow?.inventoryVersion === configSnapshot.inventoryVersion
+          : true;
+        const isReady = readyRow !== null
+          && readyRow.configVersion === currentConfigVersion
+          && inventoryVersionMatches;
+        if (isReady) {
           const appliedKeySet = new Set(Object.keys(appliedJobs));
           const durationHours = parseDurationHours(url.searchParams.get("duration"));
           const locationFilter = url.searchParams.get("location")?.trim().toLowerCase() ?? "";
@@ -3002,6 +3052,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
               detectedCountry: row.usEligible ? "US" : "Unknown",
               isNew: row.isNew,
               isUpdated: row.isUpdated,
+              updatedReason: row.isUpdated ? UPDATED_JOB_REASON : undefined,
             })),
           });
         }
@@ -3011,7 +3062,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           tenantId: tenantContext.tenantId,
           hasReadyRow: readyRow !== null,
           readyConfigVersion: readyRow?.configVersion ?? null,
+          readyInventoryVersion: readyRow?.inventoryVersion ?? null,
           currentConfigVersion,
+          currentInventoryVersion: configSnapshot?.inventoryVersion ?? null,
           visibleRowCount: allVisibleRows.length,
         }));
       }
@@ -3129,6 +3182,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           detectedCountry: job.detectedCountry ?? "Unknown",
           isNew: newJobKeys.has(jobKey(job)),
           isUpdated: updatedJobKeys.has(jobKey(job)),
+          updatedReason: updatedJobKeys.has(jobKey(job)) ? UPDATED_JOB_REASON : undefined,
         })),
       });
     }
@@ -3146,14 +3200,17 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
-      const [{ effectiveInventory }, jobNotes] = await Promise.all([
+      const [{ effectiveInventory }, jobNotes, latestMarkers] = await Promise.all([
         loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
         loadJobNotes(env, tenantContext.tenantId),
+        loadLatestRunMarkers(env, tenantContext.tenantId),
       ]);
       const matchedJob = effectiveInventory.jobs.find((job) => jobKey(job) === requestedJobKey);
       if (!matchedJob) {
         return jsonResponse({ ok: false, error: "Job not found" }, 404);
       }
+      const isNew = latestMarkers.newJobKeys.has(requestedJobKey);
+      const isUpdated = latestMarkers.updatedJobKeys.has(requestedJobKey);
 
       return jsonResponse({
         ok: true,
@@ -3170,6 +3227,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           url: matchedJob.url,
           usLikely: matchedJob.isUSLikely,
           detectedCountry: matchedJob.detectedCountry ?? "Unknown",
+          isNew,
+          isUpdated,
+          updatedReason: isUpdated ? UPDATED_JOB_REASON : undefined,
         },
       });
     }
@@ -3731,8 +3791,15 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (gate) return gate;
 
       if (env.CQRS_DASHBOARD_READ === "1") {
-        const dashRow = await queryDashboardSummaryRow(tenantContext.tenantId);
-        if (dashRow !== null) {
+        const [dashRow, configSnapshot] = await Promise.all([
+          queryDashboardSummaryRow(tenantContext.tenantId),
+          loadTenantConfigSnapshot(tenantContext.tenantId),
+        ]);
+        const dashboardReady = dashRow !== null
+          && configSnapshot !== null
+          && dashRow.configVersion === configSnapshot.configVersion
+          && dashRow.inventoryVersion === configSnapshot.inventoryVersion;
+        if (dashboardReady && dashRow !== null) {
           const nowIso = new Date().toISOString();
           const appliedCount = dashRow.kpis.totalApplied;
           const totalTrackedJobs = dashRow.kpis.availableJobs + appliedCount;
@@ -3796,7 +3863,18 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
             },
           });
         }
-        // Row absent — fall through to legacy path
+        if (dashRow !== null) {
+          console.warn(JSON.stringify({
+            component: "routes.dashboard",
+            event: "cqrs_read_not_ready_fallback",
+            tenantId: tenantContext.tenantId,
+            readyConfigVersion: dashRow.configVersion,
+            readyInventoryVersion: dashRow.inventoryVersion,
+            currentConfigVersion: configSnapshot?.configVersion ?? null,
+            currentInventoryVersion: configSnapshot?.inventoryVersion ?? null,
+          }));
+        }
+        // Row absent or stale — fall through to legacy path
       }
 
       const configLoadStartedAt = Date.now();

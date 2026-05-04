@@ -251,7 +251,14 @@ function project(source: DrawerSource): DrawerMeta {
     const timelineEvents: TimelineEvt[] = [];
     if (j.postedAt) timelineEvents.push({ date: j.postedAt, label: "Posted by company" });
     if (j.isNew) timelineEvents.push({ label: "Found in latest scan" });
-    if (j.isUpdated) timelineEvents.push({ label: "Detected as updated" });
+    if (j.isUpdated) {
+      // Give the drawer a human explanation even when the compact jobs table
+      // only has the generic updated badge copy available.
+      timelineEvents.push({
+        label: "Detected as updated",
+        detail: j.updatedReason ?? "Tracked fields changed since the previous snapshot.",
+      });
+    }
     return {
       jobKey: j.jobKey, company: j.company, title: j.jobTitle, url: j.url,
       location: j.location, source: j.source, notes: j.notes ?? "",

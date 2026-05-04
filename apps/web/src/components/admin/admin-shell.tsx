@@ -135,21 +135,33 @@ export function AdminSectionNav({ currentPath }: { currentPath: string }) {
   const normalizedCurrentPath = normalizePath(currentPath);
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="space-y-2">
       {adminNavItems.map((item) => {
         const active = normalizePath(item.to) === normalizedCurrentPath;
+        const Icon = item.icon;
         return (
           <Link
             key={item.to}
             to={item.to}
             className={cn(
-              "rounded-full border px-3 py-1.5 text-xs font-medium uppercase tracking-[0.16em] transition-colors",
+              "flex items-start gap-3 rounded-xl border px-3 py-3 transition-colors",
               active
-                ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/70 text-[hsl(var(--foreground))]"
+                ? "border-[hsl(var(--ring))] bg-[hsl(var(--accent))]/60 text-[hsl(var(--foreground))]"
                 : "border-[hsl(var(--border))] text-[hsl(var(--muted-foreground))] hover:bg-[hsl(var(--accent))]/35",
             )}
           >
-            {item.label}
+            <span className={cn(
+              "mt-0.5 rounded-md p-2",
+              active ? "bg-[hsl(var(--background))]/75 text-[hsl(var(--foreground))]" : "bg-[hsl(var(--muted))]/55",
+            )}>
+              <Icon size={15} />
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-semibold">{item.label}</span>
+              <span className="mt-0.5 block text-xs leading-5 text-[hsl(var(--muted-foreground))]">
+                {item.description}
+              </span>
+            </span>
           </Link>
         );
       })}
@@ -175,31 +187,46 @@ export function AdminPageFrame({
   children: ReactNode;
 }) {
   return (
-    <div className="p-6 space-y-6">
-      <Card className="overflow-hidden border-[hsl(var(--border))] bg-[linear-gradient(135deg,hsla(var(--accent),0.22),transparent_68%)]">
-        <CardContent className="space-y-5 p-6">
-          <AdminBreadcrumb currentLabel={currentLabel} currentPath={currentPath} />
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="space-y-3">
-              {eyebrow ? (
-                <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">
-                  {eyebrow}
-                </div>
-              ) : null}
-              <div className="space-y-2">
-                <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
-                <p className="max-w-3xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
-                  {description}
-                </p>
-              </div>
+    <div className="p-6 grid gap-6 xl:grid-cols-[280px_minmax(0,1fr)]">
+      <Card className="h-fit border-[hsl(var(--border))] xl:sticky xl:top-6">
+        <CardContent className="space-y-4 p-4">
+          <div className="space-y-1">
+            <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">
+              Admin Navigation
             </div>
-            {actions ? <div className="shrink-0">{actions}</div> : null}
+            <div className="text-sm text-[hsl(var(--muted-foreground))]">
+              Use the left rail to move between registry operations, docs, analytics, and account controls.
+            </div>
           </div>
           <AdminSectionNav currentPath={currentPath} />
         </CardContent>
       </Card>
 
-      {children}
+      <div className="space-y-6 min-w-0">
+        <Card className="overflow-hidden border-[hsl(var(--border))] bg-[linear-gradient(135deg,hsla(var(--accent),0.22),transparent_68%)]">
+          <CardContent className="space-y-5 p-6">
+            <AdminBreadcrumb currentLabel={currentLabel} currentPath={currentPath} />
+            <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+              <div className="space-y-3">
+                {eyebrow ? (
+                  <div className="text-xs font-semibold uppercase tracking-[0.22em] text-[hsl(var(--muted-foreground))]">
+                    {eyebrow}
+                  </div>
+                ) : null}
+                <div className="space-y-2">
+                  <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
+                  <p className="max-w-3xl text-sm leading-6 text-[hsl(var(--muted-foreground))]">
+                    {description}
+                  </p>
+                </div>
+              </div>
+              {actions ? <div className="shrink-0">{actions}</div> : null}
+            </div>
+          </CardContent>
+        </Card>
+
+        {children}
+      </div>
     </div>
   );
 }

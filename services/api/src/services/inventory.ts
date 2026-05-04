@@ -3,6 +3,7 @@ import {
   DECISION_SUMMARY_TTL_SECONDS,
   DISCARDED_JOB_KEYS_KEY,
   INVENTORY_KEY,
+  INVENTORY_RESET_AT_KEY,
   LAST_NEW_JOB_KEYS_KEY,
   LAST_NEW_JOBS_COUNT_KEY,
   LAST_UPDATED_JOB_KEYS_KEY,
@@ -26,6 +27,7 @@ import {
   legacySeenJobKeys,
   loadAppliedJobs,
   loadBillingSubscription,
+  loadCompanyScanOverrides,
   loadJobNotes,
   loadLatestRawScan,
   listCurrentRawScans,
@@ -255,6 +257,37 @@ export async function loadInventoryState(
     lastUpdatedJobsCount: Number(lastUpdatedCountRaw ?? "0") || 0,
     lastUpdatedJobKeys: Array.isArray(lastUpdatedKeysRaw) ? lastUpdatedKeysRaw.map(String) : [],
   };
+}
+
+export async function loadPrimaryInventoryResetAt(env: Env, tenantId?: string): Promise<string | null> {
+  if (!tenantId) return null;
+  const resetAt = await jobStateKv(env).get(tenantScopedKey(tenantId, INVENTORY_RESET_AT_KEY));
+  return typeof resetAt === "string" && resetAt.trim() ? resetAt : null;
+}
+
+export async function savePrimaryInventoryResetAt(env: Env, tenantId: string, resetAt: string): Promise<void> {
+  // Tenant clears should hold the shared-inventory fallback until a newer
+  // tenant rebuild lands, otherwise cleared jobs can instantly reappear.
+  await jobStateKv(env).put(tenantScopedKey(tenantId, INVENTORY_RESET_AT_KEY), resetAt);
+}
+
+export async function clearPrimaryInventoryResetAt(env: Env, tenantId?: string): Promise<void> {
+  if (!tenantId) return;
+  await jobStateKv(env).delete(tenantScopedKey(tenantId, INVENTORY_RESET_AT_KEY));
+}
+
+export function isPrimaryInventoryResetPending(
+  inventory: InventorySnapshot,
+  resetAt: string | null,
+): boolean {
+  if (!resetAt) return false;
+  const resetAtMs = Date.parse(resetAt);
+  const inventoryRunAtMs = Date.parse(inventory.runAt ?? "");
+  if (!Number.isFinite(resetAtMs)) return false;
+  // Only hold the reset when the tenant snapshot is still the clear-time empty
+  // baseline. A later rebuild or scan should resume normal shared fallback.
+  return inventory.jobs.length === 0
+    && (!Number.isFinite(inventoryRunAtMs) || inventoryRunAtMs <= resetAtMs);
 }
 
 function encodeAvailableJobsCursor(cursor: AvailableJobsCursor): string {
@@ -583,6 +616,14 @@ export async function buildAvailableJobsFromSharedInventory(
   options: { isAdmin?: boolean } = {},
 ): Promise<InventorySnapshot> {
   const enabledCompanies = config.companies.filter((company) => company.enabled !== false);
+  // Manual pauses should stop future shared-scan refreshes for that company
+  // without deleting the tenant's already matched jobs from prior runs.
+  const companyOverrides = !options.isAdmin && tenantId
+    ? await loadCompanyScanOverrides(env, tenantId)
+    : {};
+  const activeCompanies = !options.isAdmin
+    ? enabledCompanies.filter((company) => companyOverrides[normalizeCompanyKey(company.company)]?.paused !== true)
+    : enabledCompanies;
   const previousJobsByCompany = new Map<string, JobPosting[]>();
   const discardRegistry = await loadDiscardRegistry(env, tenantId);
   for (const job of previousInventory?.jobs ?? []) {
@@ -649,7 +690,7 @@ export async function buildAvailableJobsFromSharedInventory(
       }
     }
   } else {
-    for (const company of enabledCompanies) {
+    for (const company of activeCompanies) {
       const detected = await getDetectedConfig(env, company, tenantId);
       if (!detected) continue;
 
@@ -705,6 +746,31 @@ export async function buildAvailableJobsFromSharedInventory(
   // company snapshots are loaded. This keeps manual entries visible without
   // duplicating every shared job into tenant storage.
   const enabledCompanyNames = new Set(enabledCompanies.map((company) => companyIdentity(company.company)));
+  const activeCompanyNames = new Set(activeCompanies.map((company) => companyIdentity(company.company)));
+  const preservedPausedJobs = (previousInventory?.jobs ?? []).filter((job) => (
+    enabledCompanyNames.has(companyIdentity(job.company))
+    && !activeCompanyNames.has(companyIdentity(job.company))
+    && !job.manualEntry
+    && !isDiscarded(job, discardRegistry)
+  ));
+  for (const pausedJob of preservedPausedJobs) {
+    const nextJobKey = jobKey(pausedJob);
+    if (seenJobKeys.has(nextJobKey)) continue;
+    seenJobKeys.add(nextJobKey);
+    jobs.push(pausedJob);
+    bySource[pausedJob.source] = (bySource[pausedJob.source] ?? 0) + 1;
+    byCompany[pausedJob.company] = (byCompany[pausedJob.company] ?? 0) + 1;
+    for (const keyword of pausedJob.matchedKeywords ?? []) {
+      keywordCounts[keyword] = (keywordCounts[keyword] ?? 0) + 1;
+    }
+  }
+  const previousFetchedByCompany = getFetchedByCompany(previousInventory);
+  for (const [company, fetchedCount] of Object.entries(previousFetchedByCompany)) {
+    if (enabledCompanyNames.has(companyIdentity(company)) && !activeCompanyNames.has(companyIdentity(company))) {
+      byCompanyFetched[company] = Number(fetchedCount) || 0;
+    }
+  }
+  totalFetched = Object.values(byCompanyFetched).reduce((sum, value) => sum + (Number(value) || 0), 0);
   for (const manualJob of previousInventory?.jobs ?? []) {
     if (!manualJob.manualEntry) continue;
     if (!enabledCompanyNames.has(companyIdentity(manualJob.company))) continue;
@@ -1767,6 +1833,16 @@ export async function saveInventory(
   }
   if (JSON.stringify(existingState.inventory) !== serializedInventory) {
     await jobStateKv(env).put(inventoryKey, serializedInventory);
+  }
+  if (tenantId && stateKeys.inventoryKey === INVENTORY_KEY) {
+    const resetAt = await loadPrimaryInventoryResetAt(env, tenantId);
+    const resetAtMs = Date.parse(resetAt ?? "");
+    const inventoryRunAtMs = Date.parse(storageInventory.runAt ?? "");
+    if (Number.isFinite(resetAtMs) && Number.isFinite(inventoryRunAtMs) && inventoryRunAtMs > resetAtMs) {
+      // A newer tenant inventory has landed after a clear/reset, so the hold
+      // can be removed and normal shared fallback behavior can resume.
+      await clearPrimaryInventoryResetAt(env, tenantId);
+    }
   }
   if (!options?.skipNotePrune) {
     await pruneJobNotesToInventory(env, storageInventory, tenantId);

@@ -2,6 +2,7 @@ import type { AppliedJobStatus, InterviewOutcome } from "./types";
 
 export const CONFIG_KEY = "runtime:config";
 export const INVENTORY_KEY = "runtime:latest_inventory";
+export const INVENTORY_RESET_AT_KEY = "runtime:inventory_reset_at";
 export const TREND_KEY = "runtime:trend_points";
 export const APPLIED_KEY = "runtime:applied_jobs";
 export const JOB_NOTES_KEY = "runtime:job_notes";

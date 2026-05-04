@@ -131,8 +131,13 @@ export function JobsTable({
                   )}
                   {job.isUpdated && !job.isNew && (
                     <span className="relative group/diff inline-flex">
-                      <Badge variant="warning"><RefreshCw size={10} className="mr-1" />Updated</Badge>
-                      {job.changes && job.changes.length > 0 && (
+                      <Badge
+                        variant="warning"
+                        title={job.updatedReason ?? "Tracked fields changed since the previous snapshot."}
+                      >
+                        <RefreshCw size={10} className="mr-1" />Updated
+                      </Badge>
+                      {(job.changes && job.changes.length > 0) ? (
                         <div className="absolute left-0 top-full mt-1.5 z-30 hidden group-hover/diff:block w-64 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--popover))] shadow-lg p-2.5 space-y-1.5 text-xs pointer-events-none">
                           <div className="text-[hsl(var(--muted-foreground))] font-medium mb-1">What changed</div>
                           {job.changes.map((c) => (
@@ -145,6 +150,10 @@ export function JobsTable({
                               </span>
                             </div>
                           ))}
+                        </div>
+                      ) : (
+                        <div className="absolute left-0 top-full mt-1.5 z-30 hidden group-hover/diff:block w-64 rounded-md border border-[hsl(var(--border))] bg-[hsl(var(--popover))] shadow-lg p-2.5 text-xs pointer-events-none text-[hsl(var(--muted-foreground))]">
+                          {job.updatedReason ?? "Tracked fields changed since the previous snapshot."}
                         </div>
                       )}
                     </span>
