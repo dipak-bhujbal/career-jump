@@ -762,15 +762,19 @@ export async function loadRuntimeConfig(
   tenantId?: string,
   options: { isAdmin?: boolean; updatedByUserId?: string; expandAdminCompanies?: boolean } = {},
 ): Promise<RuntimeConfig> {
-  const kv = configStoreKv(env);
   const scopedKey = tenantScopedKey(tenantId, CONFIG_KEY);
   const legacyKey = tenantScopedKey(undefined, CONFIG_KEY);
   const tableConfig = runtimeConfigFromTableRow(await loadRuntimeConfigRow(tenantId));
-  const scopedRaw = await kv.get(scopedKey, "json");
+  // Once a tenant config has been migrated into DynamoDB, keep normal reads
+  // off the legacy CONFIG_STORE path entirely. That old KV shim can rate-limit
+  // under load, which is exactly what breaks `/api/config` for both admins and
+  // end users even when the authoritative table row already exists.
+  const kv = tableConfig ? null : configStoreKv(env);
+  const scopedRaw = kv ? await kv.get(scopedKey, "json") : null;
   const legacyRaw = !tableConfig && !scopedRaw && tenantId
     // Migrate legacy single-tenant configs forward so existing users keep
     // their saved company lists when tenant scoping is enabled.
-    ? await kv.get(legacyKey, "json")
+    ? await kv?.get(legacyKey, "json")
     : null;
   const raw = tableConfig ?? scopedRaw ?? legacyRaw;
   const usedTableConfig = Boolean(tableConfig);
@@ -827,11 +831,11 @@ export async function loadRuntimeConfig(
     // table so future reads stay isolated from generic CONFIG_STORE traffic.
     await saveRuntimeConfigRow(normalizedForStorage, tenantId, options.updatedByUserId);
   } else if (serializedNormalized !== serializedRaw) {
-    await kv.put(scopedKey, serializedNormalized);
+    await configStoreKv(env).put(scopedKey, serializedNormalized);
   } else if (tenantId && usedLegacyFallback) {
     // Copy unchanged legacy configs into the tenant key on first read so later
     // scans and edits stay isolated per authenticated user/admin account.
-    await kv.put(scopedKey, serializedNormalized);
+    await configStoreKv(env).put(scopedKey, serializedNormalized);
   }
 
   return normalized;

@@ -1120,6 +1120,11 @@ Resources:
             TableName: !Ref EventsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref BillingTable
+        # finalize-run bootstraps tenant config snapshots and enqueues
+        # tenant/global CQRS rebuild messages after each completed scan, so it
+        # needs direct write access to the summaries read-model table.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
         - Statement:
             - Effect: Allow
               Action:
