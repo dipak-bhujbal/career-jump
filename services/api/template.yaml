@@ -63,6 +63,11 @@ Globals:
         AWS_RAW_SCANS_TABLE: !Ref RawScansTable
         AWS_USERS_TABLE: !Ref UsersTable
         AWS_JOBS_TABLE: !Ref JobsTable
+        AWS_SUMMARIES_TABLE: !Ref SummariesTable
+        MATERIALIZER_QUEUE_URL: !Ref MaterializerQueue
+        CQRS_REGISTRY_READ: "0"
+        CQRS_JOBS_READ: "0"
+        CQRS_DASHBOARD_READ: "0"
         AWS_JOB_ARCHIVE_BUCKET: !Ref JobArchiveBucket
         AWS_EVENTS_TABLE: !Ref EventsTable
         AWS_SUPPORT_TABLE: !Ref SupportTable
@@ -228,6 +233,7 @@ Resources:
           AttributeType: S
         - AttributeName: sk
           AttributeType: S
+        # gsi1/gsi2 — APPLIEDJOB entity family (status-index, company-index)
         - AttributeName: gsi1pk
           AttributeType: S
         - AttributeName: gsi1sk
@@ -236,12 +242,23 @@ Resources:
           AttributeType: S
         - AttributeName: gsi2sk
           AttributeType: S
+        # gsi3/gsi4 — VISIBLEJOB entity family (visible-company-index, visible-source-index)
+        # Distinct attributes from gsi1/gsi2 — entity families cannot mix in queries.
+        - AttributeName: gsi3pk
+          AttributeType: S
+        - AttributeName: gsi3sk
+          AttributeType: S
+        - AttributeName: gsi4pk
+          AttributeType: S
+        - AttributeName: gsi4sk
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
         - AttributeName: sk
           KeyType: RANGE
       GlobalSecondaryIndexes:
+        # APPLIEDJOB indexes (gsi1/gsi2)
         - IndexName: status-index
           KeySchema:
             - AttributeName: gsi1pk
@@ -258,12 +275,58 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
+        # VISIBLEJOB indexes (gsi3/gsi4) — GSI SK begins with VISIBLEJOB# so
+        # a begins_with filter prevents any future row family from leaking in.
+        - IndexName: visible-company-index
+          KeySchema:
+            - AttributeName: gsi3pk
+              KeyType: HASH
+            - AttributeName: gsi3sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+        - IndexName: visible-source-index
+          KeySchema:
+            - AttributeName: gsi4pk
+              KeyType: HASH
+            - AttributeName: gsi4sk
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       # Tenant-owned applied/action-plan records are explicitly cleared by the
       # user via Clear Data, so they must not age out underneath preserved JD
       # archives or admin support workflows.
       TimeToLiveSpecification:
         AttributeName: expiresAtEpoch
         Enabled: false
+
+  # SummariesTable — CQRS read-model snapshots for dashboard and admin/registry.
+  # Tenant-scoped rows use PK: TENANT#{tenantId}#TYPE#...
+  # Global/shared admin rows use PK: REGISTRY#STATUS, REGISTRY#ACTIONS_NEEDED,
+  # or REGISTRY#COMPANY_INDEX — never under a TENANT# key.
+  SummariesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "${AppName}-${Stage}-summaries"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+        - AttributeName: sk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+        - AttributeName: sk
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAtEpoch
+        Enabled: false
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
 
   EventsTable:
     Type: AWS::DynamoDB::Table
@@ -884,6 +947,12 @@ Resources:
               Resource:
                 - !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${UserPool}"
                 - !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${AdminUserPool}"
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
       Environment:
         Variables:
           RUN_ORCHESTRATOR_FUNCTION_NAME: !Ref RunOrchestratorFunction
@@ -926,6 +995,13 @@ Resources:
             TableName: !Ref EventsTable
         - LambdaInvokePolicy:
             FunctionName: !Ref ScanCompanyFunction
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
       Environment:
         Variables:
           SCAN_COMPANY_FUNCTION_NAME: !Ref ScanCompanyFunction
@@ -984,6 +1060,13 @@ Resources:
             TableName: !Ref EventsTable
         - LambdaInvokePolicy:
             FunctionName: !Ref FinalizeRunFunction
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
       Environment:
         Variables:
           FINALIZE_RUN_FUNCTION_NAME: !Ref FinalizeRunFunction
@@ -1029,6 +1112,13 @@ Resources:
             TableName: !Ref EventsTable
         - DynamoDBCrudPolicy:
             TableName: !Ref BillingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -1084,6 +1174,34 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  # Materializer queues are isolated from registry scan fanout so read-model
+  # rebuild retries cannot interfere with ATS scraping concurrency.
+  MaterializerDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-${Stage}-queue-materializer-dlq"
+      MessageRetentionPeriod: 1209600
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  MaterializerQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "${AppName}-${Stage}-queue-materializer"
+      VisibilityTimeout: 300
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt MaterializerDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: app
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   RegistryScanWorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1108,6 +1226,12 @@ Resources:
                 - !GetAtt WorkdayQueue.Arn
                 - !GetAtt EnterpriseQueue.Arn
                 - !GetAtt PublicApiQueue.Arn
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
       Events:
         WorkdayQueueEvent:
           Type: SQS
@@ -1198,6 +1322,52 @@ Resources:
         Loader:
           - .json=json
 
+  MaterializerWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-materializer-worker"
+      Handler: src/aws/materializer-worker.handler
+      Timeout: 300
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SummariesTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
+      Events:
+        MaterializerQueueEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt MaterializerQueue.Arn
+            BatchSize: 10
+            ScalingConfig:
+              MaximumConcurrency: 2
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
   RegistryOpsDashboardFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1215,6 +1385,103 @@ Resources:
             Name: !Sub "${AppName}-${Stage}-registry-ops-dashboard-cron"
             ScheduleExpression: "rate(15 minutes)"
             State: ENABLED
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  # Backfill handler — invoked manually to populate read models for existing
+  # tenants before the dual-build phase begins. Idempotent.
+  # Invoke: aws lambda invoke --function-name ...-materializer-backfill
+  MaterializerBackfillFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-materializer-backfill"
+      Handler: src/aws/materializer-backfill.handler
+      Timeout: 300
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummariesTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+                - sqs:SendMessageBatch
+              Resource:
+                - !GetAtt MaterializerQueue.Arn
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  # Validate handler — invoked manually after the materializer queue has
+  # drained to gate the dual-build phase. Returns pass/fail in response payload.
+  # Invoke: aws lambda invoke --function-name ...-materializer-validate
+  MaterializerValidateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-materializer-validate"
+      Handler: src/aws/materializer-validate.handler
+      Timeout: 300
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref JobsTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummariesTable
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
+  # Cleanup gate handler — invoked manually before any future deletion phase.
+  # It proves the CQRS read cutovers are enabled and complete; on any failed
+  # assertion the Lambda throws and exits non-zero.
+  # Invoke: aws lambda invoke --function-name ...-materializer-cleanup-gate
+  MaterializerCleanupGateFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-materializer-cleanup-gate"
+      Handler: src/aws/materializer-cleanup-gate.handler
+      Timeout: 300
+      MemorySize: 256
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref ConfigTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref SummariesTable
       LoggingConfig:
         LogFormat: JSON
     Metadata:

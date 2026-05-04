@@ -44,6 +44,10 @@ export function jobsTableName(): string {
   return requiredEnv("AWS_JOBS_TABLE");
 }
 
+export function summariesTableName(): string {
+  return requiredEnv("AWS_SUMMARIES_TABLE");
+}
+
 export function eventsTableName(): string {
   return requiredEnv("AWS_EVENTS_TABLE");
 }

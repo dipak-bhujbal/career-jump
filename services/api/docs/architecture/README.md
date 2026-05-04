@@ -16,6 +16,8 @@ It is written to be clear enough for a new architect or engineer to understand t
   Concrete AWS service-symbol diagrams and resource maps for the deployed POC.
 - [Observability and Logging](./observability-and-logging.md)
   Full observability layer: CloudWatch Log Groups, structured log schemas, metric filters, alarms, two-tier logging model, and implementation checklist for @codex.
+- [CQRS Cleanup Gate](./cqrs-cleanup-gate.md)
+  Executable deletion gate for the CQRS migration, plus the current trace of legacy paths that must survive until future flag promotion.
 - [Release Runbook](../release-runbook.md)
   Step-by-step release and deploy process for developers and agents.
 

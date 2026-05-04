@@ -11,7 +11,7 @@ import {
 import { jobStateKv } from "../lib/bindings";
 import { logAppEvent } from "../lib/logger";
 import { tenantScopedKey } from "../lib/tenant";
-import { enrichJob, isInterestingTitle, jobKey, jobStableFingerprint, shouldKeepJobForUSInventory } from "../lib/utils";
+import { enrichJob, isInterestingTitle, jobKey, jobStableFingerprint, nowISO, shouldKeepJobForUSInventory } from "../lib/utils";
 import {
   ActiveRunOwnershipError,
   ensureActiveRunOwnership,
@@ -51,6 +51,12 @@ import {
   summarizeCompaniesByAtsFromInventory,
 } from "./dashboard";
 import { normalizeCompanyKey } from "../storage/tenant-keys";
+import {
+  enqueueDualBuildMessages,
+  saveTenantConfigSnapshot,
+  tenantScanCompleteMessages,
+  versionFromIso,
+} from "../materializer";
 import type {
   DetectedConfig,
   Env,
@@ -2170,6 +2176,48 @@ export async function runScan(
   });
   const updatedJobs = await findUpdatedJobs(env, previousInventory, storageInventory, runId, tenantId, { recordLog: false, diff });
   await saveInventory(env, inventory, tenantId, previousState);
+  const configVersion = versionFromIso(config.updatedAt);
+  const inventoryVersion = versionFromIso(storageInventory.runAt);
+  void (async () => {
+    const effectiveTenantId = tenantId ?? "default";
+    // Scheduled/manual scans should not replace the tenant-authored snapshot;
+    // they only bootstrap it for preexisting tenants that never saved config.
+    await saveTenantConfigSnapshot({
+      tenantId: effectiveTenantId,
+      config,
+      configVersion,
+      inventoryVersion,
+      ifNotExists: true,
+    });
+    await enqueueDualBuildMessages(tenantScanCompleteMessages({
+      tenantId: effectiveTenantId,
+      triggeredAt: nowISO(),
+      configVersion,
+      inventoryVersion,
+      jobIdPrefix: `${runId ?? "scan"}-dual-build`,
+    }));
+    console.log(JSON.stringify({
+      component: "materializer.dual-build",
+      event: "scan_complete_enqueued",
+      tenantId,
+      runId,
+      configVersion,
+      inventoryVersion,
+      route: "services/inventory.runScan",
+    }));
+  })().catch((error) => {
+    void recordAppLog(env, {
+      level: "warn",
+      event: "materializer_scan_complete_enqueue_failed",
+      message: "Materializer dual-build enqueue failed after scan completion",
+      tenantId,
+      runId,
+      route: "services/inventory.runScan",
+      details: {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    }).catch(() => undefined);
+  });
 
   await recordAppLog(env, {
     level: "info",

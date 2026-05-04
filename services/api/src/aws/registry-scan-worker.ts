@@ -13,6 +13,11 @@ import {
 } from "../storage/registry-scan-state";
 import type { RegistryEntry } from "../ats/registry";
 import type { RegistryScanMessage } from "./registry-scheduler";
+import {
+  enqueueDualBuildMessages,
+  registryScanCompleteMessages,
+  versionFromIso,
+} from "../materializer";
 
 type RegistryRow = RegistryEntry & { pk: string; sk: string };
 
@@ -62,6 +67,22 @@ async function processMessage(msg: RegistryScanMessage): Promise<void> {
       scanPool: msg.scanPool,
       priority: msg.priority,
     });
+    const triggeredAt = new Date().toISOString();
+    // Even misconfigured and failed scans should refresh the registry read
+    // models so actions-needed/status stay aligned with current scan state.
+    void enqueueDualBuildMessages(registryScanCompleteMessages({
+      triggeredAt,
+      inventoryVersion: versionFromIso(triggeredAt),
+      jobIdPrefix: `registry-scan-${msg.companySlug}-${Date.now()}`,
+      companySlug: msg.companySlug,
+    })).catch((error) => {
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "registry_scan_complete_enqueue_failed",
+        companySlug: msg.companySlug,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
     return;
   }
 
@@ -75,6 +96,20 @@ async function processMessage(msg: RegistryScanMessage): Promise<void> {
       scanPool: msg.scanPool,
       priority: msg.priority,
     });
+    const triggeredAt = new Date().toISOString();
+    void enqueueDualBuildMessages(registryScanCompleteMessages({
+      triggeredAt,
+      inventoryVersion: versionFromIso(triggeredAt),
+      jobIdPrefix: `registry-scan-${msg.companySlug}-${Date.now()}`,
+      companySlug: msg.companySlug,
+    })).catch((error) => {
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "registry_scan_complete_enqueue_failed",
+        companySlug: msg.companySlug,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
     return;
   }
 
@@ -87,6 +122,26 @@ async function processMessage(msg: RegistryScanMessage): Promise<void> {
       scanPool: msg.scanPool,
       priority: msg.priority,
     });
+    const triggeredAt = new Date().toISOString();
+    void enqueueDualBuildMessages(registryScanCompleteMessages({
+      triggeredAt,
+      inventoryVersion: versionFromIso(triggeredAt),
+      jobIdPrefix: `registry-scan-${msg.companySlug}-${Date.now()}`,
+      companySlug: msg.companySlug,
+    })).then(() => {
+      console.log(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "registry_scan_complete_enqueued",
+        companySlug: msg.companySlug,
+      }));
+    }).catch((error) => {
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "registry_scan_complete_enqueue_failed",
+        companySlug: msg.companySlug,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
   } catch (error) {
     const failureReason = error instanceof Error ? error.message : String(error);
     await markRegistryCompanyScanFailure(msg.company, {
@@ -94,6 +149,20 @@ async function processMessage(msg: RegistryScanMessage): Promise<void> {
       failureReason,
       scanPool: msg.scanPool,
       priority: msg.priority,
+    });
+    const triggeredAt = new Date().toISOString();
+    void enqueueDualBuildMessages(registryScanCompleteMessages({
+      triggeredAt,
+      inventoryVersion: versionFromIso(triggeredAt),
+      jobIdPrefix: `registry-scan-${msg.companySlug}-${Date.now()}`,
+      companySlug: msg.companySlug,
+    })).catch((enqueueError) => {
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "registry_scan_complete_enqueue_failed",
+        companySlug: msg.companySlug,
+        error: enqueueError instanceof Error ? enqueueError.message : String(enqueueError),
+      }));
     });
     throw error;
   }

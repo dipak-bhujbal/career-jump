@@ -2,17 +2,31 @@
 
 ## Active Runtime Storage Model
 
-Career Jump AWS POC stores runtime data in a single DynamoDB table through a KV-compatible adapter.
+Career Jump AWS POC now spans both legacy KV-backed state and newer CQRS
+read-model tables.
+
+- Legacy KV-backed state is still active for dashboard reads, jobs details,
+  applied-job workflows, and any flag-off fallback path.
+- CQRS read models are active for staged cutovers behind `CQRS_REGISTRY_READ`
+  and `CQRS_JOBS_READ`.
+- Legacy code deletion is intentionally deferred until the
+  `materializer-cleanup-gate` Lambda passes.
 
 ```mermaid
 flowchart TB
-    subgraph DynamoDB["Amazon DynamoDB: career-jump-aws-poc-state"]
-        config["KV#CONFIG_STORE<br/>runtime config + saved filters"]
-        state["KV#JOB_STATE<br/>available inventory + applied jobs + logs"]
+    subgraph Legacy["Legacy runtime state"]
+        config["ConfigTable + KV#CONFIG_STORE<br/>runtime config + saved filters"]
+        state["StateTable + KV#JOB_STATE<br/>inventory, applied jobs, logs"]
         cache["KV#ATS_CACHE<br/>ATS discovery cache"]
         runmeta["RUN#runId / META<br/>expected, completed, failed companies"]
         fragments["aws:run:runId:company:name<br/>company result fragments"]
         locks["runtime:active_run_lock<br/>single active run guard"]
+    end
+    subgraph CQRS["CQRS read models"]
+        jobs["JobsTable<br/>VISIBLEJOB# rows"]
+        summaries["SummariesTable<br/>registry status, actions-needed,<br/>config snapshots, ready markers"]
+        raw["RawScansTable<br/>shared tenant-visible job source"]
+        registry["RegistryTable<br/>catalog + scan state"]
     end
 ```
 
@@ -28,6 +42,12 @@ flowchart TB
 | `KV#ATS_CACHE` | detected ATS mappings and convenience cache | cache TTL / explicit reset |
 | `RUN#<runId>` | AWS fanout run counters | operational lifetime |
 | `aws:run:<runId>:company:<name>` | per-company scan fragments | short TTL |
+| `JobsTable VISIBLEJOB#` | CQRS available-jobs read model | durable until rebuilt |
+| `SummariesTable REGISTRY#*` | CQRS admin registry projections | durable until rebuilt |
+| `SummariesTable TENANT#...#TYPE#CQRS_READY` | jobs cutover ready marker | durable until rebuilt |
+| `SummariesTable TENANT#...#TYPE#CONFIG_SNAPSHOT` | tenant visibility snapshot for materializer | durable until changed |
+| `RawScansTable` | shared scan source for CQRS visible jobs validation/builds | durable until replaced |
+| `RegistryTable` | registry catalog plus company scan state | durable until changed |
 
 ## Active Run Lock
 
@@ -75,7 +95,9 @@ This keeps the operator view efficient while preserving detailed troubleshooting
 
 ## Source Of Truth
 
-- Available jobs: latest inventory snapshot in DynamoDB filtered by applied-job state; it contains jobs that pass current filters and are still available.
+- Available jobs:
+  - when `CQRS_JOBS_READ !== "1"` or the jobs ready gate fails: latest KV-backed inventory snapshot filtered by applied-job state
+  - when `CQRS_JOBS_READ === "1"` and the ready marker matches current config: `JobsTable` `VISIBLEJOB#` rows
 - Applied jobs: applied-job state in DynamoDB; applying a job moves it out of the Available Jobs UI while preserving notes on the applied record.
 - Action Plan: derived from applied-job interview rounds; no separate duplicate action-plan store is required.
 - Job notes: stored as job attributes. Available-job notes live in `runtime:job_notes`; applying a role copies the note into applied-job state and clears the temporary available note.
@@ -83,6 +105,16 @@ This keeps the operator view efficient while preserving detailed troubleshooting
 - Scan pause state: KV-backed company overrides keep configuration intact while excluding paused companies from scan planning.
 - Run progress: run metadata plus raw application logs.
 - Browser auth: Cognito ID token, validated by the API Lambda.
+- Admin registry views:
+  - when `CQRS_REGISTRY_READ !== "1"` or the coverage gate fails: legacy registry/raw-scan join path
+  - when `CQRS_REGISTRY_READ === "1"` and coverage is complete: `SummariesTable` registry projections
+
+## Cleanup Gate
+
+Legacy deletion is blocked until the `materializer-cleanup-gate` Lambda passes.
+
+See [CQRS Cleanup Gate](./cqrs-cleanup-gate.md) for the executable assertions
+and the current list of legacy paths that must survive Phase 6.
 
 ## Recycling Rules
 

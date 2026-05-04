@@ -20,5 +20,8 @@ export function makeAwsEnv(): Env {
     APPS_SCRIPT_WEBHOOK_URL: process.env.APPS_SCRIPT_WEBHOOK_URL || undefined,
     APPS_SCRIPT_SHARED_SECRET: process.env.APPS_SCRIPT_SHARED_SECRET || undefined,
     SES_FROM_EMAIL: process.env.SES_FROM_EMAIL || undefined,
+    CQRS_REGISTRY_READ: process.env.CQRS_REGISTRY_READ || undefined,
+    CQRS_JOBS_READ: process.env.CQRS_JOBS_READ || undefined,
+    CQRS_DASHBOARD_READ: process.env.CQRS_DASHBOARD_READ || undefined,
   };
 }

@@ -15,7 +15,17 @@
 | **AWS Lambda — Orchestrator** | `RunOrchestratorFunction` | Acquires active run lock. Writes run metadata. Invokes one scanner Lambda per enabled company. Timeout: 300s. |
 | **AWS Lambda — Scanner** | `ScanCompanyFunction` | Fetches one company from its ATS. Filters by title and geography. Writes one company result fragment. Timeout: 180s · 256 MB · ARM64. |
 | **AWS Lambda — Finalizer** | `FinalizeRunFunction` | Merges company fragments. Applies discard list. Saves inventory snapshot. Sends email notification. Releases run lock. |
+| **AWS Lambda — Materializer Worker** | `MaterializerWorkerFunction` | Consumes materializer SQS messages and writes CQRS read-model rows. Runs post-build validation without changing delivery semantics. |
+| **AWS Lambda — Materializer Backfill** | `MaterializerBackfillFunction` | Manually enqueues a full read-model rebuild across tenant and global entity types. |
+| **AWS Lambda — Materializer Validate** | `MaterializerValidateFunction` | Manually validates CQRS visible-jobs and registry-status projections after queue drain. |
+| **AWS Lambda — Materializer Cleanup Gate** | `MaterializerCleanupGateFunction` | Manual pre-deletion gate. Fails non-zero unless both CQRS cutover flags are on and the read models prove complete. |
 | **Amazon DynamoDB** | `StateTable` | On-demand billing. KV-compatible adapter. Runtime config, inventory, applied jobs, discard keys, run locks, app logs (TTL 6h), decision summaries. |
+| **Amazon DynamoDB** | `ConfigTable` | Dedicated runtime config storage used by the API and cleanup-gate assertions. |
+| **Amazon DynamoDB** | `RawScansTable` | Shared scan source consumed by materializer builders and validators. |
+| **Amazon DynamoDB** | `RegistryTable` | Registry catalog plus per-company scan state. |
+| **Amazon DynamoDB** | `JobsTable` | CQRS jobs read model (`VISIBLEJOB#` rows). |
+| **Amazon DynamoDB** | `SummariesTable` | CQRS registry projections, tenant config snapshots, and jobs ready markers. |
+| **Amazon SQS** | `MaterializerQueue`, `MaterializerDeadLetterQueue` | Durable queue for CQRS build work and DLQ retention for failed materializer messages. |
 | **Amazon EventBridge Scheduler** | `WeekdayEtScan` | `cron(0 6,9,12,15,18,21 ? * MON-FRI *)` · `America/New_York`. Weekday scans 6am–9pm ET every 3 hours. State: ENABLED. |
 | **Amazon CloudWatch Logs** | 4 log groups | One-day retention. Metric filters and alarms on all 4 Lambda functions. SNS email on Lambda errors. |
 | **AWS Budgets** | `MonthlyBudget` | Personal account cost guardrail. Email alert on breach. |
@@ -92,3 +102,16 @@ The POC intentionally avoids always-on or higher-floor services:
 | OpenSearch / Step Functions | DynamoDB KV is sufficient |
 
 Expected cost shape: Lambda requests, DynamoDB on-demand, S3 storage, CloudFront CDN requests, Cognito hosted login, one-day CloudWatch retention, AWS Budget.
+
+## CQRS Cleanup Boundary
+
+The CQRS migration ships with flag-controlled read cutovers and an explicit
+cleanup gate:
+
+- `CQRS_REGISTRY_READ`
+- `CQRS_JOBS_READ`
+- `MaterializerCleanupGateFunction`
+
+Code deletion is a later phase. Operators must first enable the relevant flag,
+allow the read model to become complete, and run the cleanup-gate Lambda to a
+clean pass before any legacy fallback path is removed.

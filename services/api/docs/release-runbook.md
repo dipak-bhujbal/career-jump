@@ -95,6 +95,26 @@ The deploy takes 3–8 minutes. Watch for SAM changeset output and S3 sync confi
 - Check `/docs` Swagger page loads
 - If infrastructure changed: run a manual scan and verify it completes
 
+## CQRS Cutover And Cleanup Gate
+
+Read cutovers and legacy-code deletion are separate operations.
+
+Before enabling CQRS reads:
+
+1. Invoke `materializer-backfill`
+2. Wait for the materializer queue to drain
+3. Invoke `materializer-validate`
+4. Enable the relevant read flag (`CQRS_REGISTRY_READ` and/or `CQRS_JOBS_READ`)
+
+Before any future deletion of legacy fallback code:
+
+1. Confirm the relevant read flag is already set to `"1"`
+2. Invoke `materializer-cleanup-gate`
+3. Require a clean pass; any thrown assertion blocks deletion
+
+Deletion is not justified by a successful deploy alone. The cleanup gate must
+pass against the live runtime state.
+
 ## Emergency Rollback
 
 To revert to the previous tag:

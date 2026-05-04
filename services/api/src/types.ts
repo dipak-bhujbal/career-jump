@@ -16,6 +16,9 @@ export interface Env {
   APPS_SCRIPT_WEBHOOK_URL?: string;
   APPS_SCRIPT_SHARED_SECRET?: string;
   SES_FROM_EMAIL?: string;
+  CQRS_REGISTRY_READ?: string;
+  CQRS_JOBS_READ?: string;
+  CQRS_DASHBOARD_READ?: string;
 }
 
 export type AuthScope = "user" | "admin";

@@ -127,6 +127,21 @@ import {
   loadCachedDashboardPayload,
   saveCachedDashboardPayload,
 } from "./services/dashboard";
+import {
+  enqueueDualBuildMessages,
+  saveTenantConfigSnapshot,
+  tenantConfigChangeMessages,
+  tenantScanCompleteMessages,
+  versionFromIso,
+} from "./materializer";
+import {
+  categorizeFromStatusRow,
+  queryActionsNeededRows,
+  queryAllVisibleJobRows,
+  queryCqrsJobsReadyRow,
+  queryDashboardSummaryRow,
+  queryRegistryStatusRows,
+} from "./materializer/readers";
 import { createCheckoutSession, handleStripeWebhook } from "./services/billing";
 import {
   fetchJobsForDetectedConfig,
@@ -157,6 +172,7 @@ import type {
   ActionPlanRow,
   AppliedJobRecord,
   AppliedJobStatus,
+  CompanyScanOverride,
   Env,
   InterviewOutcome,
   InterviewRoundDesignation,
@@ -367,6 +383,98 @@ function largeScanConfirmationError(enabledCompanyCount: number, isAdmin: boolea
     enabledCompanyCount,
     threshold: LARGE_SCAN_CONFIRMATION_THRESHOLD,
   };
+}
+
+function queueMaterializerConfigChange(input: {
+  tenantId: string;
+  config: RuntimeConfig;
+  overrides?: Record<string, CompanyScanOverride>;
+  jobIdPrefix: string;
+}): void {
+  const triggeredAt = nowISO();
+  const configVersion = versionFromIso(input.config.updatedAt);
+  const inventoryVersion = configVersion;
+
+  void (async () => {
+    // Config-change paths own the current tenant snapshot because they see the
+    // exact saved config plus override state the user just requested.
+    await saveTenantConfigSnapshot({
+      tenantId: input.tenantId,
+      config: input.config,
+      overrides: input.overrides,
+      configVersion,
+      inventoryVersion,
+    });
+    await enqueueDualBuildMessages(tenantConfigChangeMessages({
+      tenantId: input.tenantId,
+      triggeredAt,
+      configVersion,
+      inventoryVersion,
+      jobIdPrefix: input.jobIdPrefix,
+    }));
+    console.log(JSON.stringify({
+      component: "materializer.dual-build",
+      event: "config_change_enqueued",
+      tenantId: input.tenantId,
+      jobIdPrefix: input.jobIdPrefix,
+      configVersion,
+      inventoryVersion,
+    }));
+  })().catch((error) => {
+    console.warn(JSON.stringify({
+      component: "materializer.dual-build",
+      event: "config_change_enqueue_failed",
+      tenantId: input.tenantId,
+      jobIdPrefix: input.jobIdPrefix,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  });
+}
+
+function queueMaterializerScanComplete(input: {
+  tenantId: string;
+  config: RuntimeConfig;
+  inventoryRunAt: string;
+  jobIdPrefix: string;
+}): void {
+  const triggeredAt = nowISO();
+  const configVersion = versionFromIso(input.config.updatedAt);
+  const inventoryVersion = versionFromIso(input.inventoryRunAt);
+
+  void (async () => {
+    // Scan completion only seeds the snapshot for tenants that have not saved
+    // config yet, so a scheduled run cannot overwrite paused-company choices.
+    await saveTenantConfigSnapshot({
+      tenantId: input.tenantId,
+      config: input.config,
+      configVersion,
+      inventoryVersion,
+      ifNotExists: true,
+    });
+    await enqueueDualBuildMessages(tenantScanCompleteMessages({
+      tenantId: input.tenantId,
+      triggeredAt,
+      configVersion,
+      inventoryVersion,
+      jobIdPrefix: input.jobIdPrefix,
+    }));
+    console.log(JSON.stringify({
+      component: "materializer.dual-build",
+      event: "scan_complete_enqueued",
+      tenantId: input.tenantId,
+      jobIdPrefix: input.jobIdPrefix,
+      configVersion,
+      inventoryVersion,
+    }));
+  })().catch((error) => {
+    console.warn(JSON.stringify({
+      component: "materializer.dual-build",
+      event: "scan_complete_enqueue_failed",
+      tenantId: input.tenantId,
+      jobIdPrefix: input.jobIdPrefix,
+      error: error instanceof Error ? error.message : String(error),
+    }));
+  });
 }
 
 function validateSupportTextFields(subject: string, body: string): string | null {
@@ -1153,6 +1261,51 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
 
+      if (env.CQRS_REGISTRY_READ === "1") {
+        const [rows, registryEntries] = await Promise.all([
+          queryRegistryStatusRows(),
+          loadRegistryCache().then(() => listAll()),
+        ]);
+        // Readiness gate: every known registry company must have a status row.
+        // A partial backfill produces non-empty rows but an incomplete set.
+        if (rows.length > 0 && rows.length >= registryEntries.length) {
+          let currentJobs = 0;
+          let lastScannedAt: string | null = null;
+          for (const row of rows) {
+            currentJobs += row.jobCount;
+            if (row.lastScannedAt && (!lastScannedAt || row.lastScannedAt.localeCompare(lastScannedAt) > 0)) {
+              lastScannedAt = row.lastScannedAt;
+            }
+          }
+          const currentCompanies = rows.filter((r) => r.lastScannedAt !== null).length;
+          return jsonResponse({
+            ok: true,
+            totals: {
+              totalCompanies: rows.length,
+              currentCompanies,
+              currentJobs,
+              lastScannedAt,
+            },
+            rows: rows.map((row) => ({
+              registryId: row.companySlug,
+              company: row.company,
+              ats: row.ats,
+              scanPool: row.scheduleTier,
+              lastScanStatus: row.lastScanStatus,
+              totalJobs: row.jobCount,
+              lastScannedAt: row.lastScannedAt,
+              nextScanAt: row.nextScheduledAt,
+            })),
+          });
+        }
+        console.warn(JSON.stringify({
+          component: "routes.registry-status",
+          event: "cqrs_read_not_ready_fallback",
+          cqrsRows: rows.length,
+          expectedRows: registryEntries.length,
+        }));
+      }
+
       const [registryEntries, currentRows, scanStateRows] = await Promise.all([
         loadRegistryCache().then(() => listAll()),
         listCurrentRawScanSummaries(),
@@ -1277,6 +1430,55 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const tenantContext = await getTenantContext();
       const gate = requireAdminContext(tenantContext);
       if (gate) return gate;
+
+      if (env.CQRS_REGISTRY_READ === "1") {
+        const [actionsRows, statusRows, registryEntries] = await Promise.all([
+          queryActionsNeededRows(),
+          queryRegistryStatusRows(),
+          loadRegistryCache().then(() => listAll()),
+        ]);
+        // Readiness gate: status rows must cover all known registry companies.
+        // actions-needed rows can legitimately be empty (no failures) but we
+        // cannot trust the join if the status set is partial.
+        if (statusRows.length >= registryEntries.length) {
+          const statusBySlug = new Map(statusRows.map((r) => [r.companySlug, r]));
+          const now = nowISO();
+          const rows = actionsRows.flatMap((actRow) => {
+            const status = statusBySlug.get(actRow.companySlug);
+            if (!status) return [];
+            return [{
+              company: actRow.company,
+              ats: status.ats,
+              scanPool: status.scheduleTier,
+              lastScanStatus: status.lastScanStatus,
+              totalJobs: status.jobCount,
+              lastScannedAt: status.lastScannedAt,
+              nextScanAt: status.nextScheduledAt,
+              lastFailureAt: status.lastFailureAt,
+              failureCount: status.failureCount,
+              failureCategory: categorizeFromStatusRow(status, now),
+              failureReason: status.failureReason,
+            }];
+          });
+          return jsonResponse({
+            ok: true,
+            totals: {
+              totalFailures: rows.length,
+              pausedCompanies: rows.filter((r) => r.nextScanAt === null).length,
+              overdueCompanies: rows.filter(
+                (r) => r.lastScannedAt === null && r.nextScanAt && r.nextScanAt.localeCompare(now) <= 0
+              ).length,
+            },
+            rows,
+          });
+        }
+        console.warn(JSON.stringify({
+          component: "routes.actions-needed",
+          event: "cqrs_read_not_ready_fallback",
+          statusRows: statusRows.length,
+          expectedRows: registryEntries.length,
+        }));
+      }
 
       const [registryEntries, currentRows, scanStateRows] = await Promise.all([
         loadRegistryCache().then(() => listAll()),
@@ -1967,6 +2169,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
       });
+      const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
+      queueMaterializerConfigChange({
+        tenantId: tenantContext.tenantId,
+        config: savedConfig,
+        overrides: currentOverrides,
+        jobIdPrefix: `config-save-${tenantContext.tenantId}-${Date.now()}`,
+      });
       return jsonResponse({ ok: true, config: savedConfig });
     }
 
@@ -2080,6 +2289,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       // Best-effort — update registry scan pool based on new active tracker count.
       // Don't await; a registry write failure must never block a user toggle.
       updateActiveTrackers(companyName, paused ? -1 : 1).catch(() => undefined);
+      queueMaterializerConfigChange({
+        tenantId: tenantContext.tenantId,
+        config,
+        overrides: companyScanOverrides,
+        jobIdPrefix: `company-toggle-${tenantContext.tenantId}-${Date.now()}`,
+      });
 
       return jsonResponse({ ok: true, company: companyName, paused, enabled: !paused, override, companyScanOverrides });
     }
@@ -2119,6 +2334,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         paused: body.paused,
         updatedByUserId: tenantContext.userId,
       });
+      queueMaterializerConfigChange({
+        tenantId: tenantContext.tenantId,
+        config,
+        overrides: companyScanOverrides,
+        jobIdPrefix: `toggle-all-${tenantContext.tenantId}-${Date.now()}`,
+      });
 
       return jsonResponse({
         ok: true,
@@ -2143,6 +2364,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOBS_COUNT_KEY), "0");
       await jobStateKv(env).put(tenantScopedKey(tenantContext.tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify([]));
       await saveInventory(env, inventory, tenantContext.tenantId);
+      queueMaterializerScanComplete({
+        tenantId: tenantContext.tenantId,
+        config,
+        inventoryRunAt: inventory.runAt,
+        jobIdPrefix: `config-apply-${tenantContext.tenantId}-${Date.now()}`,
+      });
       return jsonResponse({ ok: true, appliedAt: inventory.runAt, totalJobsMatched: inventory.stats.totalJobsMatched });
     }
 
@@ -2620,6 +2847,129 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         const value = Date.parse(raw);
         return Number.isFinite(value) ? value + 86_399_999 : null;
       })();
+
+      if (env.CQRS_JOBS_READ === "1") {
+        const cqrsStartedAt = Date.now();
+        const currentConfigVersion = versionFromIso(config.updatedAt);
+        const [allVisibleRows, readyRow] = await Promise.all([
+          queryAllVisibleJobRows(tenantContext.tenantId),
+          queryCqrsJobsReadyRow(tenantContext.tenantId),
+        ]);
+        // Readiness gate: a complete build must have finished for the current
+        // configVersion. A partial backfill may produce non-empty rows but
+        // without a marker the set is not provably complete.
+        const isReady = readyRow !== null && readyRow.configVersion === currentConfigVersion;
+        if (isReady && allVisibleRows.length > 0) {
+          const appliedKeySet = new Set(Object.keys(appliedJobs));
+          const durationHours = parseDurationHours(url.searchParams.get("duration"));
+          const locationFilter = url.searchParams.get("location")?.trim().toLowerCase() ?? "";
+          const keywordFilter = url.searchParams.get("keyword")?.trim().toLowerCase() ?? "";
+          const sourceFilter = url.searchParams.get("source")?.trim().toLowerCase() ?? "";
+          const usOnlyFilter = url.searchParams.get("usOnly") === "true";
+          const nowMs = Date.now();
+
+          // Step 1: Exclude applied jobs
+          const afterApplied = allVisibleRows.filter((r) => !appliedKeySet.has(r.jobKey));
+          // Step 2: Apply job cap (mirrors old path's storedAvailableJobs → visibleStoredJobs)
+          const cappedRows = jobCap !== null ? afterApplied.slice(0, jobCap) : afterApplied;
+
+          // Step 3: Apply query filters (companyFilters, location, keyword, source, usOnly, dates, duration)
+          const filtered = cappedRows.filter((r) => {
+            if (companyFilters.length > 0 && !companyFilters.some((c) => r.companyLower === c.toLowerCase())) return false;
+            if (companySearch && !r.companyLower.includes(companySearch)) return false;
+            if (locationFilter && !r.locationLower.includes(locationFilter)) return false;
+            if (keywordFilter && !r.jobTitleLower.includes(keywordFilter)) return false;
+            if (sourceFilter && r.sourceLower !== sourceFilter) return false;
+            if (usOnlyFilter && !r.usEligible) return false;
+            if (newOnly && !r.isNew) return false;
+            if (updatedOnly && !r.isUpdated) return false;
+            if (postedFromMs !== null && r.postedAtEpoch < postedFromMs) return false;
+            if (postedToMs !== null && r.postedAtEpoch > postedToMs) return false;
+            if (durationHours !== null && nowMs - r.postedAtEpoch > durationHours * 3_600_000) return false;
+            return true;
+          });
+
+          // Step 4: Sort (by ET day desc, then isNew > isUpdated > other, then epoch desc, then title asc)
+          const sorted = [...filtered].sort((a, b) => {
+            const aDay = formatETDayKey(a.postedAt);
+            const bDay = formatETDayKey(b.postedAt);
+            if (aDay !== bDay) return bDay.localeCompare(aDay);
+            const aPri = a.isNew ? 0 : a.isUpdated ? 1 : 2;
+            const bPri = b.isNew ? 0 : b.isUpdated ? 1 : 2;
+            if (aPri !== bPri) return aPri - bPri;
+            if (a.postedAtEpoch !== b.postedAtEpoch) return b.postedAtEpoch - a.postedAtEpoch;
+            return a.jobTitle.localeCompare(b.jobTitle);
+          });
+
+          // Step 5: Cursor-based pagination (in-memory offset, base64-encoded)
+          let offset = 0;
+          const rawCursor = url.searchParams.get("cursor");
+          if (rawCursor) {
+            try { offset = Math.max(0, parseInt(atob(rawCursor), 10) || 0); } catch { offset = 0; }
+          }
+          const page = sorted.slice(offset, offset + limit);
+          const nextOffset = offset + page.length;
+          const hasMore = nextOffset < sorted.length && !fetchAll;
+          const nextCursor = hasMore ? btoa(String(nextOffset)) : null;
+
+          // Step 6: Compute totals from cappedRows (mirrors old path)
+          const totalNewAvailable = cappedRows.filter((r) => r.isNew).length;
+          const totalUpdatedAvailable = cappedRows.filter((r) => r.isUpdated).length;
+          const companyOptions = uniqueSortedCompanies(cappedRows.map((r) => r.company));
+
+          console.info("[jobs.list.cqrs]", {
+            tenantId: tenantContext.tenantId,
+            totalRows: allVisibleRows.length,
+            filtered: sorted.length,
+            returned: page.length,
+            durationMs: Date.now() - cqrsStartedAt,
+          });
+
+          return jsonResponse({
+            ok: true,
+            runAt: inventoryState.inventory?.runAt ?? nowISO(),
+            total: sorted.length,
+            pagination: {
+              limit,
+              nextCursor: fetchAll ? null : nextCursor,
+              hasMore: fetchAll ? false : hasMore,
+            },
+            totals: {
+              availableJobs: cappedRows.length,
+              totalAvailableJobs: afterApplied.length,
+              newJobs: totalNewAvailable,
+              updatedJobs: totalUpdatedAvailable,
+              jobsCapped: jobCap !== null && afterApplied.length > jobCap,
+              jobCapLimit: jobCap,
+            },
+            companyOptions,
+            jobs: page.map((row) => ({
+              jobKey: row.jobKey,
+              company: row.company,
+              source: row.source,
+              jobTitle: row.jobTitle,
+              postedAt: formatET(row.postedAt),
+              postedAtDate: formatDateOnly(row.postedAt),
+              location: row.location,
+              url: row.url,
+              usLikely: row.usEligible,
+              detectedCountry: row.usEligible ? "US" : "Unknown",
+              isNew: row.isNew,
+              isUpdated: row.isUpdated,
+            })),
+          });
+        }
+        console.warn(JSON.stringify({
+          component: "routes.jobs",
+          event: "cqrs_read_not_ready_fallback",
+          tenantId: tenantContext.tenantId,
+          hasReadyRow: readyRow !== null,
+          readyConfigVersion: readyRow?.configVersion ?? null,
+          currentConfigVersion,
+          visibleRowCount: allVisibleRows.length,
+        }));
+      }
+
       const streamedPage = await streamAvailableJobsPage(
         env,
         config,
@@ -3297,6 +3647,76 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+
+      if (env.CQRS_DASHBOARD_READ === "1") {
+        const dashRow = await queryDashboardSummaryRow(tenantContext.tenantId);
+        if (dashRow !== null) {
+          const nowIso = new Date().toISOString();
+          const appliedCount = dashRow.kpis.totalApplied;
+          const totalTrackedJobs = dashRow.kpis.availableJobs + appliedCount;
+          const applicationRatio = totalTrackedJobs > 0
+            ? Math.round((appliedCount / totalTrackedJobs) * 1000) / 1000
+            : 0;
+          const interviewRatio = appliedCount > 0
+            ? Math.round(((dashRow.kpis.interviews + dashRow.stageBreakdown.negotiations + dashRow.kpis.offers) / appliedCount) * 1000) / 1000
+            : 0;
+          const offerRatio = appliedCount > 0
+            ? Math.round((dashRow.kpis.offers / appliedCount) * 1000) / 1000
+            : 0;
+
+          console.info("[dashboard.summary.cqrs]", {
+            tenantId: tenantContext.tenantId,
+            builtAt: dashRow.builtAt,
+            appliedCount,
+            availableJobs: dashRow.kpis.availableJobs,
+          });
+
+          return jsonResponse({
+            ok: true,
+            generatedAt: nowIso,
+            summaryBuiltAt: dashRow.builtAt,
+            dashboardAsOf: dashRow.builtInventoryRunAt,
+            inventorySource: "cqrs",
+            freshnessProbeSkipped: false,
+            staleReason: null,
+            appName: env.APP_NAME ?? "Career Jump",
+            lastRunAt: dashRow.builtInventoryRunAt,
+            trend: [],
+            kpis: {
+              availableJobs: dashRow.kpis.availableJobs,
+              appliedJobs: appliedCount,
+              totalTrackedJobs,
+              totalMatched: dashRow.kpis.totalFetched,
+              offMarketAppliedJobs: 0,
+              applicationRatio,
+              interviewRatio,
+              offerRatio,
+              interview: dashRow.kpis.interviews,
+              negotiations: dashRow.stageBreakdown.negotiations,
+              offered: dashRow.kpis.offers,
+              rejected: dashRow.stageBreakdown.rejected,
+              companiesConfigured: dashRow.kpis.companiesDetected,
+              companiesDetected: dashRow.kpis.companiesDetected,
+              totalFetched: dashRow.kpis.totalFetched,
+              matchRate: 0,
+              newJobsLatestRun: dashRow.kpis.newJobsLatestRun,
+              updatedJobsLatestRun: dashRow.kpis.updatedJobsLatestRun,
+            },
+            companiesByAts: dashRow.companiesByAts,
+            keywordCounts: dashRow.keywordCounts,
+            statusBreakdown: dashRow.statusBreakdown,
+            appliedSummary: {
+              statusCounts: dashRow.statusBreakdown,
+              topCompanies: dashRow.topCompanies.map((c) => ({ label: c.company, count: c.count })),
+              topLocations: dashRow.topLocations,
+              recentActivity: dashRow.recentActivity,
+              staleApplications: dashRow.staleApplications,
+            },
+          });
+        }
+        // Row absent — fall through to legacy path
+      }
+
       const configLoadStartedAt = Date.now();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,

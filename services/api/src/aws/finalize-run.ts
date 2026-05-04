@@ -17,6 +17,12 @@ import { clearRunAbortRequest, markFirstScanAtIfUnset, recordEvent, releaseActiv
 import type { InventorySnapshot, JobPosting, RequestActor } from "../types";
 import { makeAwsEnv } from "./env";
 import { companyResultPrefix, getRunMeta, markFinalized } from "./run-state";
+import {
+  enqueueDualBuildMessages,
+  saveTenantConfigSnapshot,
+  tenantScanCompleteMessages,
+  versionFromIso,
+} from "../materializer";
 
 type FinalizeRunEvent = {
   runId: string;
@@ -206,6 +212,45 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
     const newJobs = await findNewJobs(env, previousInventory, inventory, runId, tenantId, { recordLog: false, diff });
     const updatedJobs = await findUpdatedJobs(env, previousInventory, inventory, runId, tenantId, { recordLog: false, diff });
     await saveInventory(env, mergedWithPreservedInventory, tenantId);
+    const configVersion = versionFromIso(config.updatedAt);
+    const inventoryVersion = versionFromIso(inventory.runAt);
+    void (async () => {
+      const effectiveTenantId = tenantId ?? "default";
+      // The async finalize path follows the same bootstrap-only snapshot rule
+      // as the worker-side scan completion hook.
+      await saveTenantConfigSnapshot({
+        tenantId: effectiveTenantId,
+        config,
+        configVersion,
+        inventoryVersion,
+        ifNotExists: true,
+      });
+      await enqueueDualBuildMessages(tenantScanCompleteMessages({
+        tenantId: effectiveTenantId,
+        triggeredAt: new Date().toISOString(),
+        configVersion,
+        inventoryVersion,
+        jobIdPrefix: `${runId}-dual-build`,
+      }));
+      console.log(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "scan_complete_enqueued",
+        tenantId,
+        runId,
+        route: "aws/finalize-run",
+        configVersion,
+        inventoryVersion,
+      }));
+    })().catch((error) => {
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "scan_complete_enqueue_failed",
+        tenantId,
+        runId,
+        route: "aws/finalize-run",
+        error: error instanceof Error ? error.message : String(error),
+      }));
+    });
 
     const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantId);
     let emailStatus: "sent" | "skipped" | "failed" = "skipped";
