@@ -33,9 +33,16 @@ export async function loadTenantConfigSnapshot(
 }
 
 function effectiveEnabledCompanySlugs(
+  config: RuntimeConfig,
   companies: RuntimeConfig["companies"],
   overrides: Record<string, CompanyScanOverride>,
 ): string[] | null {
+  if (config.adminRegistryMode === "all") {
+    // Admin "all registry" mode should browse every company without forcing
+    // thousands of rows into the saved config page state.
+    return null;
+  }
+
   // The snapshot needs the tenant-visible company set, not the raw config set,
   // so paused overrides are folded in before materialization.
   const enabled = companies
@@ -62,6 +69,7 @@ export async function saveTenantConfigSnapshot(input: {
     entityType: ENTITY_TYPE_TENANT_CONFIG_SNAPSHOT,
     tenantId: input.tenantId,
     enabledCompanySlugs: effectiveEnabledCompanySlugs(
+      input.config,
       input.config.companies,
       input.overrides ?? {},
     ),

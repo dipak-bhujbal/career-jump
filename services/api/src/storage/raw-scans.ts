@@ -1,5 +1,5 @@
 import { deleteRow, getRow, putRow, queryRows, rawScansTableName, scanAllRows } from "../aws/dynamo";
-import { hyphenSlug, nowISO, slugify } from "../lib/utils";
+import { annotateJobGeography, nowISO, shouldKeepJobPostingForUSInventory, slugify, hyphenSlug } from "../lib/utils";
 import type { DetectedConfig, JobPosting } from "../types";
 
 const RAW_SCAN_SCHEMA_VERSION = 1;
@@ -345,7 +345,33 @@ export async function saveRawScan(
   const scannedAt = nowISO();
   const companySlug = hyphenSlug(company) || slugify(company) || "unknown-company";
   const cacheKey = rawScanPk(detected);
-  const nextJobs = sortJobsForStorage(jobs);
+  // Raw scan storage is US-geofenced too. Even if an adapter leaks a non-US
+  // posting, the persistence layer trims it before DynamoDB writes occur.
+  const annotatedJobs = jobs.map((job) => annotateJobGeography(job));
+  const droppedJobs = annotatedJobs.filter((job) => job.geoDecision === "drop");
+  if (droppedJobs.length > 0) {
+    // Short-lived logs let us audit false drops without persisting discarded
+    // international rows in DynamoDB.
+    console.warn(JSON.stringify({
+      component: "geo-filter",
+      event: "non_us_jobs_dropped",
+      stage: "raw-scan-persist",
+      company,
+      source: detected.source,
+      droppedCount: droppedJobs.length,
+      sample: droppedJobs.slice(0, 10).map((job) => ({
+        title: job.title,
+        location: job.location,
+        url: job.url,
+        score: job.geoScore,
+        reasons: job.geoReasons,
+        detectedCountry: job.detectedCountry,
+      })),
+    }));
+  }
+  const nextJobs = sortJobsForStorage(
+    annotatedJobs.filter((job) => shouldKeepJobPostingForUSInventory(job)),
+  );
   const nextJobRows = nextJobs.map((job) => ({
     pk: cacheKey,
     sk: rawScanJobSk(job),

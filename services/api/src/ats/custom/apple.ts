@@ -59,6 +59,9 @@ async function fetchAll(companyName: string): Promise<JobPosting[]> {
       .map((l) => l.name ?? [l.city, l.state, l.countryName].filter(Boolean).join(", "))
       .filter(Boolean)
       .join(" / "),
+    locationCity: j.locations?.[0]?.city,
+    locationState: j.locations?.[0]?.state,
+    locationCountry: j.locations?.[0]?.countryName,
     url: `https://jobs.apple.com/en-us/details/${j.positionId}`,
     source: "custom:apple" as never,
     department: j.team?.teamName,

@@ -1,5 +1,6 @@
 import { loadRuntimeConfig, companyToDetectedConfig } from "../config";
 import type { CompanyInput, DetectedConfig, Env, ProtectedDiscoveryRecord } from "../types";
+import { annotateJobGeography, shouldKeepJobPostingForUSInventory } from "../lib/utils";
 import { fetchAshbyJobs } from "../ats/core/ashby";
 import { fetchGreenhouseJobs } from "../ats/core/greenhouse";
 import { fetchLeverJobs } from "../ats/core/lever";
@@ -9,6 +10,31 @@ import { fetchJobsForEntry } from "../ats/registry";
 
 function namesMatch(a: string, b: string): boolean {
   return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
+function logDroppedGeoRows(stage: string, companyName: string, detected: DetectedConfig, dropped: ReturnType<typeof annotateJobGeography>[]): void {
+  if (dropped.length === 0) return;
+  const sample = dropped.slice(0, 10).map((job) => ({
+    title: job.title,
+    location: job.location,
+    url: job.url,
+    decision: job.geoDecision,
+    score: job.geoScore,
+    reasons: job.geoReasons,
+    detectedCountry: job.detectedCountry,
+  }));
+
+  // Debug-only audit trail for false-drop investigation. We keep it in logs
+  // instead of Dynamo so non-US rows do not consume long-term storage.
+  console.warn(JSON.stringify({
+    component: "geo-filter",
+    event: "non_us_jobs_dropped",
+    stage,
+    company: companyName,
+    source: detected.source,
+    droppedCount: dropped.length,
+    sample,
+  }));
 }
 
 async function getConfiguredCompany(env: Env, companyName: string, tenantId?: string): Promise<CompanyInput | null> {
@@ -47,21 +73,26 @@ export async function fetchJobsForDetectedConfig(
     }) => Promise<void> | void;
   }
 ) {
+  let jobs;
   switch (detected.source) {
     case "greenhouse":
-      return fetchGreenhouseJobs(companyName, detected.boardToken, detected.sampleUrl, options?.signal);
+      jobs = await fetchGreenhouseJobs(companyName, detected.boardToken, detected.sampleUrl, options?.signal);
+      break;
 
     case "ashby":
-      return fetchAshbyJobs(companyName, detected.companySlug, options?.signal);
+      jobs = await fetchAshbyJobs(companyName, detected.companySlug, options?.signal);
+      break;
 
     case "smartrecruiters":
-      return fetchSmartRecruitersJobs(companyName, detected.smartRecruitersCompanyId, options?.signal);
+      jobs = await fetchSmartRecruitersJobs(companyName, detected.smartRecruitersCompanyId, options?.signal);
+      break;
 
     case "lever":
-      return fetchLeverJobs(companyName, detected.leverSite, options?.signal);
+      jobs = await fetchLeverJobs(companyName, detected.leverSite, options?.signal);
+      break;
 
     case "workday":
-      return fetchWorkdayJobs(
+      jobs = await fetchWorkdayJobs(
         companyName,
         {
           sampleUrl: detected.sampleUrl,
@@ -72,9 +103,10 @@ export async function fetchJobsForDetectedConfig(
         },
         includeKeywords
       );
+      break;
 
-    case "registry-adapter": {
-      const jobs = await fetchJobsForEntry({
+    case "registry-adapter":
+      jobs = await fetchJobsForEntry({
         rank: null,
         sheet: "Runtime Config",
         company: detected.companyName || companyName,
@@ -84,10 +116,18 @@ export async function fetchJobsForDetectedConfig(
         source: "runtime_config",
         tier: "NEEDS_REVIEW",
         sample_url: detected.sampleUrl ?? null,
-      });
-      return jobs ?? [];
-    }
+      }) ?? [];
+      break;
   }
+
+  // Drop non-US rows as early as possible so adapter-level fetches do not
+  // hand unnecessary jobs to the rest of the pipeline. Ambiguous review rows
+  // stay to avoid false-negative U.S. drops.
+  const annotatedJobs = (jobs ?? []).map((job) => annotateJobGeography(job));
+  const keptJobs = annotatedJobs.filter((job) => shouldKeepJobPostingForUSInventory(job));
+  const droppedJobs = annotatedJobs.filter((job) => job.geoDecision === "drop");
+  logDroppedGeoRows("adapter", companyName, detected, droppedJobs);
+  return keptJobs;
 }
 
 export async function resolveWorkdayForCompany(env: Env, companyName: string, tenantId?: string): Promise<DetectedConfig | null> {

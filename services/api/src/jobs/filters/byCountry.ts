@@ -1,4 +1,5 @@
 import type { Filter } from "../types";
+import { shouldKeepJobPostingForUSInventory } from "../../lib/utils";
 
 /**
  * Keep only jobs whose location matches one of the listed countries.
@@ -33,7 +34,15 @@ export function byCountry(countries: string[]): Filter {
   return (jobs) =>
     jobs.filter((j) => {
       if (!j.location) return false;
-      return countries.some((c) => matchesCountry(j.location, c));
+      return countries.some((c) => {
+        if (c === "US") {
+          // Reuse the production U.S.-only gate so the jobs pipeline and the
+          // live inventory path apply the same geography rules, including
+          // title/url fallbacks for explicit U.S.-remote jobs.
+          return shouldKeepJobPostingForUSInventory(j);
+        }
+        return matchesCountry(j.location, c);
+      });
     });
 }
 

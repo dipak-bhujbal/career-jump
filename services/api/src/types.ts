@@ -159,6 +159,8 @@ export type InterviewRound = {
 };
 
 export type PostedAtSource = "ats" | "identified_fallback" | "legacy";
+export type GeoDecision = "keep" | "drop" | "review";
+export type GeoConfidence = "high" | "medium" | "low";
 
 export type JobPosting = {
   source: JobSource;
@@ -171,8 +173,20 @@ export type JobPosting = {
   postedAt?: string;
   postedAtSource?: PostedAtSource;
   identifiedAt?: string;
+  // Structured adapter hints improve geo reliability over free-text parsing.
+  locationCity?: string;
+  locationState?: string;
+  locationCountry?: string;
+  isRemote?: boolean;
+  isHybrid?: boolean;
   detectedCountry?: string;
   isUSLikely?: boolean | null;
+  matchedUsLocality?: string;
+  matchedUsState?: string;
+  geoDecision?: GeoDecision;
+  geoConfidence?: GeoConfidence;
+  geoScore?: number;
+  geoReasons?: string[];
   matchedKeywords?: string[];
 };
 

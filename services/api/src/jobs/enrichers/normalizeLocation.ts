@@ -1,4 +1,5 @@
 import type { Enricher } from "../types";
+import { US_STATE_ALIAS_TO_CODE } from "../../lib/us-geo.generated";
 
 /**
  * Parse the free-text `location` string into structured fields.
@@ -51,6 +52,17 @@ function parse(loc: string): LocFields {
   for (const p of parts) {
     const upper = p.toUpperCase();
     if (US_STATES.has(upper)) { out.locationState = upper; out.locationCountry ??= "US"; break; }
+  }
+  // Full state names and common aliases provide a safer fallback than trying
+  // to infer the country from generic city-only text.
+  if (!out.locationState) {
+    for (const p of parts) {
+      const mapped = US_STATE_ALIAS_TO_CODE[p.toLowerCase()];
+      if (!mapped) continue;
+      out.locationState = mapped;
+      out.locationCountry ??= "US";
+      break;
+    }
   }
   // First non-state, non-country token = city
   for (const p of parts) {

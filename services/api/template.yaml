@@ -1330,6 +1330,55 @@ Resources:
         Loader:
           - .json=json
 
+  NotificationFanoutFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "${AppName}-${Stage}-notification-fanout"
+      Handler: src/aws/notification-fanout.handler
+      Timeout: 300
+      MemorySize: 512
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RegistryTable
+        - DynamoDBReadPolicy:
+            TableName: !Ref RawScansTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref SupportTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref UsersTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref BillingTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Events:
+        NotificationFanoutCron:
+          Type: ScheduleV2
+          Properties:
+            Name: !Sub "${AppName}-${Stage}-notification-fanout-cron"
+            # Run on the same background cadence as registry scanning so users
+            # receive batched alerts soon after shared raw inventory refreshes.
+            ScheduleExpression: "rate(15 minutes)"
+            State: ENABLED
+      LoggingConfig:
+        LogFormat: JSON
+    Metadata:
+      BuildMethod: esbuild
+      BuildProperties:
+        Format: cjs
+        Minify: true
+        Target: es2022
+        Sourcemap: false
+        Loader:
+          - .json=json
+
   MaterializerWorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -1416,13 +1465,21 @@ Resources:
       Timeout: 300
       MemorySize: 256
       Policies:
+        # Backfill now bootstraps each tenant's config snapshot before
+        # enqueuing read-model builds, so it must read both config sources.
+        - DynamoDBCrudPolicy:
+            TableName: !Ref StateTable
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ConfigTable
         - DynamoDBReadPolicy:
             TableName: !Ref UsersTable
         - DynamoDBReadPolicy:
             TableName: !Ref RegistryTable
         - DynamoDBReadPolicy:
             TableName: !Ref RawScansTable
-        - DynamoDBReadPolicy:
+        # The bootstrap step writes tenant config snapshots into
+        # SummariesTable before visible-jobs/dashboard builds run.
+        - DynamoDBCrudPolicy:
             TableName: !Ref SummariesTable
         - Statement:
             - Effect: Allow

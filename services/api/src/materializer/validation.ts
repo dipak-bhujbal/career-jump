@@ -1,7 +1,7 @@
 import { jobsTableName, queryRows, summariesTableName } from "../aws/dynamo";
 import { listCurrentRawScans } from "../storage/raw-scans";
 import { loadRegistryCache, listAll } from "../storage/registry-cache";
-import { jobKey, shouldKeepJobForUSInventory, slugify } from "../lib/utils";
+import { jobKey, matchedKeywords as deriveMatchedKeywords, shouldKeepJobPostingForUSInventory, slugify } from "../lib/utils";
 import {
   REGISTRY_STATUS_PK,
   VISIBLE_JOB_ROW_SCHEMA_VERSION,
@@ -10,6 +10,7 @@ import {
   visibleJobSk,
 } from "../storage/read-models";
 import type { VisibleJobRow } from "../storage/read-models";
+import type { JobPosting } from "../types";
 import { loadTenantConfigSnapshot } from "./config-snapshot";
 
 const SMALL_TENANT_THRESHOLD = 5_000;
@@ -95,17 +96,24 @@ export async function validateTenantVisibleJobs(
     for (const job of scan.jobs) {
       const title = typeof job.title === "string" ? job.title.trim() : "";
       if (!title) continue;
-      if (usFilterEnabled && !shouldKeepJobForUSInventory(job.location ?? "", title, job.url ?? "")) continue;
+      if (usFilterEnabled && !shouldKeepJobPostingForUSInventory({ ...job, title, url: job.url ?? "" } as JobPosting)) continue;
       if (
         excludeKeywords.length > 0 &&
         excludeKeywords.some((kw) => title.toLowerCase().includes(kw.toLowerCase()))
       ) continue;
 
-      // Include-keyword gate: job must have at least one matching stored keyword
-      // after intersecting with the configured include set, or it is not visible.
+      // Include-keyword gate: older raw rows may not persist matchedKeywords,
+      // so validation must use the same title-derived fallback as the builder
+      // before deciding a source row is not tenant-visible.
       if (includeKeywords.length > 0) {
         const storedKeywords: string[] = Array.isArray(job.matchedKeywords) ? job.matchedKeywords : [];
-        const hasMatch = storedKeywords.some((kw) =>
+        const fallbackKeywords = storedKeywords.length > 0
+          ? storedKeywords
+          : deriveMatchedKeywords(title, {
+              includeKeywords,
+              excludeKeywords,
+            });
+        const hasMatch = fallbackKeywords.some((kw) =>
           includeKeywords.some((ik) => kw.toLowerCase().includes(ik.toLowerCase()))
         );
         if (!hasMatch) continue;

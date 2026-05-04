@@ -2054,6 +2054,9 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        // Admin browsing/saving should stay scoped to the visible config page;
+        // email fanout handles the separate all-registry notification mode.
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       return jsonResponse({ ok: true, config, companyScanOverrides });
@@ -2120,6 +2123,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await loadRegistryCache();
       const duplicateRegistryCompany = companies.find((company) =>
@@ -2168,6 +2172,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const savedConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       queueMaterializerConfigChange({
@@ -2186,6 +2191,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
 
       if (!candidate?.company.trim()) {
@@ -2255,6 +2261,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const currentPaused = currentOverrides[slugify(companyName)]?.paused === true;
@@ -2307,6 +2314,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const companies = config.companies.map((company) => company.company).filter(Boolean);
@@ -2354,6 +2362,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await clearATSCache(env, config.companies);
       const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId, {
@@ -2378,6 +2387,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await clearATSCache(env, config.companies);
       const emptyInventory = buildEmptyInventory(config);
@@ -2399,6 +2409,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, "seen:"));
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, FIRST_SEEN_PREFIX));
@@ -2726,6 +2737,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
         env,
@@ -2800,6 +2812,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const runtimeConfigLoadMs = Date.now() - runtimeConfigStartedAt;
       const inventoryStatePromise = (async () => {
@@ -3097,6 +3110,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const [{ effectiveInventory }, jobNotes] = await Promise.all([
         loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
@@ -3144,6 +3158,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory } = await loadDerivedAvailableInventory(
         env,
@@ -3328,6 +3343,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
+          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         loadAppliedJobs(env, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
@@ -3475,6 +3491,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
         env,
@@ -4004,6 +4021,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const jobs = await fetchJobsForDetectedConfig(companyName, detected, config.jobtitles.includeKeywords);
       return jsonResponse({ ok: true, detected, includeKeywords: config.jobtitles.includeKeywords, count: jobs.length, firstFive: jobs.slice(0, 5) });
@@ -4016,6 +4034,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
+        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const detected = await resolveWorkdayForCompany(env, companyName, tenantContext.tenantId);
       if (!detected) return jsonResponse({ ok: false, error: `No Workday mapping resolved for ${companyName}` }, 404);

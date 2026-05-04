@@ -328,8 +328,23 @@ function normalizeAppliedJobRecord(key: string, value: unknown): AppliedJobRecor
     postedAt: typeof rawJob.postedAt === "string" ? rawJob.postedAt : undefined,
     postedAtSource: rawJob.postedAtSource,
     identifiedAt: typeof rawJob.identifiedAt === "string" ? rawJob.identifiedAt : undefined,
+    locationCity: typeof rawJob.locationCity === "string" ? rawJob.locationCity : undefined,
+    locationState: typeof rawJob.locationState === "string" ? rawJob.locationState : undefined,
+    locationCountry: typeof rawJob.locationCountry === "string" ? rawJob.locationCountry : undefined,
+    isRemote: typeof rawJob.isRemote === "boolean" ? rawJob.isRemote : undefined,
+    isHybrid: typeof rawJob.isHybrid === "boolean" ? rawJob.isHybrid : undefined,
     detectedCountry: typeof rawJob.detectedCountry === "string" ? rawJob.detectedCountry : undefined,
     isUSLikely: typeof rawJob.isUSLikely === "boolean" || rawJob.isUSLikely === null ? rawJob.isUSLikely : null,
+    matchedUsLocality: typeof rawJob.matchedUsLocality === "string" ? rawJob.matchedUsLocality : undefined,
+    matchedUsState: typeof rawJob.matchedUsState === "string" ? rawJob.matchedUsState : undefined,
+    geoDecision: rawJob.geoDecision === "keep" || rawJob.geoDecision === "drop" || rawJob.geoDecision === "review"
+      ? rawJob.geoDecision
+      : undefined,
+    geoConfidence: rawJob.geoConfidence === "high" || rawJob.geoConfidence === "medium" || rawJob.geoConfidence === "low"
+      ? rawJob.geoConfidence
+      : undefined,
+    geoScore: typeof rawJob.geoScore === "number" ? rawJob.geoScore : undefined,
+    geoReasons: Array.isArray(rawJob.geoReasons) ? rawJob.geoReasons.map(String) : undefined,
     matchedKeywords: Array.isArray(rawJob.matchedKeywords) ? rawJob.matchedKeywords.map(String) : [],
   };
 

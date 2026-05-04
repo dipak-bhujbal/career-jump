@@ -7,11 +7,17 @@ import {
   LAST_NEW_JOBS_COUNT_KEY,
   LAST_UPDATED_JOB_KEYS_KEY,
   LAST_UPDATED_JOBS_COUNT_KEY,
+  NOTIFICATION_INVENTORY_KEY,
+  NOTIFICATION_CONFIG_VERSION_KEY,
+  NOTIFICATION_LAST_NEW_JOB_KEYS_KEY,
+  NOTIFICATION_LAST_NEW_JOBS_COUNT_KEY,
+  NOTIFICATION_LAST_UPDATED_JOB_KEYS_KEY,
+  NOTIFICATION_LAST_UPDATED_JOBS_COUNT_KEY,
 } from "../constants";
 import { jobStateKv } from "../lib/bindings";
 import { logAppEvent } from "../lib/logger";
 import { tenantScopedKey } from "../lib/tenant";
-import { enrichJob, isInterestingTitle, jobKey, jobStableFingerprint, nowISO, shouldKeepJobForUSInventory } from "../lib/utils";
+import { enrichJob, isInterestingTitle, jobKey, jobStableFingerprint, nowISO, shouldKeepJobPostingForUSInventory } from "../lib/utils";
 import {
   ActiveRunOwnershipError,
   ensureActiveRunOwnership,
@@ -123,6 +129,61 @@ export type InventoryState = {
   lastUpdatedJobKeys: string[];
 };
 
+type InventoryStateKeys = {
+  inventoryKey: string;
+  configVersionKey?: string;
+  lastNewJobsCountKey: string;
+  lastNewJobKeysKey: string;
+  lastUpdatedJobsCountKey: string;
+  lastUpdatedJobKeysKey: string;
+  allowLegacyGlobalFallback?: boolean;
+};
+
+const PRIMARY_INVENTORY_STATE_KEYS: InventoryStateKeys = {
+  inventoryKey: INVENTORY_KEY,
+  lastNewJobsCountKey: LAST_NEW_JOBS_COUNT_KEY,
+  lastNewJobKeysKey: LAST_NEW_JOB_KEYS_KEY,
+  lastUpdatedJobsCountKey: LAST_UPDATED_JOBS_COUNT_KEY,
+  lastUpdatedJobKeysKey: LAST_UPDATED_JOB_KEYS_KEY,
+  allowLegacyGlobalFallback: true,
+};
+
+// Notification inventory must stay isolated from interactive page state. That
+// lets admins receive all-registry email alerts without replacing the
+// config-page-scoped Available Jobs snapshot they browse in the UI.
+const NOTIFICATION_INVENTORY_STATE_KEYS: InventoryStateKeys = {
+  inventoryKey: NOTIFICATION_INVENTORY_KEY,
+  configVersionKey: NOTIFICATION_CONFIG_VERSION_KEY,
+  lastNewJobsCountKey: NOTIFICATION_LAST_NEW_JOBS_COUNT_KEY,
+  lastNewJobKeysKey: NOTIFICATION_LAST_NEW_JOB_KEYS_KEY,
+  lastUpdatedJobsCountKey: NOTIFICATION_LAST_UPDATED_JOBS_COUNT_KEY,
+  lastUpdatedJobKeysKey: NOTIFICATION_LAST_UPDATED_JOB_KEYS_KEY,
+  allowLegacyGlobalFallback: false,
+};
+
+export function notificationInventoryStateKeys(): InventoryStateKeys {
+  return NOTIFICATION_INVENTORY_STATE_KEYS;
+}
+
+async function saveLatestRunState(
+  env: Env,
+  tenantId: string | undefined,
+  stateKeys: InventoryStateKeys,
+  input: {
+    lastNewJobsCount: number;
+    lastNewJobKeys: string[];
+    lastUpdatedJobsCount: number;
+    lastUpdatedJobKeys: string[];
+  },
+): Promise<void> {
+  await Promise.all([
+    jobStateKv(env).put(tenantScopedKey(tenantId, stateKeys.lastNewJobsCountKey), String(input.lastNewJobsCount)),
+    jobStateKv(env).put(tenantScopedKey(tenantId, stateKeys.lastNewJobKeysKey), JSON.stringify(input.lastNewJobKeys)),
+    jobStateKv(env).put(tenantScopedKey(tenantId, stateKeys.lastUpdatedJobsCountKey), String(input.lastUpdatedJobsCount)),
+    jobStateKv(env).put(tenantScopedKey(tenantId, stateKeys.lastUpdatedJobKeysKey), JSON.stringify(input.lastUpdatedJobKeys)),
+  ]);
+}
+
 export type AvailableJobsCursor = {
   phase: "shared" | "manual";
   companyIndex: number;
@@ -158,7 +219,11 @@ export type StreamAvailableJobsPageResult = {
   durationMs: number;
 };
 
-export async function loadInventoryState(env: Env, tenantId?: string): Promise<InventoryState> {
+export async function loadInventoryState(
+  env: Env,
+  tenantId?: string,
+  stateKeys: InventoryStateKeys = PRIMARY_INVENTORY_STATE_KEYS,
+): Promise<InventoryState> {
   const [
     primaryExisting,
     trendRaw,
@@ -167,16 +232,20 @@ export async function loadInventoryState(env: Env, tenantId?: string): Promise<I
     lastUpdatedCountRaw,
     lastUpdatedKeysRaw,
   ] = await Promise.all([
-    jobStateKv(env).get(tenantScopedKey(tenantId, INVENTORY_KEY), "json"),
+    jobStateKv(env).get(tenantScopedKey(tenantId, stateKeys.inventoryKey), "json"),
     Promise.resolve([]),
-    jobStateKv(env).get(tenantScopedKey(tenantId, LAST_NEW_JOBS_COUNT_KEY)),
-    jobStateKv(env).get(tenantScopedKey(tenantId, LAST_NEW_JOB_KEYS_KEY), "json"),
-    jobStateKv(env).get(tenantScopedKey(tenantId, LAST_UPDATED_JOBS_COUNT_KEY)),
-    jobStateKv(env).get(tenantScopedKey(tenantId, LAST_UPDATED_JOB_KEYS_KEY), "json"),
+    jobStateKv(env).get(tenantScopedKey(tenantId, stateKeys.lastNewJobsCountKey)),
+    jobStateKv(env).get(tenantScopedKey(tenantId, stateKeys.lastNewJobKeysKey), "json"),
+    jobStateKv(env).get(tenantScopedKey(tenantId, stateKeys.lastUpdatedJobsCountKey)),
+    jobStateKv(env).get(tenantScopedKey(tenantId, stateKeys.lastUpdatedJobKeysKey), "json"),
   ]);
 
   // Keep the tenant migration fallback ordered so legacy global inventory is only read when needed.
-  const existing = primaryExisting ?? (tenantId ? await jobStateKv(env).get(INVENTORY_KEY, "json") : null);
+  const existing = primaryExisting ?? (
+    tenantId && stateKeys.allowLegacyGlobalFallback
+      ? await jobStateKv(env).get(stateKeys.inventoryKey, "json")
+      : null
+  );
 
   return {
     inventory: existing && typeof existing === "object" ? (existing as InventorySnapshot) : null,
@@ -243,7 +312,7 @@ function matchesInteractiveAvailableJob(
   if (!isInterestingTitle(job.title, jobtitles)) {
     return false;
   }
-  if (!shouldKeepJobForUSInventory(job.location, job.title, job.url)) {
+  if (!shouldKeepJobPostingForUSInventory(job)) {
     return false;
   }
   if (isDiscarded(job, discardRegistry)) {
@@ -555,7 +624,7 @@ export async function buildAvailableJobsFromSharedInventory(
           filteredOutJobs += 1;
           continue;
         }
-        const geographyMatched = shouldKeepJobForUSInventory(enriched.location, enriched.title, enriched.url);
+        const geographyMatched = shouldKeepJobPostingForUSInventory(enriched);
         if (!geographyMatched) {
           filteredOutJobs += 1;
           continue;
@@ -602,7 +671,7 @@ export async function buildAvailableJobsFromSharedInventory(
           filteredOutJobs += 1;
           return false;
         }
-        const geographyMatched = shouldKeepJobForUSInventory(job.location, job.title, job.url);
+        const geographyMatched = shouldKeepJobPostingForUSInventory(job);
         if (!geographyMatched) {
           filteredOutJobs += 1;
           return false;
@@ -1370,7 +1439,7 @@ export async function buildInventory(
           continue;
         }
 
-        if (!shouldKeepJobForUSInventory(job.location, job.title, job.url)) {
+        if (!shouldKeepJobPostingForUSInventory(job)) {
           excludedGeographyCount += 1;
           geographyExcludedKeys.add(jobKey(job));
           continue;
@@ -1663,14 +1732,20 @@ export async function saveInventory(
   inventory: InventorySnapshot,
   tenantId?: string,
   knownState?: InventoryState,
-  options?: { skipKeyPrune?: boolean }
+  options?: {
+    skipKeyPrune?: boolean;
+    skipNotePrune?: boolean;
+    skipDashboardRefresh?: boolean;
+    stateKeys?: InventoryStateKeys;
+  }
 ): Promise<void> {
-  const existingState = knownState ?? await loadInventoryState(env, tenantId);
+  const stateKeys = options?.stateKeys ?? PRIMARY_INVENTORY_STATE_KEYS;
+  const existingState = knownState ?? await loadInventoryState(env, tenantId, stateKeys);
   if (!options?.skipKeyPrune) {
     await pruneDiscardedJobKeysToKnownJobs(env, inventory, tenantId, existingState.inventory);
   }
   const storageInventory = await pruneInventoryForStorage(env, inventory, tenantId);
-  const inventoryKey = tenantScopedKey(tenantId, INVENTORY_KEY);
+  const inventoryKey = tenantScopedKey(tenantId, stateKeys.inventoryKey);
   const serializedInventory = JSON.stringify(storageInventory);
   if (serializedInventory.length > 380_000) {
     await logAppEvent(env, {
@@ -1693,39 +1768,43 @@ export async function saveInventory(
   if (JSON.stringify(existingState.inventory) !== serializedInventory) {
     await jobStateKv(env).put(inventoryKey, serializedInventory);
   }
-  await pruneJobNotesToInventory(env, storageInventory, tenantId);
+  if (!options?.skipNotePrune) {
+    await pruneJobNotesToInventory(env, storageInventory, tenantId);
+  }
 
   // Persist a fresh dashboard summary snapshot alongside inventory writes so
   // dashboard reads stay cheap and do not need to recompute KPI structures
   // from scratch on every request.
-  try {
-    const appliedJobs = await loadAppliedJobs(env, tenantId);
-    const companiesByAts = summarizeCompaniesByAtsFromInventory(storageInventory);
-    const dashboardPayload = await buildDashboardPayload(
-      env,
-      storageInventory,
-      appliedJobs,
-      tenantId,
-      undefined,
-      companiesByAts,
-      {
-        inventorySource: "stored-snapshot",
-        freshnessProbeSkipped: false,
-        staleReason: null,
-      },
-    );
-    const dashboardFingerprint = buildDashboardSummaryFingerprint(
-      storageInventory,
-      appliedJobs,
-      companiesByAts,
-      {
-        lastNewJobsCount: dashboardPayload.kpis.newJobsLatestRun,
-        lastUpdatedJobsCount: dashboardPayload.kpis.updatedJobsLatestRun,
-      },
-    );
-    await saveCachedDashboardPayload(env, tenantId, dashboardFingerprint, dashboardPayload);
-  } catch (error) {
-    console.error("[dashboard.summary] failed to refresh after inventory save", error);
+  if (!options?.skipDashboardRefresh) {
+    try {
+      const appliedJobs = await loadAppliedJobs(env, tenantId);
+      const companiesByAts = summarizeCompaniesByAtsFromInventory(storageInventory);
+      const dashboardPayload = await buildDashboardPayload(
+        env,
+        storageInventory,
+        appliedJobs,
+        tenantId,
+        undefined,
+        companiesByAts,
+        {
+          inventorySource: "stored-snapshot",
+          freshnessProbeSkipped: false,
+          staleReason: null,
+        },
+      );
+      const dashboardFingerprint = buildDashboardSummaryFingerprint(
+        storageInventory,
+        appliedJobs,
+        companiesByAts,
+        {
+          lastNewJobsCount: dashboardPayload.kpis.newJobsLatestRun,
+          lastUpdatedJobsCount: dashboardPayload.kpis.updatedJobsLatestRun,
+        },
+      );
+      await saveCachedDashboardPayload(env, tenantId, dashboardFingerprint, dashboardPayload);
+    } catch (error) {
+      console.error("[dashboard.summary] failed to refresh after inventory save", error);
+    }
   }
 
   // Trend collection is disabled until the UI renders it; this avoids unused KV write/read churn.
@@ -1847,8 +1926,14 @@ function comparableJobShape(job: JobPosting) {
     url: job.url,
     postedAt: job.postedAt ?? null,
     postedAtSource: job.postedAtSource ?? null,
+    locationCity: job.locationCity ?? null,
+    locationState: job.locationState ?? null,
+    locationCountry: job.locationCountry ?? null,
     detectedCountry: job.detectedCountry ?? null,
     isUSLikely: job.isUSLikely ?? null,
+    matchedUsLocality: job.matchedUsLocality ?? null,
+    matchedUsState: job.matchedUsState ?? null,
+    geoDecision: job.geoDecision ?? null,
     matchedKeywords: [...(job.matchedKeywords ?? [])].sort(),
   };
 }
@@ -1863,6 +1948,9 @@ function updateRelevantJobShape(job: JobPosting) {
     url: job.url,
     detectedCountry: job.detectedCountry ?? null,
     isUSLikely: job.isUSLikely ?? null,
+    matchedUsLocality: job.matchedUsLocality ?? null,
+    matchedUsState: job.matchedUsState ?? null,
+    geoDecision: job.geoDecision ?? null,
   };
 }
 
@@ -1902,9 +1990,10 @@ export async function getLatestRunNotificationJobs(
   env: Env,
   inventory: InventorySnapshot,
   previousInventory: InventorySnapshot | null,
-  tenantId?: string
+  tenantId?: string,
+  stateKeys: InventoryStateKeys = PRIMARY_INVENTORY_STATE_KEYS,
 ): Promise<{ newJobs: JobPosting[]; updatedJobs: UpdatedEmailJob[] }> {
-  const state = await loadInventoryState(env, tenantId);
+  const state = await loadInventoryState(env, tenantId, stateKeys);
   const discardRegistry = await loadDiscardRegistry(env, tenantId);
   const jobsByKey = new Map(inventory.jobs.map((job) => [jobKey(job), job]));
   const previousJobsByKey = new Map((previousInventory?.jobs ?? []).map((job) => [jobKey(job), job]));
@@ -2000,8 +2089,10 @@ export async function findNewJobs(
     diff?: InventoryDiff;
     firstSeenJobKeysThisRun?: Set<string>;
     duplicateFingerprintJobKeysThisRun?: Set<string>;
+    stateKeys?: InventoryStateKeys;
   } = {}
 ): Promise<JobPosting[]> {
+  const stateKeys = options.stateKeys ?? PRIMARY_INVENTORY_STATE_KEYS;
   const { newJobs: rawNewJobs } = options.diff ?? getInventoryDiff(previousInventory, inventory);
   const sortedRawNewJobs = [...rawNewJobs].sort((a, b) => {
     const aTime = a.postedAt ? new Date(a.postedAt).getTime() : 0;
@@ -2061,8 +2152,12 @@ export async function findNewJobs(
     await Promise.all(firstSeenEntries.map(([key, value]) => jobStateKv(env).put(tenantScopedKey(tenantId, key), value)));
   }
 
-  await jobStateKv(env).put(tenantScopedKey(tenantId, LAST_NEW_JOBS_COUNT_KEY), String(newJobs.length));
-  await jobStateKv(env).put(tenantScopedKey(tenantId, LAST_NEW_JOB_KEYS_KEY), JSON.stringify(newJobs.map((job) => jobKey(job))));
+  await saveLatestRunState(env, tenantId, stateKeys, {
+    lastNewJobsCount: newJobs.length,
+    lastNewJobKeys: newJobs.map((job) => jobKey(job)),
+    lastUpdatedJobsCount: 0,
+    lastUpdatedJobKeys: [],
+  });
   if (options.recordLog !== false) {
     await recordAppLog(env, {
       level: "info",
@@ -2091,13 +2186,19 @@ export async function findUpdatedJobs(
   inventory: InventorySnapshot,
   runId?: string,
   tenantId?: string,
-  options: { recordLog?: boolean; diff?: InventoryDiff } = {}
+  options: { recordLog?: boolean; diff?: InventoryDiff; stateKeys?: InventoryStateKeys } = {}
 ): Promise<JobPosting[]> {
+  const stateKeys = options.stateKeys ?? PRIMARY_INVENTORY_STATE_KEYS;
   const { updatedJobs } = options.diff ?? getInventoryDiff(previousInventory, inventory);
   const visibleUpdatedJobs = updatedJobs.filter((job) => isJobUpdatedTodayInET(job, inventory.runAt));
 
-  await jobStateKv(env).put(tenantScopedKey(tenantId, LAST_UPDATED_JOBS_COUNT_KEY), String(visibleUpdatedJobs.length));
-  await jobStateKv(env).put(tenantScopedKey(tenantId, LAST_UPDATED_JOB_KEYS_KEY), JSON.stringify(visibleUpdatedJobs.map((job) => jobKey(job))));
+  const existingState = await loadInventoryState(env, tenantId, stateKeys);
+  await saveLatestRunState(env, tenantId, stateKeys, {
+    lastNewJobsCount: existingState.lastNewJobsCount,
+    lastNewJobKeys: existingState.lastNewJobKeys,
+    lastUpdatedJobsCount: visibleUpdatedJobs.length,
+    lastUpdatedJobKeys: visibleUpdatedJobs.map((job) => jobKey(job)),
+  });
   if (options.recordLog !== false) {
     await recordAppLog(env, {
       level: "info",

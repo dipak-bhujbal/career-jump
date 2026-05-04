@@ -1,5 +1,11 @@
 import { NON_US_HINTS, NON_US_TITLE_HINTS, US_STATE_CODES, VALID_STATUSES } from "../constants";
-import type { AppliedJobStatus, CompanyInput, JobPosting, JobTitleConfig } from "../types";
+import {
+  US_MAJOR_LOCALITY_ALIAS_TO_CANONICAL,
+  US_STATE_ALIAS_TO_CODE,
+  US_STRONG_LOCALITY_ALIASES,
+  US_WEAK_LOCALITY_ALIASES,
+} from "./us-geo.generated";
+import type { AppliedJobStatus, CompanyInput, GeoConfidence, GeoDecision, JobPosting, JobTitleConfig } from "../types";
 
 /**
  * Current timestamp in ISO format.
@@ -245,6 +251,37 @@ const US_EXPLICIT_HINTS = [
 ];
 
 const LOCATION_SPLIT_PATTERN = /\s*(?:\||\/|;|\n)+\s*/i;
+const US_STRONG_LOCALITY_ALIAS_SET = new Set(US_STRONG_LOCALITY_ALIASES);
+const US_WEAK_LOCALITY_ALIAS_SET = new Set(US_WEAK_LOCALITY_ALIASES);
+const US_STATE_NAME_ALIAS_SET = new Set(
+  Object.keys(US_STATE_ALIAS_TO_CODE).filter((alias) => alias.length > 2 || alias.includes(" ")),
+);
+const US_LOCALITY_CANONICAL_BY_ALIAS = new Map(Object.entries(US_MAJOR_LOCALITY_ALIAS_TO_CANONICAL));
+const MAX_LOCALITY_PHRASE_TOKENS = 8;
+const NON_US_COUNTRY_CODE_HINTS = new Set([
+  "ar", "at", "au", "be", "bg", "br", "ch", "cl", "cz", "de", "dk", "ee", "es", "fi", "fr",
+  "gb", "gr", "hk", "hr", "hu", "ie", "il", "it", "jp", "kr", "lt", "lu", "lv", "mx",
+  "my", "nl", "no", "nz", "ph", "pl", "pt", "ro", "rs", "se", "sg", "si", "sk", "th",
+  "tr", "tw", "ua", "uk", "za",
+]);
+const AMBIGUOUS_US_STATE_CODES = new Set(["ar", "de", "in", "or", "me", "hi"]);
+
+type USLocationStrength = "none" | "weak" | "strong";
+type NonUSStrength = "none" | "weak" | "strong";
+
+export type JobGeographyAssessment = {
+  decision: GeoDecision;
+  confidence: GeoConfidence;
+  score: number;
+  reasons: string[];
+  detectedCountry: string;
+  isUSLikely: boolean | null;
+  hasUS: boolean;
+  hasNonUS: boolean;
+  isMixed: boolean;
+  matchedUsLocality?: string;
+  matchedUsState?: string;
+};
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -262,6 +299,7 @@ function splitLocationSegments(location: string): string[] {
   if (!raw) return [];
   return raw
     .split(LOCATION_SPLIT_PATTERN)
+    .flatMap((part) => part.split(/\s+\bor\b\s+/i))
     .map((part) => part.trim())
     .filter(Boolean);
 }
@@ -282,34 +320,136 @@ function hasUSStatePattern(rawSegment: string): boolean {
   return false;
 }
 
-function detectUSFromSegment(rawSegment: string): boolean {
+/**
+ * Build normalized location phrases so alias lookups can stay set-based.
+ * This is much cheaper than scanning thousands of aliases for every job.
+ */
+function collectNormalizedLocationPhrases(rawSegment: string): Set<string> {
   const normalized = normalizeText(rawSegment);
-  if (!normalized) return false;
+  const phrases = new Set<string>();
+  if (!normalized) return phrases;
 
-  // ATS location feeds often end with ISO country codes like ", DE" or ", AR".
-  // Those collide with Delaware / Arkansas, so guard them before the US-state
-  // detector can classify the segment as a US location.
-  const trailingToken = rawSegment
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
-  const lastToken = trailingToken[trailingToken.length - 1]?.toLowerCase();
-  const explicitNonUsCountryCodes = new Set(["ar", "de"]);
-  if (lastToken && explicitNonUsCountryCodes.has(lastToken)) return false;
+  phrases.add(normalized);
 
-  if (hasExplicitUSHint(normalized)) return true;
-  if (hasUSStatePattern(rawSegment)) return true;
+  const tokens = normalized.split(" ").filter(Boolean);
+  const maxTokens = Math.min(tokens.length, MAX_LOCALITY_PHRASE_TOKENS);
+  for (let width = 1; width <= maxTokens; width += 1) {
+    for (let start = 0; start + width <= tokens.length; start += 1) {
+      phrases.add(tokens.slice(start, start + width).join(" "));
+    }
+  }
 
+  return phrases;
+}
+
+function hasAliasPhraseMatch(phrases: Set<string>, aliases: Set<string>): boolean {
+  for (const phrase of phrases) {
+    if (aliases.has(phrase)) return true;
+  }
   return false;
 }
 
-function detectNonUSHint(rawSegment: string): string | null {
+function hasUSStateNameHint(rawSegment: string): boolean {
+  return hasAliasPhraseMatch(collectNormalizedLocationPhrases(rawSegment), US_STATE_NAME_ALIAS_SET);
+}
+
+function findMatchingAlias(phrases: Set<string>, aliases: Set<string>): string | null {
+  for (const phrase of phrases) {
+    if (aliases.has(phrase)) return phrase;
+  }
+  return null;
+}
+
+function findMatchedUSState(rawSegment: string): string | undefined {
+  const phrases = collectNormalizedLocationPhrases(rawSegment);
+  for (const phrase of phrases) {
+    const code = US_STATE_ALIAS_TO_CODE[phrase];
+    if (code) return code;
+  }
+
+  const rawParts = rawSegment
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  for (const part of rawParts) {
+    const upper = part.toUpperCase();
+    if (US_STATE_CODES.has(upper)) return upper;
+  }
+
+  const trailingStatePattern = new RegExp(`\\b(${[...US_STATE_CODES].join("|")})$`, "i");
+  const match = rawSegment.match(trailingStatePattern);
+  return match?.[1]?.toUpperCase();
+}
+
+function findMatchedUSLocality(rawSegment: string): string | undefined {
+  const phrases = collectNormalizedLocationPhrases(rawSegment);
+  const matchedStrongAlias = findMatchingAlias(phrases, US_STRONG_LOCALITY_ALIAS_SET);
+  if (matchedStrongAlias) return US_LOCALITY_CANONICAL_BY_ALIAS.get(matchedStrongAlias);
+
+  const matchedWeakAlias = findMatchingAlias(phrases, US_WEAK_LOCALITY_ALIAS_SET);
+  if (matchedWeakAlias) return US_LOCALITY_CANONICAL_BY_ALIAS.get(matchedWeakAlias);
+
+  return undefined;
+}
+
+/**
+ * Classify U.S. geography strength.
+ * Strong signals can safely beat sparse ATS location text.
+ * Weak signals keep ambiguous U.S. city-only rows, but they should not
+ * override an explicit foreign-country signal like "Cambridge, UK".
+ */
+function detectUSStrengthFromSegment(rawSegment: string): {
+  strength: USLocationStrength;
+  matchedUsState?: string;
+  matchedUsLocality?: string;
+} {
   const normalized = normalizeText(rawSegment);
-  if (!normalized) return null;
+  if (!normalized) return { strength: "none" };
+
+  const phrases = collectNormalizedLocationPhrases(rawSegment);
+  const matchedUsState = findMatchedUSState(rawSegment);
+  const matchedUsLocality = findMatchedUSLocality(rawSegment);
+
+  if (hasExplicitUSHint(normalized)) {
+    return { strength: "strong", matchedUsState, matchedUsLocality };
+  }
+  if (hasUSStateNameHint(rawSegment)) {
+    return { strength: "strong", matchedUsState, matchedUsLocality };
+  }
+  if (hasAliasPhraseMatch(phrases, US_STRONG_LOCALITY_ALIAS_SET)) {
+    return { strength: "strong", matchedUsState, matchedUsLocality };
+  }
+
+  if (hasUSStatePattern(rawSegment)) {
+    const trailingToken = rawSegment
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean);
+    const lastToken = trailingToken[trailingToken.length - 1]?.toLowerCase();
+
+    // Keep Delaware / Arkansas only when some other U.S. signal is present.
+    if (lastToken && AMBIGUOUS_US_STATE_CODES.has(lastToken)) {
+      if (hasAliasPhraseMatch(phrases, US_WEAK_LOCALITY_ALIAS_SET)) {
+        return { strength: "strong", matchedUsState, matchedUsLocality };
+      }
+      return { strength: "none" };
+    }
+    return { strength: "strong", matchedUsState, matchedUsLocality };
+  }
+
+  if (hasAliasPhraseMatch(phrases, US_WEAK_LOCALITY_ALIAS_SET)) {
+    return { strength: "weak", matchedUsState, matchedUsLocality };
+  }
+  return { strength: "none" };
+}
+
+function detectNonUSHint(rawSegment: string): { hint: string | null; strength: NonUSStrength } {
+  const normalized = normalizeText(rawSegment);
+  if (!normalized) return { hint: null, strength: "none" };
 
   for (const hint of NON_US_HINTS) {
     if (hasWholeHint(normalized, hint)) {
-      return hint;
+      return { hint, strength: "strong" };
     }
   }
 
@@ -322,46 +462,220 @@ function detectNonUSHint(rawSegment: string): string | null {
   const lastToken = trailingToken[trailingToken.length - 1];
   const normalizedLastToken = lastToken?.toLowerCase();
   if (lastToken && normalizedLastToken && /^[a-z]{2}$/i.test(lastToken)) {
-    const nonUsCountryCodes = new Set([
-      "ar", "at", "au", "be", "bg", "br", "ch", "cl", "cz", "de", "dk", "ee", "es", "fi", "fr",
-      "gb", "gr", "hk", "hr", "hu", "ie", "il", "it", "jp", "kr", "lt", "lu", "lv", "mx",
-      "my", "nl", "no", "nz", "ph", "pl", "pt", "ro", "rs", "se", "sg", "si", "sk", "th",
-      "tr", "tw", "ua", "uk", "za",
-    ]);
-    if (nonUsCountryCodes.has(normalizedLastToken)) {
-      return normalizedLastToken;
+    if (NON_US_COUNTRY_CODE_HINTS.has(normalizedLastToken)) {
+      return { hint: normalizedLastToken, strength: "weak" };
     }
   }
 
-  return null;
+  return { hint: null, strength: "none" };
 }
 
-function detectNonUSUrlHint(url?: string): string | null {
+function detectNonUSUrlHint(url?: string): { hint: string | null; strength: NonUSStrength } {
   const raw = String(url ?? "").trim();
-  if (!raw) return null;
+  if (!raw) return { hint: null, strength: "none" };
 
   try {
     const parsed = new URL(raw);
     const candidate = decodeURIComponent(`${parsed.hostname} ${parsed.pathname}`.replace(/[/_-]+/g, " "));
     return detectNonUSHint(candidate);
   } catch {
-    return null;
+    return { hint: null, strength: "none" };
   }
 }
 
-function detectNonUSTitleHint(title: string): string | null {
-  const normalized = normalizeText(title);
-  if (!normalized) return null;
+function detectUSUrlHint(url?: string): boolean {
+  const raw = String(url ?? "").trim();
+  if (!raw) return false;
 
-  if (/\beu\b/i.test(title)) return "eu";
+  try {
+    const parsed = new URL(raw);
+    const candidate = decodeURIComponent(`${parsed.hostname} ${parsed.pathname}`.replace(/[/_-]+/g, " "));
+    return hasExplicitUSHint(normalizeText(candidate));
+  } catch {
+    return false;
+  }
+}
+
+function detectNonUSTitleHint(title: string): { hint: string | null; strength: NonUSStrength } {
+  const normalized = normalizeText(title);
+  if (!normalized) return { hint: null, strength: "none" };
+
+  if (/\beu\b/i.test(title)) return { hint: "eu", strength: "strong" };
 
   for (const hint of NON_US_TITLE_HINTS) {
     if (hasWholeHint(normalized, hint)) {
-      return hint;
+      return { hint, strength: "strong" };
     }
   }
 
-  return null;
+  return { hint: null, strength: "none" };
+}
+
+function detectUSTitleHint(title: string): boolean {
+  const normalized = normalizeText(title);
+  if (!normalized) return false;
+  return hasExplicitUSHint(normalized);
+}
+
+function structuredLocationString(job: Pick<JobPosting, "locationCity" | "locationState" | "locationCountry">): string {
+  return [job.locationCity, job.locationState, job.locationCountry].filter(Boolean).join(", ");
+}
+
+/**
+ * Build a scored geography assessment. Only confident non-U.S. rows are
+ * dropped; ambiguous rows stay in "review" to avoid false negatives.
+ */
+export function assessJobGeography(job: Pick<JobPosting,
+  "location" | "title" | "url" | "locationCity" | "locationState" | "locationCountry" | "isRemote" | "isHybrid"
+>): JobGeographyAssessment {
+  const rawLocation = String(job.location ?? "").trim();
+  const title = String(job.title ?? "");
+  const url = String(job.url ?? "");
+  const segments = rawLocation ? splitLocationSegments(rawLocation) : [];
+  const candidates = rawLocation ? [rawLocation, ...segments] : [];
+  const structuredLocation = structuredLocationString(job);
+  if (structuredLocation) candidates.push(structuredLocation);
+
+  let score = 0;
+  const reasons = new Set<string>();
+  let hasStrongUS = false;
+  let hasWeakUS = false;
+  let hasStrongNonUS = false;
+  let hasWeakNonUS = false;
+  let firstNonUS: string | null = null;
+  let matchedUsState: string | undefined;
+  let matchedUsLocality: string | undefined;
+
+  for (const candidate of candidates) {
+    const us = detectUSStrengthFromSegment(candidate);
+    if (us.matchedUsState) matchedUsState ??= us.matchedUsState;
+    if (us.matchedUsLocality) matchedUsLocality ??= us.matchedUsLocality;
+    if (us.strength === "strong") {
+      hasStrongUS = true;
+      score += 6;
+      reasons.add("location_us_strong");
+    } else if (us.strength === "weak") {
+      hasWeakUS = true;
+      score += 2;
+      reasons.add("location_us_weak");
+    }
+
+    const nonUs = detectNonUSHint(candidate);
+    if (nonUs.hint && !firstNonUS) firstNonUS = nonUs.hint;
+    if (nonUs.strength === "strong") {
+      hasStrongNonUS = true;
+      score -= 7;
+      reasons.add(`location_non_us_strong:${nonUs.hint}`);
+    } else if (nonUs.strength === "weak") {
+      hasWeakNonUS = true;
+      score -= 3;
+      reasons.add(`location_non_us_weak:${nonUs.hint}`);
+    }
+  }
+
+  const normalizedCountry = normalizeText(String(job.locationCountry ?? ""));
+  if (normalizedCountry) {
+    if (normalizedCountry === "us" || normalizedCountry === "usa" || normalizedCountry === "united states" || normalizedCountry === "united states of america") {
+      score += 8;
+      hasStrongUS = true;
+      reasons.add("structured_country_us");
+    } else {
+      score -= 8;
+      hasStrongNonUS = true;
+      firstNonUS ??= normalizedCountry;
+      reasons.add(`structured_country_non_us:${normalizedCountry}`);
+    }
+  }
+
+  const normalizedState = normalizeText(String(job.locationState ?? ""));
+  const mappedState = normalizedState ? US_STATE_ALIAS_TO_CODE[normalizedState] ?? normalizedState.toUpperCase() : undefined;
+  if (mappedState && US_STATE_CODES.has(mappedState)) {
+    matchedUsState ??= mappedState;
+    score += 5;
+    hasStrongUS = true;
+    reasons.add("structured_state_us");
+  }
+
+  const titleUsHint = detectUSTitleHint(title);
+  const titleNonUsHint = detectNonUSTitleHint(title);
+  const urlUsHint = detectUSUrlHint(url);
+  const urlNonUsHint = detectNonUSUrlHint(url);
+
+  if (titleUsHint) {
+    score += 3;
+    reasons.add("title_us_hint");
+  }
+  if (urlUsHint) {
+    score += 3;
+    reasons.add("url_us_hint");
+  }
+  if (titleNonUsHint.strength === "strong") {
+    score -= 5;
+    hasStrongNonUS = true;
+    firstNonUS ??= titleNonUsHint.hint;
+    reasons.add(`title_non_us_hint:${titleNonUsHint.hint}`);
+  }
+  if (urlNonUsHint.strength !== "none") {
+    score -= urlNonUsHint.strength === "strong" ? 5 : 2;
+    if (urlNonUsHint.strength === "strong") hasStrongNonUS = true;
+    if (urlNonUsHint.strength === "weak") hasWeakNonUS = true;
+    firstNonUS ??= urlNonUsHint.hint;
+    reasons.add(`url_non_us_hint:${urlNonUsHint.hint}`);
+  }
+
+  if (job.isRemote && (titleUsHint || urlUsHint || hasStrongUS || matchedUsState)) {
+    score += 2;
+    reasons.add("remote_with_us_scope");
+  }
+
+  const hasUS = hasStrongUS || (hasWeakUS && !hasStrongNonUS);
+  const hasNonUS = hasStrongNonUS || hasWeakNonUS;
+  const isMixed = hasUS && hasNonUS;
+
+  let decision: GeoDecision = "review";
+  if (isMixed || score >= 5) {
+    decision = "keep";
+  } else if (hasStrongNonUS && score <= -5 && !hasStrongUS) {
+    decision = "drop";
+  } else if (!rawLocation && !titleUsHint && !urlUsHint && !mappedState && !normalizedCountry) {
+    decision = "review";
+  }
+
+  const confidence: GeoConfidence =
+    Math.abs(score) >= 8 ? "high" : Math.abs(score) >= 4 ? "medium" : "low";
+  const detectedCountry =
+    decision === "keep"
+      ? isMixed ? "Mixed" : "United States"
+      : firstNonUS || (decision === "review" ? "Unknown" : "Non-US");
+
+  return {
+    decision,
+    confidence,
+    score,
+    reasons: [...reasons].sort((a, b) => a.localeCompare(b)),
+    detectedCountry,
+    isUSLikely: decision === "keep" ? true : decision === "drop" ? false : null,
+    hasUS,
+    hasNonUS,
+    isMixed,
+    matchedUsLocality,
+    matchedUsState,
+  };
+}
+
+export function annotateJobGeography(job: JobPosting): JobPosting {
+  const assessment = assessJobGeography(job);
+  return {
+    ...job,
+    detectedCountry: assessment.detectedCountry,
+    isUSLikely: assessment.isUSLikely,
+    matchedUsLocality: assessment.matchedUsLocality,
+    matchedUsState: assessment.matchedUsState,
+    geoDecision: assessment.decision,
+    geoConfidence: assessment.confidence,
+    geoScore: assessment.score,
+    geoReasons: assessment.reasons,
+  };
 }
 
 export function analyzeJobLocation(location: string): {
@@ -371,72 +685,13 @@ export function analyzeJobLocation(location: string): {
   hasNonUS: boolean;
   isMixed: boolean;
 } {
-  const raw = String(location || "").trim();
-  if (!raw) {
-    return {
-      isUSLikely: null,
-      detectedCountry: "Unknown",
-      hasUS: false,
-      hasNonUS: false,
-      isMixed: false,
-    };
-  }
-
-  const segments = splitLocationSegments(raw);
-  const candidates = segments.length ? [raw, ...segments] : [raw];
-
-  let hasUS = false;
-  let firstNonUS: string | null = null;
-
-  for (const candidate of candidates) {
-    if (!hasUS && detectUSFromSegment(candidate)) {
-      hasUS = true;
-    }
-
-    if (!firstNonUS) {
-      firstNonUS = detectNonUSHint(candidate);
-    }
-  }
-
-  const hasNonUS = Boolean(firstNonUS);
-  const isMixed = hasUS && hasNonUS;
-
-  if (isMixed) {
-    return {
-      isUSLikely: true,
-      detectedCountry: "Mixed",
-      hasUS: true,
-      hasNonUS: true,
-      isMixed: true,
-    };
-  }
-
-  if (hasUS) {
-    return {
-      isUSLikely: true,
-      detectedCountry: "United States",
-      hasUS: true,
-      hasNonUS: false,
-      isMixed: false,
-    };
-  }
-
-  if (hasNonUS) {
-    return {
-      isUSLikely: false,
-      detectedCountry: firstNonUS || "Non-US",
-      hasUS: false,
-      hasNonUS: true,
-      isMixed: false,
-    };
-  }
-
+  const assessment = assessJobGeography({ location, title: "", url: "" });
   return {
-    isUSLikely: null,
-    detectedCountry: "Unknown",
-    hasUS: false,
-    hasNonUS: false,
-    isMixed: false,
+    isUSLikely: assessment.isUSLikely,
+    detectedCountry: assessment.detectedCountry,
+    hasUS: assessment.hasUS,
+    hasNonUS: assessment.hasNonUS,
+    isMixed: assessment.isMixed,
   };
 }
 
@@ -453,36 +708,25 @@ export function detectUSLikely(location: string): { isUSLikely: boolean | null; 
 }
 
 /**
- * Exclude only clearly non-US locations.
- * Keep mixed locations such as:
- * - Pune, India / Boston, MA
- * - Mexico City / San Francisco, CA
- * - Canada / Remote US
+ * Backward-compatible wrapper for call sites that only have free-text fields.
+ * Confident non-U.S. rows are dropped; review rows are kept to avoid false
+ * negatives for U.S. jobs with sparse ATS location metadata.
  */
 export function shouldKeepJobForUSInventory(location: string, title = "", url = ""): boolean {
-  const result = analyzeJobLocation(location);
-  const titleNonUSHint = detectNonUSTitleHint(title);
-  const urlNonUSHint = detectNonUSUrlHint(url);
-  if (!result.hasUS && (titleNonUSHint || urlNonUSHint)) return false;
-  return !(result.hasNonUS && !result.hasUS);
+  return assessJobGeography({ location, title, url }).decision !== "drop";
+}
+
+export function shouldKeepJobPostingForUSInventory(job: JobPosting): boolean {
+  return assessJobGeography(job).decision !== "drop";
 }
 
 /**
  * Add derived fields such as geography and matched keywords.
  */
 export function enrichJob(job: JobPosting, rules: JobTitleConfig): JobPosting {
-  const locationGeography = analyzeJobLocation(job.location);
-  const urlNonUSHint = detectNonUSUrlHint(job.url);
-  const geography = !locationGeography.hasUS && urlNonUSHint
-    ? { isUSLikely: false, detectedCountry: urlNonUSHint }
-    : {
-        isUSLikely: locationGeography.isUSLikely,
-        detectedCountry: locationGeography.detectedCountry,
-      };
+  const geography = annotateJobGeography(job);
   return {
-    ...job,
-    detectedCountry: geography.detectedCountry,
-    isUSLikely: geography.isUSLikely,
+    ...geography,
     matchedKeywords: matchedKeywords(job.title, rules),
   };
 }

@@ -885,11 +885,20 @@ export async function persistCanonicalRolesForRun(
     const locationAnalysis = analyzeJobLocation(job.location);
     const normalizedLocation = {
       raw: job.location,
+      locationCity: job.locationCity ?? null,
+      locationState: job.locationState ?? null,
+      locationCountry: job.locationCountry ?? null,
       detectedCountry: job.detectedCountry ?? locationAnalysis.detectedCountry,
       isUSLikely: job.isUSLikely ?? locationAnalysis.isUSLikely,
       hasUS: locationAnalysis.hasUS,
       hasNonUS: locationAnalysis.hasNonUS,
       isMixed: locationAnalysis.isMixed,
+      matchedUsLocality: job.matchedUsLocality ?? null,
+      matchedUsState: job.matchedUsState ?? null,
+      geoDecision: job.geoDecision ?? null,
+      geoConfidence: job.geoConfidence ?? null,
+      geoScore: job.geoScore ?? null,
+      geoReasons: job.geoReasons ?? [],
     };
 
     await db(env).prepare(`

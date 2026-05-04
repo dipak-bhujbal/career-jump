@@ -125,6 +125,9 @@ export async function fetchSmartRecruitersJobs(
     id: String(job.id ?? job.uuid ?? job.name ?? ""),
     title: job.name ?? "",
     location: [job.location?.city, job.location?.region, job.location?.country].filter(Boolean).join(", ") || "Unknown",
+    locationCity: job.location?.city,
+    locationState: job.location?.region,
+    locationCountry: job.location?.country,
     url: resolveSmartRecruitersApplyUrl(companyId, job),
     postedAt: job.releasedDate ?? job.postingDate ?? undefined,
   }));

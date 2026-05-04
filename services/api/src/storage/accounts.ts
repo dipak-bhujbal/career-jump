@@ -481,7 +481,9 @@ export async function adminSetUserPlan(
 export async function findUserProfiles(search?: string): Promise<UserProfileRecord[]> {
   const query = search?.trim().toLowerCase();
   if (!query) {
-    return scanRows<UserTableProfileRow>(usersTableName(), "sk = :profile", { ":profile": "PROFILE" }, 100);
+    // Background fanout and admin tooling need every profile row, not just
+    // the first scan page, once the users table grows beyond 100 entries.
+    return scanRows<UserTableProfileRow>(usersTableName(), "sk = :profile", { ":profile": "PROFILE" });
   }
   if (query.includes("@")) {
     return queryRows<UserTableProfileRow>(

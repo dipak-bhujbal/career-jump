@@ -147,6 +147,8 @@ export async function fetchPhenomJobs(
         title,
         company: companyName,
         location,
+        locationCity: job.city,
+        locationCountry: job.country,
         url,
         source: "phenom" as never,
         department: job.department ?? job.category,

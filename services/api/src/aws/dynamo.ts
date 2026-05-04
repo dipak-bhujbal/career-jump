@@ -157,15 +157,35 @@ export async function scanRows<T>(
   expressionAttributeValues?: Record<string, unknown>,
   limit?: number
 ): Promise<T[]> {
-  const response = await client.send(new ScanCommand({
-    TableName: tableName,
-    FilterExpression: filterExpression,
-    ExpressionAttributeValues: expressionAttributeValues
-      ? marshall(expressionAttributeValues, { removeUndefinedValues: true })
-      : undefined,
-    Limit: limit,
-  }));
-  return (response.Items ?? []).map((item) => unmarshall(item) as T);
+  const items: T[] = [];
+  let exclusiveStartKey: Record<string, AttributeValue> | undefined;
+  let remaining = typeof limit === "number" ? limit : undefined;
+
+  do {
+    const pageLimit = typeof remaining === "number" ? Math.max(remaining, 0) : undefined;
+    const response = await client.send(new ScanCommand({
+      TableName: tableName,
+      FilterExpression: filterExpression,
+      ExpressionAttributeValues: expressionAttributeValues
+        ? marshall(expressionAttributeValues, { removeUndefinedValues: true })
+        : undefined,
+      Limit: pageLimit,
+      ExclusiveStartKey: exclusiveStartKey,
+    }));
+    const pageItems = (response.Items ?? []).map((item) => unmarshall(item) as T);
+    items.push(...pageItems);
+
+    if (typeof remaining === "number") {
+      remaining -= pageItems.length;
+      if (remaining <= 0) break;
+    }
+
+    // Notification fanout and admin review flows need complete scans once the
+    // user/profile tables grow past DynamoDB's first 1 MB page.
+    exclusiveStartKey = response.LastEvaluatedKey;
+  } while (exclusiveStartKey);
+
+  return items;
 }
 
 /**

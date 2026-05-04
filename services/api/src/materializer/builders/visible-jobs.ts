@@ -1,6 +1,6 @@
 import { deleteRow, jobsTableName, putRow, summariesTableName } from "../../aws/dynamo";
 import { listCurrentRawScans } from "../../storage/raw-scans";
-import { jobKey, nowISO, shouldKeepJobForUSInventory, slugify } from "../../lib/utils";
+import { jobKey, matchedKeywords as deriveMatchedKeywords, nowISO, shouldKeepJobPostingForUSInventory, slugify } from "../../lib/utils";
 import {
   CQRS_JOBS_READY_SK,
   ENTITY_TYPE_VISIBLE_JOB,
@@ -16,6 +16,7 @@ import type { CqrsJobsReadyRow, VisibleJobRow } from "../../storage/read-models"
 import { loadTenantConfigSnapshot } from "../config-snapshot";
 import { queryAllVisibleJobRows } from "../readers";
 import type { MaterializerBuilder } from "../types";
+import type { JobPosting } from "../../types";
 
 export const visibleJobsBuilder: MaterializerBuilder = {
   entityType: "visible_jobs",
@@ -81,7 +82,7 @@ export const visibleJobsBuilder: MaterializerBuilder = {
         }
 
         // US eligibility filter
-        if (usFilterEnabled && !shouldKeepJobForUSInventory(job.location ?? "", title, job.url ?? "")) {
+        if (usFilterEnabled && !shouldKeepJobPostingForUSInventory({ ...job, title, url: job.url ?? "" } as JobPosting)) {
           skippedUsFilter++;
           continue;
         }
@@ -102,21 +103,28 @@ export const visibleJobsBuilder: MaterializerBuilder = {
         const companyLower = (job.company ?? "").toLowerCase();
         const locationLower = (job.location ?? "").toLowerCase();
         const sourceLower = slugify(job.source ?? "");
-        const usEligible = shouldKeepJobForUSInventory(job.location ?? "", title, job.url ?? "");
+        const usEligible = shouldKeepJobPostingForUSInventory({ ...job, title, url: job.url ?? "" } as JobPosting);
         const existing = existingByKey.get(key);
         const isNew = !isBackfill && existing === undefined;
         const isUpdated = !isBackfill && existing !== undefined && existing.sourceUpdatedAt !== scan.scannedAt;
 
-        // matchedKeywords: use stored value from scan; if include filter is
-        // active, intersect with configured keywords. Jobs with zero matches
-        // after intersection are not tenant-visible — skip them entirely.
+        // matchedKeywords: prefer the stored scan keywords, but fall back to
+        // deriving them from the title when older raw rows predate keyword
+        // persistence. This keeps CQRS visibility aligned with the legacy
+        // path instead of silently dropping otherwise-matching jobs.
         const storedKeywords: string[] = Array.isArray(job.matchedKeywords) ? job.matchedKeywords : [];
+        const fallbackKeywords = storedKeywords.length > 0
+          ? storedKeywords
+          : deriveMatchedKeywords(title, {
+              includeKeywords,
+              excludeKeywords,
+            });
         const matchedKeywords =
           includeKeywords.length > 0
-            ? storedKeywords.filter((kw) =>
+            ? fallbackKeywords.filter((kw) =>
                 includeKeywords.some((ik) => kw.toLowerCase().includes(ik.toLowerCase()))
               )
-            : storedKeywords;
+            : fallbackKeywords;
 
         if (includeKeywords.length > 0 && matchedKeywords.length === 0) {
           continue;

@@ -13,7 +13,11 @@ import { parseWorkdaySampleUrl } from "../../config";
 import { normalizePostedAtValue } from "../../lib/utils";
 
 const WORKDAY_PAGE_SIZE = 20;
-const MAX_PAGES_PER_QUERY = 3;
+// Workday responses expose a `total` count, so the adapter should page until
+// that total is exhausted instead of truncating large boards at an arbitrary
+// small cap. Keep a very high safety ceiling only as a last-resort guard
+// against malformed totals or accidental infinite pagination loops.
+const MAX_PAGES_PER_QUERY = 500;
 const WORKDAY_RETRY_DELAYS_MS = [1000, 2500];
 const WORKDAY_PAGE_DELAY_MS = 250;
 const WORKDAY_QUERY_DELAY_MS = 400;
@@ -758,8 +762,12 @@ async function fetchWorkdayJobsForSearchText(
 ): Promise<WorkdayScanResult> {
   const all: JobPosting[] = [];
   let offset = 0;
+  let totalPages = 1;
 
   for (let pageIndex = 0; pageIndex < MAX_PAGES_PER_QUERY; pageIndex += 1) {
+    if (pageIndex >= totalPages) {
+      break;
+    }
     if (pageIndex > 0) {
       await sleep(WORKDAY_PAGE_DELAY_MS);
     }
@@ -770,6 +778,14 @@ async function fetchWorkdayJobsForSearchText(
     }
 
     const postings = Array.isArray(page.response.jobPostings) ? page.response.jobPostings : [];
+    const reportedTotal = typeof page.response.total === "number" && Number.isFinite(page.response.total)
+      ? Math.max(0, page.response.total)
+      : null;
+    if (reportedTotal !== null) {
+      // The first successful page tells us how many 20-job pages the board
+      // actually has, so follow Workday's own total instead of guessing.
+      totalPages = Math.min(MAX_PAGES_PER_QUERY, Math.max(1, Math.ceil(reportedTotal / WORKDAY_PAGE_SIZE)));
+    }
     if (postings.length === 0) {
       break;
     }
@@ -779,6 +795,9 @@ async function fetchWorkdayJobsForSearchText(
     }
 
     offset += postings.length;
+    if (reportedTotal !== null && offset >= reportedTotal) {
+      break;
+    }
     if (postings.length < WORKDAY_PAGE_SIZE) {
       break;
     }

@@ -28,7 +28,70 @@ describe("jobs pipeline", () => {
 
   it("byCountry US-only", async () => {
     const out = await pipe(jobs, ctx, filters.usOnly);
-    expect(out.map((j) => j.id).sort()).toEqual(["1", "4"]);
+    // Plain "Remote" stays in review mode so the strict U.S. filter does not
+    // falsely discard legitimate U.S.-remote jobs with sparse ATS metadata.
+    expect(out.map((j) => j.id).sort()).toEqual(["1", "2", "4"]);
+  });
+
+  it("keeps mixed-location jobs when any location is in the US", async () => {
+    const mixedJobs: JobPosting[] = [
+      {
+        id: "mix-1",
+        title: "Staff Engineer",
+        company: "MixCo",
+        location: "Pune, India / Boston, MA",
+        url: "https://x.com/mix-1",
+        source: "workday",
+      } as JobPosting,
+    ];
+    const out = await pipe(mixedJobs, ctx, filters.usOnly);
+    expect(out.map((j) => j.id)).toEqual(["mix-1"]);
+  });
+
+  it("drops explicit foreign locations even when the city name also exists in the US", async () => {
+    const ambiguousJobs: JobPosting[] = [
+      {
+        id: "amb-1",
+        title: "Platform Engineer",
+        company: "AmbCo",
+        location: "Cambridge, United Kingdom",
+        url: "https://x.com/amb-1",
+        source: "greenhouse",
+      } as JobPosting,
+    ];
+    const out = await pipe(ambiguousJobs, ctx, filters.usOnly);
+    expect(out).toHaveLength(0);
+  });
+
+  it("keeps major US locality aliases such as SF Bay Area", async () => {
+    const aliasJobs: JobPosting[] = [
+      {
+        id: "alias-1",
+        title: "Software Engineer",
+        company: "AliasCo",
+        location: "SF Bay Area",
+        url: "https://x.com/alias-1",
+        source: "greenhouse",
+      } as JobPosting,
+    ];
+    const out = await pipe(aliasJobs, ctx, filters.usOnly);
+    expect(out.map((j) => j.id)).toEqual(["alias-1"]);
+  });
+
+  it("parses full state names as US in normalizeLocation", async () => {
+    const stateNameJobs: JobPosting[] = [
+      {
+        id: "state-1",
+        title: "Site Reliability Engineer",
+        company: "StateCo",
+        location: "Austin, Texas",
+        url: "https://x.com/state-1",
+        source: "greenhouse",
+      } as JobPosting,
+    ];
+    const out = (await pipe(stateNameJobs, ctx, enrichers.normalizeLocation)) as Array<JobPosting & { locationCountry?: string; locationState?: string }>;
+    expect(out[0].locationCountry).toBe("US");
+    expect(out[0].locationState).toBe("TX");
   });
 
   it("normalizeLocation enriches", async () => {

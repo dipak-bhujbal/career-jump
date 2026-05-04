@@ -1,5 +1,9 @@
 import { scanAllRows, usersTableName } from "../aws/dynamo";
+import { makeAwsEnv } from "./env";
+import { loadRuntimeConfig } from "../config";
 import { enqueueMaterializerMessages } from "../materializer";
+import { saveTenantConfigSnapshot } from "../materializer";
+import { versionFromIso } from "../materializer/dual-build";
 import { nowISO } from "../lib/utils";
 import type { MaterializerMessage } from "../materializer";
 
@@ -31,45 +35,82 @@ export async function handler(): Promise<{
 }> {
   const triggeredAt = nowISO();
   const jobId = `backfill-${Date.now()}`;
+  const env = makeAwsEnv();
 
-  // Discover all tenants from the users table PROFILE rows
-  type ProfileRow = { pk: string; sk: string; email?: string };
+  // Discover all tenants from the users table PROFILE rows. The CQRS routes
+  // key rows by runtime tenantId (the Cognito sub / tenant UUID), not by
+  // email, so backfill must enqueue the same tenant key the API will query.
+  type ProfileRow = {
+    pk: string;
+    sk: string;
+    userId?: string;
+    tenantId?: string;
+    email?: string;
+    scope?: "user" | "admin";
+  };
   const profileRows = await scanAllRows<ProfileRow>(usersTableName(), {
     filterExpression: "sk = :sk",
     expressionAttributeValues: { ":sk": "PROFILE" },
   });
 
-  const tenantIds = profileRows
-    .map((r) => (r.email ?? r.pk.replace(/^USER#/, "")).trim().toLowerCase())
-    .filter(Boolean);
+  const tenantProfiles = profileRows
+    .map((row) => ({
+      tenantId: String(row.tenantId ?? row.userId ?? row.pk.replace(/^USER#/, "")).trim(),
+      userId: String(row.userId ?? row.tenantId ?? row.pk.replace(/^USER#/, "")).trim(),
+      isAdmin: row.scope === "admin",
+    }))
+    .filter((row) => row.tenantId.length > 0);
 
-  // Ensure at least the default tenant is always covered
-  const tenants = tenantIds.length > 0
-    ? [...new Set(tenantIds)]
-    : [DEFAULT_TENANT_ID];
+  // Ensure at least the default tenant is always covered. This fallback is
+  // only for empty/bootstrap environments; real prod tenants should always
+  // come from PROFILE rows with a concrete tenantId.
+  const tenants = tenantProfiles.length > 0
+    ? Array.from(new Map(tenantProfiles.map((row) => [row.tenantId, row])).values())
+    : [{ tenantId: DEFAULT_TENANT_ID, userId: DEFAULT_TENANT_ID, isAdmin: false }];
 
   const messages: MaterializerMessage[] = [];
 
-  for (const tenantId of tenants) {
+  for (const tenant of tenants) {
+    // Backfill must align configVersion with the live runtime config; the
+    // /api/jobs CQRS cutover rejects ready rows built for a stale version.
+    const config = await loadRuntimeConfig(env, tenant.tenantId, {
+      isAdmin: tenant.isAdmin,
+      updatedByUserId: tenant.userId,
+      expandAdminCompanies: tenant.isAdmin ? false : undefined,
+    });
+    const configVersion = versionFromIso(config.updatedAt);
+    const inventoryVersion = configVersion;
+
+    // Bootstrap the tenant config snapshot before the visible-jobs build so
+    // old tenants without a recent config save still materialize the correct
+    // enabled-company and keyword filters during backfill.
+    await saveTenantConfigSnapshot({
+      tenantId: tenant.tenantId,
+      config,
+      configVersion,
+      inventoryVersion,
+      ifNotExists: false,
+    });
+
     messages.push({
       scope: "tenant",
-      tenantId,
-      jobId: `${jobId}-${tenantId}-visible-jobs`,
+      tenantId: tenant.tenantId,
+      jobId: `${jobId}-${tenant.tenantId}-visible-jobs`,
       entityType: "visible_jobs",
       triggerType: "backfill",
       triggeredAt,
-      configVersion: 1,
-      inventoryVersion: 1,
+      configVersion,
+      inventoryVersion,
     });
     messages.push({
       scope: "tenant",
-      tenantId,
-      jobId: `${jobId}-${tenantId}-dashboard`,
+      tenantId: tenant.tenantId,
+      jobId: `${jobId}-${tenant.tenantId}-dashboard`,
       entityType: "dashboard_summary",
       triggerType: "backfill",
       triggeredAt,
-      configVersion: 1,
-      inventoryVersion: 1,
+      configVersion,
+      inventoryVersion,
     });
   }
 
@@ -110,14 +151,14 @@ export async function handler(): Promise<{
     component: "materializer.backfill",
     event: "backfill_enqueued",
     jobId,
-    tenants,
+    tenants: tenants.map((tenant) => tenant.tenantId),
     enqueued: messages.length,
     triggeredAt,
   }));
 
   return {
     enqueued: messages.length,
-    tenants,
+    tenants: tenants.map((tenant) => tenant.tenantId),
     jobId,
     triggeredAt,
   };
