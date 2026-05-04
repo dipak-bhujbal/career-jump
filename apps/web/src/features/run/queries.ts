@@ -8,6 +8,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   api,
+  ApiError,
   type ActionPlanEnvelope,
   type AppliedJobsEnvelope,
   type Dashboard,
@@ -94,6 +95,11 @@ export function useScanContext(options: { enabled?: boolean } = {}) {
     queryFn: () => api.get<ScanContextEnvelope>("/api/scan-context"),
     enabled: options.enabled !== false,
     staleTime: 60_000,
+    // This endpoint is invoked right before manual scan confirmation. A brief
+    // retry is acceptable here because the user is already waiting on the run
+    // action and 429s are typically transient concurrency bursts.
+    retry: (failureCount, error) => error instanceof ApiError && error.status === 429 && failureCount < 1,
+    retryDelay: 750,
   });
 }
 

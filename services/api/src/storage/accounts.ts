@@ -361,8 +361,6 @@ export async function ensureUserSession(
     country: string;
   }
 ): Promise<UserSessionRecord> {
-  const subscription = await loadBillingSubscription(actor.userId);
-  const plan = normalizePlan(subscription.plan);
   const now = nowISO();
   const existing = await getRow<UserTableSessionRow>(
     usersTableName(),
@@ -373,18 +371,36 @@ export async function ensureUserSession(
     throw new Error("This session was revoked. Please sign in again.");
   }
   if (existing) {
+    const lastSeenMs = Date.parse(existing.lastSeenAt || "");
+    const shouldRefreshLastSeen = !Number.isFinite(lastSeenMs) || (Date.now() - lastSeenMs) >= (5 * 60 * 1000);
+    const nextSubnet = ipSubnet(input.ipAddress);
+    const existingSubnet = ipSubnet(existing.ipAddress || "");
+    const deviceChanged = Boolean(input.deviceFingerprint) && input.deviceFingerprint !== existing.deviceFingerprint;
+    const locationChanged = existingSubnet !== nextSubnet || existing.country !== input.country;
+    // Session rows used to rewrite on every authenticated API request. Under
+    // page-load bursts that turned three small GETs into three Dynamo writes
+    // per user. Refresh only when session metadata meaningfully changes or the
+    // heartbeat is stale so routine navigation stays read-mostly.
+    if (!shouldRefreshLastSeen && !deviceChanged && !locationChanged) {
+      return existing;
+    }
+
+    const subscription = await loadBillingSubscription(actor.userId);
+    const plan = normalizePlan(subscription.plan);
     const refreshed: UserTableSessionRow = {
       ...existing,
-      lastSeenAt: now,
-      ipAddress: input.ipAddress,
-      country: input.country,
-      deviceFingerprint: input.deviceFingerprint || existing.deviceFingerprint,
+      lastSeenAt: shouldRefreshLastSeen ? now : existing.lastSeenAt,
+      ipAddress: locationChanged ? input.ipAddress : existing.ipAddress,
+      country: locationChanged ? input.country : existing.country,
+      deviceFingerprint: deviceChanged ? input.deviceFingerprint : existing.deviceFingerprint,
       plan,
     };
     await putRow(usersTableName(), refreshed);
     return refreshed;
   }
 
+  const subscription = await loadBillingSubscription(actor.userId);
+  const plan = normalizePlan(subscription.plan);
   const activeSessions = await listUserSessions(actor.userId);
   const limit = await sessionLimitForPlan(plan);
   const sortedSessions = [...activeSessions].sort((a, b) => a.lastSeenAt.localeCompare(b.lastSeenAt));

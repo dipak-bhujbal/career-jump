@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   api,
   registryApi,
+  ApiError,
   type ConfigEnvelope,
   type RegistryEntry,
   type RegistryMeta,
@@ -53,6 +54,10 @@ export function useConfig(options: ConfigQueryOptions = {}) {
     // those call sites opt out of eager background reads to reduce burst load.
     enabled: options.enabled !== false,
     staleTime: 30_000,
+    // Config is the source of truth for the page. Retry a lone throttle once
+    // so a temporary Lambda burst does not blank the entire configuration UI.
+    retry: (failureCount, error) => error instanceof ApiError && error.status === 429 && failureCount < 1,
+    retryDelay: 750,
   });
 }
 

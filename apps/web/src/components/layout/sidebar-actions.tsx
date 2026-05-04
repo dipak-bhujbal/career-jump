@@ -29,7 +29,7 @@ import { trackEvent } from "@/lib/analytics";
 export function SidebarActions() {
   const status = useRunStatus();
   const quota = useScanQuota();
-  const scanContext = useScanContext();
+  const scanContext = useScanContext({ enabled: false });
   const latestRun = useLatestRunResult();
   const { data: me } = useMe();
   const startRun = useStartRun();
@@ -45,7 +45,6 @@ export function SidebarActions() {
   const abortableRunId = status.data?.runId ?? latestRun.data?.runId ?? null;
   // The sidebar is mounted on every page, so use a tiny dedicated endpoint for
   // scan confirmation context instead of eagerly fetching the full config.
-  const enabledCompanyCount = scanContext.data?.enabledCompanyCount ?? 0;
   const isAdmin = me?.actor.isAdmin === true;
 
   useEffect(() => {
@@ -74,7 +73,9 @@ export function SidebarActions() {
         </Button>
       ) : (
         <Button
-          onClick={() => {
+          onClick={async () => {
+            const contextResult = await scanContext.refetch();
+            const enabledCompanyCount = contextResult.data?.enabledCompanyCount ?? 0;
             if (!confirmLargeScanStart(enabledCompanyCount, isAdmin)) return;
             toast("Scan starting", "info");
             // Capture the primary app action so product analytics can separate
