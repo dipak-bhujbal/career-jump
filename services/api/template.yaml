@@ -65,9 +65,12 @@ Globals:
         AWS_JOBS_TABLE: !Ref JobsTable
         AWS_SUMMARIES_TABLE: !Ref SummariesTable
         MATERIALIZER_QUEUE_URL: !Ref MaterializerQueue
-        CQRS_REGISTRY_READ: "0"
-        CQRS_JOBS_READ: "0"
-        CQRS_DASHBOARD_READ: "0"
+        # CQRS read paths are now production-enabled. Each route still keeps
+        # its own readiness/fallback guard so a missing row set cannot break
+        # the user-facing response path during rebuilds.
+        CQRS_REGISTRY_READ: "1"
+        CQRS_JOBS_READ: "1"
+        CQRS_DASHBOARD_READ: "1"
         AWS_JOB_ARCHIVE_BUCKET: !Ref JobArchiveBucket
         AWS_EVENTS_TABLE: !Ref EventsTable
         AWS_SUPPORT_TABLE: !Ref SupportTable
@@ -1408,6 +1411,8 @@ Resources:
       Timeout: 300
       MemorySize: 256
       Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
         - DynamoDBReadPolicy:
             TableName: !Ref RegistryTable
         - DynamoDBReadPolicy:
