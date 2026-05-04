@@ -134,7 +134,6 @@ export function useSaveConfig() {
     mutationFn: (payload: {
       companies: CompanyConfig[];
       jobtitles: { includeKeywords: string[]; excludeKeywords: string[] };
-      adminRegistryMode?: "all" | "none";
     }) =>
       api.post<ConfigEnvelope>("/api/config/save", payload),
     onSuccess: async (result) => {
@@ -146,7 +145,14 @@ export function useSaveConfig() {
         config: result.config,
         companyScanOverrides: current?.companyScanOverrides ?? {},
       }));
-      await qc.invalidateQueries({ queryKey: configKey });
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: configKey }),
+        // Config changes can immediately alter tenant-visible jobs and the
+        // dashboard summary once the Phase 3.5 rebuild lands, so refresh both
+        // surfaces instead of leaving the prior cache warm.
+        qc.invalidateQueries({ queryKey: ["jobs"] }),
+        qc.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
     },
   });
 }
@@ -166,6 +172,12 @@ export function useToggleCompany() {
         `/api/companies/${encodeURIComponent(company)}/toggle`,
         { paused },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: configKey }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: configKey }),
+        qc.invalidateQueries({ queryKey: ["jobs"] }),
+        qc.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+    },
   });
 }

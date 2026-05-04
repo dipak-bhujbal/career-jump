@@ -2,6 +2,7 @@ import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import type { APIGatewayProxyStructuredResultV2, LambdaFunctionURLEvent } from "aws-lambda";
 import { authorizeRequest, authHeaders } from "./auth";
 import { makeAwsEnv } from "./env";
+import { resolveRequestTenantContext } from "../lib/tenant";
 import { handleRequest } from "../routes";
 import { logErrorEvent } from "../lib/logger";
 
@@ -42,11 +43,21 @@ async function responseToResult(response: Response, origin?: string | null): Pro
   };
 }
 
-async function startAwsRun(request: Request): Promise<Response> {
+async function startAwsRun(request: Request, env: ReturnType<typeof makeAwsEnv>): Promise<Response> {
   const functionName = process.env.RUN_ORCHESTRATOR_FUNCTION_NAME;
   if (!functionName) {
     return new Response(JSON.stringify({ ok: false, error: "RUN_ORCHESTRATOR_FUNCTION_NAME is not configured" }), {
       status: 500,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  // Reuse the same auth-derived tenant context as the main API routes so
+  // manual scans cannot bypass admin/user policy through the AWS entrypoint.
+  const tenantContext = await resolveRequestTenantContext(request, env);
+  if (tenantContext.isAdmin) {
+    return new Response(JSON.stringify({ ok: false, error: "Admin accounts cannot trigger user scans." }), {
+      status: 403,
       headers: { "content-type": "application/json" },
     });
   }
@@ -60,12 +71,12 @@ async function startAwsRun(request: Request): Promise<Response> {
     Payload: Buffer.from(JSON.stringify({
       runId,
       triggerType: "manual",
-      userId: request.headers.get("x-cj-user-id") ?? undefined,
-      tenantId: request.headers.get("x-cj-tenant-id") ?? undefined,
-      email: request.headers.get("x-cj-email") ?? undefined,
-      displayName: request.headers.get("x-cj-display-name") ?? undefined,
-      scope: request.headers.get("x-cj-auth-scope") ?? undefined,
-      isAdmin: request.headers.get("x-cj-admin") === "true",
+      userId: tenantContext.userId,
+      tenantId: tenantContext.tenantId,
+      email: tenantContext.email,
+      displayName: tenantContext.displayName,
+      scope: tenantContext.scope,
+      isAdmin: tenantContext.isAdmin,
     })),
   }));
 
@@ -86,7 +97,7 @@ export async function handler(event: LambdaFunctionURLEvent): Promise<APIGateway
   try {
     const url = new URL(request.url);
     const response = request.method === "POST" && url.pathname === "/api/run"
-      ? await startAwsRun(request)
+      ? await startAwsRun(request, env)
       : await handleRequest(request, env);
     return responseToResult(response, origin);
   } catch (error) {

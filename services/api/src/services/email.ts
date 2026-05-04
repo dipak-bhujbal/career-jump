@@ -160,6 +160,30 @@ export async function maybeSendEmail(
   // profile email. Falling back to a blank actor silently routed messages to
   // the default tenant address instead of the real recipient.
   const profile = userId ? await loadUserProfile(userId) : null;
+  if (profile?.scope === "admin") {
+    const skipReason = "Admin accounts do not receive personal job alerts";
+    await recordAppLog(env, {
+      level: "info",
+      event: "email_skipped",
+      message: `Skipped email because ${skipReason.toLowerCase()}`,
+      runId,
+      route: "scan",
+      details: { skipReason, newJobs: newJobs.length, updatedJobs: updatedJobs.length, userId },
+    });
+    return { status: "skipped", skipReason };
+  }
+  if (userId && !profile) {
+    const skipReason = "No valid non-admin user profile for email delivery";
+    await recordAppLog(env, {
+      level: "warn",
+      event: "email_skipped",
+      message: `Skipped email because ${skipReason.toLowerCase()}`,
+      runId,
+      route: "scan",
+      details: { skipReason, newJobs: newJobs.length, updatedJobs: updatedJobs.length, userId },
+    });
+    return { status: "skipped", skipReason };
+  }
   const actor = userId
     ? {
         userId,
@@ -167,7 +191,9 @@ export async function maybeSendEmail(
         email: profile?.email ?? "",
         displayName: profile?.displayName ?? "",
         scope: profile?.scope ?? ("user" as const),
-        isAdmin: profile?.scope === "admin",
+        // Admin profiles have already been rejected above, so the remaining
+        // user-triggered email path is always non-admin.
+        isAdmin: false,
       }
     : await resolveSystemTenantContext(env);
   const [settings, subscription, flags] = userId
@@ -182,7 +208,7 @@ export async function maybeSendEmail(
         await loadFeatureFlags(actor),
       ];
   const digestEnabled = flags.find((flag) => flag.flagName === "email_digest")?.enabled !== false;
-  const recipient = actor.email || process.env.DEFAULT_TENANT_EMAIL || "";
+  const recipient = actor.email || "";
   const sender = env.SES_FROM_EMAIL || process.env.SES_FROM_EMAIL || "";
   const storedWebhook = await loadEmailWebhookConfig(env);
   const webhookUrl = storedWebhook?.webhookUrl || env.APPS_SCRIPT_WEBHOOK_URL || "";

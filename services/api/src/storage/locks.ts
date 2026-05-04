@@ -1,5 +1,5 @@
 // Lock-related exports are grouped here for discoverability. The implementation
-// still lives in core.ts so existing logic and signatures remain unchanged.
+// still lives in core.ts so tenant-aware lock changes stay centralized.
 export {
   ActiveRunOwnershipError,
   acquireActiveRunLock,

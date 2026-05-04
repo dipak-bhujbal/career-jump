@@ -32,14 +32,75 @@ function isAdminScopedPath(pathname: string): boolean {
   return pathname === "/logs" || pathname === "/admin" || pathname.startsWith("/admin-");
 }
 
+function isUserWorkflowPath(pathname: string): boolean {
+  return pathname === "/"
+    || pathname === "/jobs"
+    || pathname.startsWith("/jobs/")
+    || pathname.startsWith("/companies/")
+    || pathname === "/applied"
+    || pathname.startsWith("/applied/")
+    || pathname === "/plan"
+    || pathname.startsWith("/plan/")
+    || pathname === "/configuration"
+    || pathname.startsWith("/configuration/")
+    || pathname === "/profile"
+    || pathname.startsWith("/profile/")
+    || pathname === "/settings"
+    || pathname.startsWith("/settings/")
+    || pathname === "/support"
+    || pathname.startsWith("/support/");
+}
+
 function AppShell() {
   const navigate = useNavigate();
-  const { data: me } = useMe();
-  useHotkey({ id: "go-dashboard", description: "Go to Dashboard", category: "Navigate", sequence: ["g", "d"] }, () => navigate({ to: "/" }));
-  useHotkey({ id: "go-jobs", description: "Go to Available Jobs", category: "Navigate", sequence: ["g", "j"] }, () => navigate({ to: "/jobs" }));
-  useHotkey({ id: "go-applied", description: "Go to Applied Jobs", category: "Navigate", sequence: ["g", "a"] }, () => navigate({ to: "/applied" }));
-  useHotkey({ id: "go-plan", description: "Go to Action Plan", category: "Navigate", sequence: ["g", "p"] }, () => navigate({ to: "/plan" }));
-  useHotkey({ id: "go-config", description: "Go to Configuration", category: "Navigate", sequence: ["g", "c"] }, () => navigate({ to: "/configuration" }));
+  const { pathname } = useLocation();
+  const { data: me, isLoading: meLoading } = useMe();
+  const isAdmin = me?.actor?.isAdmin === true;
+  const actorKnown = Boolean(me?.actor);
+  const shouldRedirectAdminToOps = actorKnown && isAdmin && isUserWorkflowPath(pathname);
+  const shouldRedirectUserToOps = actorKnown && !isAdmin && isAdminScopedPath(pathname);
+
+  useEffect(() => {
+    if (shouldRedirectAdminToOps) {
+      navigate({ to: "/admin", replace: true });
+      return;
+    }
+    if (shouldRedirectUserToOps) {
+      navigate({ to: "/", replace: true });
+    }
+  }, [navigate, shouldRedirectAdminToOps, shouldRedirectUserToOps]);
+
+  useHotkey({ id: "go-dashboard", description: "Go to Dashboard", category: "Navigate", sequence: ["g", "d"] }, () => {
+    if (!isAdmin) navigate({ to: "/" });
+  });
+  useHotkey({ id: "go-jobs", description: "Go to Available Jobs", category: "Navigate", sequence: ["g", "j"] }, () => {
+    if (!isAdmin) navigate({ to: "/jobs" });
+  });
+  useHotkey({ id: "go-applied", description: "Go to Applied Jobs", category: "Navigate", sequence: ["g", "a"] }, () => {
+    if (!isAdmin) navigate({ to: "/applied" });
+  });
+  useHotkey({ id: "go-plan", description: "Go to Action Plan", category: "Navigate", sequence: ["g", "p"] }, () => {
+    if (!isAdmin) navigate({ to: "/plan" });
+  });
+  useHotkey({ id: "go-config", description: "Go to Configuration", category: "Navigate", sequence: ["g", "c"] }, () => {
+    if (!isAdmin) navigate({ to: "/configuration" });
+  });
+
+  if (meLoading && !actorKnown) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[hsl(var(--background))] text-sm text-[hsl(var(--muted-foreground))]">
+        Loading workspace…
+      </div>
+    );
+  }
+
+  if (shouldRedirectAdminToOps || shouldRedirectUserToOps) {
+    return (
+      <div className="h-screen flex items-center justify-center bg-[hsl(var(--background))] text-sm text-[hsl(var(--muted-foreground))]">
+        Redirecting…
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen overflow-hidden flex relative">
@@ -49,13 +110,13 @@ function AppShell() {
         {/* Keep admin-targeted and plan-targeted messages visible above page
             content so every route sees the same announcement contract. */}
         <AnnouncementStack announcements={me?.announcements ?? []} />
-        <RunProgress />
+        {actorKnown && !isAdmin ? <RunProgress /> : null}
         <div className="flex-1 min-h-0 overflow-y-auto">
           <Outlet />
         </div>
       </main>
       <ToastViewport />
-      <CommandPalette />
+      {actorKnown && !isAdmin ? <CommandPalette /> : null}
       <KeyboardHelp />
     </div>
   );

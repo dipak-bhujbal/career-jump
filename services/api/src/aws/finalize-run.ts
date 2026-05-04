@@ -259,7 +259,12 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
 
     try {
       const hasNotificationJobs = notificationJobs.newJobs.length > 0 || notificationJobs.updatedJobs.length > 0;
-      if (hasNotificationJobs) {
+      if (meta.isAdmin) {
+        // Admin accounts can drive operational runs, but personal job alerts
+        // belong only to non-admin user accounts.
+        emailStatus = "skipped";
+        emailSkipReason = "Admin accounts do not receive personal job alerts";
+      } else if (hasNotificationJobs) {
         const emailAttempt = await reserveEmailSendAttempt(env, runId, tenantId);
         if (!emailAttempt.reserved) {
           emailStatus = "skipped";
@@ -355,7 +360,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
 
     await markFinalized(runId);
     await clearRunAbortRequest(env, runId);
-    await releaseActiveRunLock(env, runId);
+    await releaseActiveRunLock(env, tenantId, runId);
     return { ok: true, runId, resultCount: results.length };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -368,7 +373,7 @@ export async function handler(event: FinalizeRunEvent): Promise<{ ok: boolean; r
       error,
     });
     await clearRunAbortRequest(env, runId);
-    await releaseActiveRunLock(env, runId);
+    await releaseActiveRunLock(env, tenantId, runId);
     throw error;
   }
 }

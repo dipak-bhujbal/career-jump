@@ -31,7 +31,10 @@ export function Sidebar() {
   const { profile } = useProfile();
   const { data: me } = useMe();
   const [upgradePromptOpen, setUpgradePromptOpen] = useState(false);
-  const items = me?.actor?.isAdmin ? [...userItems, ...adminItems] : userItems;
+  const isAdmin = me?.actor?.isAdmin === true;
+  const actorKnown = Boolean(me?.actor);
+  const items = isAdmin ? adminItems : actorKnown ? userItems : [];
+  const footerTarget = isAdmin ? "/admin" : "/profile";
   const currentPlan = me?.billing?.plan ?? me?.profile?.plan ?? "free";
   const pageHasPrimaryUpgradeBanner = ["/", "/jobs", "/applied", "/plan", "/configuration"].some((routePath) =>
     routePath === "/" ? pathname === routePath : pathname.startsWith(routePath),
@@ -107,13 +110,14 @@ export function Sidebar() {
         </div>
       ) : null}
 
-      <SidebarActions />
+      {actorKnown && !isAdmin ? <SidebarActions /> : null}
 
-      {/* User footer */}
+      {/* Keep the footer target aligned with the active shell so admins do not
+          bounce back into user-only profile flows after the split. */}
       <div className="p-3 border-t border-[hsl(var(--border))]">
         <div className="flex items-center gap-2.5 rounded-lg px-2 py-2 group">
           <Link
-            to="/profile"
+            to={footerTarget}
             className="flex items-center gap-2.5 flex-1 min-w-0 hover:opacity-80 transition-opacity"
           >
             <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-blue-500 to-purple-600 grid place-items-center text-white text-xs font-bold shrink-0">

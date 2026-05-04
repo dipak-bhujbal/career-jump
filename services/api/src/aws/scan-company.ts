@@ -51,6 +51,7 @@ async function maybeInvokeFinalize(
 
 async function publishAwsRunHeartbeat(
   runId: string,
+  tenantId: string | undefined,
   patch: {
     currentCompany: string;
     currentSource?: string;
@@ -65,7 +66,7 @@ async function publishAwsRunHeartbeat(
   try {
     // AWS runs fan out one company per Lambda, so progress must come from the
     // shared run meta counters instead of the local one-company inventory loop.
-    await heartbeatActiveRun(env, runId, {
+    await heartbeatActiveRun(env, tenantId, runId, {
       totalCompanies: meta.expectedCompanies,
       fetchedCompanies: meta.totalFinishedCompanies ?? (meta.completedCompanies + meta.failedCompanies),
       currentCompany: patch.currentCompany,
@@ -95,7 +96,7 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
     const company = config.companies.find((entry) => entry.company === companyName);
     if (!company) throw new Error(`Company ${companyName} was not found in runtime config`);
 
-    await publishAwsRunHeartbeat(runId, {
+    await publishAwsRunHeartbeat(runId, tenantId, {
       currentCompany: company.company,
       currentSource: company.source,
       currentStage: "scanning_company",
@@ -143,7 +144,7 @@ export async function handler(event: ScanCompanyEvent): Promise<{ ok: boolean; r
     });
   } finally {
     const finish = await markCompanyFinished({ runId, failed });
-    await publishAwsRunHeartbeat(runId, {
+    await publishAwsRunHeartbeat(runId, tenantId, {
       currentCompany: companyName,
       currentStage: failed ? "company_failed" : "company_completed",
       lastEvent: failed ? "company_scan_failed" : "company_scan_completed",

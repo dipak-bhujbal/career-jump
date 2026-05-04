@@ -32,7 +32,9 @@ export default {
     const runId = makeRunId("scheduled");
     let tenantId: string | undefined;
     try {
-      const lockResult = await acquireActiveRunLock(env, { runId, triggerType: "scheduled" });
+      const tenantContext = await resolveSystemTenantContext(env);
+      tenantId = tenantContext.tenantId;
+      const lockResult = await acquireActiveRunLock(env, tenantContext.tenantId, { runId, triggerType: "scheduled" });
       if (!lockResult.ok) {
         await recordAppLog(env, {
           level: "warn",
@@ -65,8 +67,6 @@ export default {
           },
         });
       }
-      const tenantContext = await resolveSystemTenantContext(env);
-      tenantId = tenantContext.tenantId;
       await recordAppLog(env, {
         level: "info",
         event: "scheduled_run_started",
@@ -83,13 +83,20 @@ export default {
       });
       const { inventory, previousInventory, newJobs, updatedJobs } = await runScan(env, config, runId, tenantContext.tenantId);
       const notificationJobs = await getLatestRunNotificationJobs(env, inventory, previousInventory, tenantContext.tenantId);
-      await ensureActiveRunOwnership(env, runId);
+      await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
       const hasNotificationJobs = notificationJobs.newJobs.length > 0 || notificationJobs.updatedJobs.length > 0;
       let emailResult: Awaited<ReturnType<typeof maybeSendEmail>> = {
         status: "skipped",
         skipReason: "Email was not attempted",
       };
-      if (hasNotificationJobs && env.APPS_SCRIPT_WEBHOOK_URL) {
+      if (tenantContext.isAdmin) {
+        // Admin/system-owned runs are operational only and never send personal
+        // job alert emails.
+        emailResult = {
+          status: "skipped",
+          skipReason: "Admin accounts do not receive personal job alerts",
+        };
+      } else if (hasNotificationJobs && env.APPS_SCRIPT_WEBHOOK_URL) {
         const emailAttempt = await reserveEmailSendAttempt(env, runId, tenantContext.tenantId);
         if (!emailAttempt.reserved) {
           emailResult = {
@@ -132,10 +139,10 @@ export default {
         doubles: [inventory.stats.totalJobsMatched, newJobs.length, updatedJobs.length, inventory.stats.totalFetched],
       });
       if (notificationJobs.newJobs.length > 0 && emailResult.status === "sent") {
-        await ensureActiveRunOwnership(env, runId);
+        await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
         await markJobsAsSeen(env, notificationJobs.newJobs, inventory.runAt, runId, tenantContext.tenantId);
       }
-      await ensureActiveRunOwnership(env, runId);
+      await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
       await recordAppLog(env, {
         level: "info",
         event: "run_completed",
@@ -187,7 +194,7 @@ export default {
         },
       });
     } finally {
-      await releaseActiveRunLock(env, runId);
+      await releaseActiveRunLock(env, tenantId, runId);
     }
   },
 };

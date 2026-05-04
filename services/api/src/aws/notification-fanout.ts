@@ -10,7 +10,6 @@ import {
   updateEmailSendAttempt,
 } from "../storage";
 import {
-  expandAdminRuntimeConfigCompanies,
   loadRuntimeConfig,
 } from "../config";
 import { maybeSendEmail } from "../services/email";
@@ -42,30 +41,15 @@ function makeNotificationRunId(profile: UserProfileRecord, reason: string): stri
   return `notify-${reason}-${profile.userId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
-function notificationConfigVersion(config: RuntimeConfig, isAdmin: boolean): string {
-  // Admin notification mode intentionally spans the whole registry even when
-  // the interactive configuration page only shows a curated subset.
-  return isAdmin ? `${config.updatedAt}:admin-all-v1` : config.updatedAt;
+function notificationConfigVersion(config: RuntimeConfig): string {
+  return config.updatedAt;
 }
 
 async function buildNotificationConfig(env: Env, profile: UserProfileRecord): Promise<RuntimeConfig> {
-  const config = await loadRuntimeConfig(env, profile.tenantId, {
-    isAdmin: profile.scope === "admin",
+  return loadRuntimeConfig(env, profile.tenantId, {
+    isAdmin: false,
     updatedByUserId: profile.userId,
-    // Interactive admin pages stay bounded to the visible config subset. The
-    // notification worker deliberately opts into the full registry instead.
-    expandAdminCompanies: profile.scope === "admin" ? false : undefined,
   });
-
-  if (profile.scope !== "admin") {
-    return config;
-  }
-
-  return {
-    ...config,
-    adminRegistryMode: "all",
-    companies: await expandAdminRuntimeConfigCompanies(config.companies, "all"),
-  };
 }
 
 function enabledCompanySet(config: RuntimeConfig): Set<string> {
@@ -107,10 +91,15 @@ async function processProfile(
   if (!settings.emailNotifications) {
     return { status: "skipped", profile: profile.email, reason: "email notifications disabled" };
   }
+  if (profile.scope === "admin") {
+    // Keep the scheduled fanout path aligned with the API-side admin split so
+    // admin accounts never accumulate personal job-alert state again.
+    return { status: "skipped", profile: profile.email, reason: "admin accounts do not receive personal job alerts" };
+  }
 
   const config = await buildNotificationConfig(env, profile);
   const relevantCompanySlug = event.companySlug ? normalizeCompanyKey(event.companySlug) : null;
-  if (relevantCompanySlug && profile.scope !== "admin") {
+  if (relevantCompanySlug) {
     const configuredCompanies = enabledCompanySet(config);
     if (!configuredCompanies.has(relevantCompanySlug)) {
       return { status: "skipped", profile: profile.email, reason: "scan company not tracked by tenant" };
@@ -125,10 +114,10 @@ async function processProfile(
     config,
     previousState.inventory,
     profile.tenantId,
-    { isAdmin: profile.scope === "admin" },
+    { isAdmin: false },
   );
   const storageInventory = await pruneInventoryForStorage(env, nextInventory, profile.tenantId);
-  const nextConfigVersion = notificationConfigVersion(config, profile.scope === "admin");
+  const nextConfigVersion = notificationConfigVersion(config);
 
   // The first notification sweep should establish a clean baseline instead of
   // emailing every historical job that already existed before alerts were on.

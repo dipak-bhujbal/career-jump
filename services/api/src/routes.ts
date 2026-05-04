@@ -129,6 +129,7 @@ import {
 } from "./services/dashboard";
 import {
   enqueueDualBuildMessages,
+  loadTenantConfigSnapshot,
   saveTenantConfigSnapshot,
   tenantConfigChangeMessages,
   tenantScanCompleteMessages,
@@ -393,9 +394,25 @@ function queueMaterializerConfigChange(input: {
 }): void {
   const triggeredAt = nowISO();
   const configVersion = versionFromIso(input.config.updatedAt);
-  const inventoryVersion = configVersion;
 
   void (async () => {
+    const snapshot = await loadTenantConfigSnapshot(input.tenantId);
+    if (!snapshot?.inventoryVersion) {
+      // Fresh tenants can save config before any scan snapshot exists. Emit a
+      // structured warning so bootstrap and unexpected snapshot drift are easy
+      // to distinguish in rollout logs.
+      console.warn(JSON.stringify({
+        component: "materializer.dual-build",
+        event: "config_save_rebuild_no_snapshot",
+        tenantId: input.tenantId,
+        fallbackInventoryVersion: configVersion,
+      }));
+    }
+    // Config-save rebuilds should preserve the last inventory version and only
+    // advance the configVersion/readiness gate unless the tenant has not been
+    // bootstrapped yet.
+    const inventoryVersion = snapshot?.inventoryVersion ?? configVersion;
+
     // Config-change paths own the current tenant snapshot because they see the
     // exact saved config plus override state the user just requested.
     await saveTenantConfigSnapshot({
@@ -1090,6 +1107,13 @@ function requireAdminContext(
 ): Response | null {
   if (tenantContext.isAdmin) return null;
   return jsonResponse({ ok: false, error: "Admin access required" }, 403);
+}
+
+function requireNonAdminContext(
+  tenantContext: Awaited<ReturnType<typeof resolveRequestTenantContext>>
+): Response | null {
+  if (!tenantContext.isAdmin) return null;
+  return jsonResponse({ ok: false, error: "Admin accounts cannot access user workflows." }, 403);
 }
 
 export async function handleRequest(request: Request, env: Env): Promise<Response> {
@@ -2051,12 +2075,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        // Admin browsing/saving should stay scoped to the visible config page;
-        // email fanout handles the separate all-registry notification mode.
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const companyScanOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       return jsonResponse({ ok: true, config, companyScanOverrides });
@@ -2064,14 +2087,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/scan-context" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await applyCompanyScanOverrides(
         env,
         await loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
-          // Manual admin scans should honor the visible tenant configuration
-          // instead of silently expanding into the full registry.
-          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         tenantContext.tenantId,
       );
@@ -2117,13 +2139,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config/save" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const body = await readJsonBody<Partial<RuntimeConfig> & Record<string, unknown>>(request);
       const companies = sanitizeCompanies(body.companies ?? []);
-      const adminRegistryMode = tenantContext.isAdmin && body.adminRegistryMode === "none" ? "none" : "all";
       const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await loadRegistryCache();
       const duplicateRegistryCompany = companies.find((company) =>
@@ -2163,7 +2185,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         companies,
         jobtitles: sanitizeJobtitles(body.jobtitles ?? {}),
         updatedAt: nowISO(),
-        adminRegistryMode: tenantContext.isAdmin ? adminRegistryMode : undefined,
       };
       const persistedConfig = next;
       await saveRuntimeConfig(env, persistedConfig, tenantContext.tenantId, tenantContext.userId, {
@@ -2172,7 +2193,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const savedConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       queueMaterializerConfigChange({
@@ -2186,12 +2206,13 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config/validate-company" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const body = await readJsonBody<Record<string, unknown>>(request);
       const candidate = sanitizeCompanies([{ ...body, enabled: true, isRegistry: false }])[0];
       const currentConfig = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
 
       if (!candidate?.company.trim()) {
@@ -2254,6 +2275,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     const companyToggleMatch = url.pathname.match(/^\/api\/companies\/([^/]+)\/toggle$/);
     if (companyToggleMatch && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const companyName = decodeURIComponent(companyToggleMatch[1] ?? "").trim();
       if (!companyName) return jsonResponse({ ok: false, error: "company name is required" }, 400);
 
@@ -2261,7 +2284,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const currentPaused = currentOverrides[slugify(companyName)]?.paused === true;
@@ -2308,13 +2330,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/companies/toggle-all" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const body = await readJsonBody<Record<string, unknown>>(request);
       if (typeof body.paused !== "boolean") return jsonResponse({ ok: false, error: "paused boolean is required" }, 400);
 
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const currentOverrides = await loadCompanyScanOverrides(env, tenantContext.tenantId);
       const companies = config.companies.map((company) => company.company).filter(Boolean);
@@ -2359,10 +2382,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/config/apply" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await clearATSCache(env, config.companies);
       const inventory = await buildInventory(env, config, null, undefined, tenantContext.tenantId, {
@@ -2384,10 +2408,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/cache/clear" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await clearATSCache(env, config.companies);
       const emptyInventory = buildEmptyInventory(config);
@@ -2406,10 +2431,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/data/clear" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, "seen:"));
       await deleteKvPrefix(jobStateKv(env), tenantScopedPrefix(tenantContext.tenantId, FIRST_SEEN_PREFIX));
@@ -2434,6 +2460,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/run" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const body = await readJsonBody<Record<string, unknown>>(request).catch(() => null);
       const confirmLargeScan = body?.confirmLargeScan === true;
       const config = await applyCompanyScanOverrides(
@@ -2441,10 +2469,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         await loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
-          // Keep manual admin scans on the same bounded company set the user
-          // sees in Configuration so "scan one company" never fans out to the
-          // full registry behind the scenes.
-          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         tenantContext.tenantId,
       );
@@ -2457,7 +2481,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
 
       const runId = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const lockResult = await acquireActiveRunLock(env, { runId, triggerType: "manual" });
+      const lockResult = await acquireActiveRunLock(env, tenantContext.tenantId, { runId, triggerType: "manual" });
       if (!lockResult.ok) {
         await recordAppLog(env, {
           level: "warn",
@@ -2526,7 +2550,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         let emailSkipReason: string | null = null;
 
         try {
-          await ensureActiveRunOwnership(env, runId);
+          await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
           const hasNotificationJobs = notificationJobs.newJobs.length > 0 || notificationJobs.updatedJobs.length > 0;
           if (hasNotificationJobs) {
             const emailAttempt = await reserveEmailSendAttempt(env, runId, tenantContext.tenantId);
@@ -2565,7 +2589,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
             emailSkipReason = emailResult.skipReason;
           }
           if (notificationJobs.newJobs.length > 0 && emailStatus === "sent") {
-            await ensureActiveRunOwnership(env, runId);
+            await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
             await markJobsAsSeen(env, notificationJobs.newJobs, inventory.runAt, runId, tenantContext.tenantId);
           }
         } catch (error) {
@@ -2576,7 +2600,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
           emailError = error instanceof Error ? error.message : String(error);
         }
 
-        await ensureActiveRunOwnership(env, runId);
+        await ensureActiveRunOwnership(env, tenantContext.tenantId, runId);
         await recordAppLog(env, {
           level: "info",
           event: "run_completed",
@@ -2655,12 +2679,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         });
         return jsonResponse({ ok: false, error: message, runId }, 500);
       } finally {
-        await releaseActiveRunLock(env, runId);
+        await releaseActiveRunLock(env, tenantContext.tenantId, runId);
       }
     }
 
     if (url.pathname === "/api/scan-quota" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const [usage, remaining] = await Promise.all([
         loadScanQuotaUsage(tenantContext.tenantId),
         remainingLiveScans(tenantContext.tenantId, undefined, { isAdmin: tenantContext.isAdmin }),
@@ -2676,7 +2702,10 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
     }
 
     if (url.pathname === "/api/run/status" && request.method === "GET") {
-      const activeRun = await loadActiveRunLock(env);
+      const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
+      const activeRun = await loadActiveRunLock(env, tenantContext.tenantId);
       return jsonResponse({
         ok: true,
         active: Boolean(activeRun),
@@ -2698,9 +2727,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/run/abort" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const body = await readJsonBody<Record<string, unknown>>(request);
       const requestedRunId = String(body.runId ?? "").trim();
-      const activeRun = await loadActiveRunLock(env);
+      const activeRun = await loadActiveRunLock(env, tenantContext.tenantId);
       if (!activeRun && !requestedRunId) {
         return jsonResponse({ ok: true, cleared: false, activeRun: null, runId: null });
       }
@@ -2712,7 +2743,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         await requestRunAbort(env, runIdToAbort);
       }
       if (activeRun) {
-        await clearActiveRunLock(env);
+        await clearActiveRunLock(env, tenantContext.tenantId);
       }
       await recordAppLog(env, {
         level: "warn",
@@ -2734,10 +2765,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs/remove-broken-links" && request.method === "POST") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
         env,
@@ -2806,13 +2838,14 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       // Company pause is a manual-run control only. Available Jobs should
       // continue to show the company's already fetched/shared inventory.
       const runtimeConfigStartedAt = Date.now();
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const runtimeConfigLoadMs = Date.now() - runtimeConfigStartedAt;
       const inventoryStatePromise = (async () => {
@@ -3102,6 +3135,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs/details" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const requestedJobKey = url.searchParams.get("jobKey")?.trim();
       if (!requestedJobKey) {
         return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
@@ -3110,7 +3145,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const [{ effectiveInventory }, jobNotes] = await Promise.all([
         loadDerivedAvailableInventory(env, config, tenantContext.tenantId, { isAdmin: false }),
@@ -3155,10 +3189,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory } = await loadDerivedAvailableInventory(
         env,
@@ -3205,6 +3240,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/applied-jobs/kanban" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const allRows = Object.values(appliedJobs).sort(
         (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
@@ -3230,6 +3267,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname.startsWith("/api/companies/") && url.pathname.endsWith("/applied") && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const companySlug = url.pathname.slice("/api/companies/".length, -"/applied".length);
       if (!companySlug) return jsonResponse({ ok: false, error: "company is required" }, 400);
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
@@ -3251,6 +3290,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/applied-jobs" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobsLoadStartedAt = Date.now();
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const appliedJobsLoadMs = Date.now() - appliedJobsLoadStartedAt;
@@ -3315,6 +3356,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/jobs/archive" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const requestedJobKey = String(url.searchParams.get("jobKey") ?? "").trim();
       if (!requestedJobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
@@ -3339,11 +3382,12 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const [config, appliedJobsForLimit, billingForLimit] = await Promise.all([
         loadRuntimeConfig(env, tenantContext.tenantId, {
           isAdmin: tenantContext.isAdmin,
           updatedByUserId: tenantContext.userId,
-          expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
         }),
         loadAppliedJobs(env, tenantContext.tenantId),
         loadBillingSubscription(tenantContext.tenantId).catch(() => null),
@@ -3394,6 +3438,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const note = String(body.notes ?? "").trim();
       const jobNotes = await loadJobNotes(env, tenantContext.tenantId);
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
@@ -3420,6 +3466,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!text) return jsonResponse({ ok: false, error: "text is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3443,6 +3491,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!text) return jsonResponse({ ok: false, error: "text is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3466,6 +3516,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey || !body.noteId) return jsonResponse({ ok: false, error: "jobKey and noteId are required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3488,10 +3540,11 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const { storedInventory, effectiveInventory } = await loadDerivedAvailableInventory(
         env,
@@ -3521,6 +3574,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3547,6 +3602,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/action-plan" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const rows = filterAppliedJobs(Object.values(appliedJobs), url.searchParams);
       const actionPlan = buildActionPlanRows(rows);
@@ -3558,6 +3615,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       if (!body.jobKey) return jsonResponse({ ok: false, error: "jobKey is required" }, 400);
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3583,6 +3642,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3644,6 +3705,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       }
 
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
       const appliedJobs = await loadAppliedJobs(env, tenantContext.tenantId);
       const existing = appliedJobs[body.jobKey];
       if (!existing) return jsonResponse({ ok: false, error: "Applied job not found" }, 404);
@@ -3664,6 +3727,8 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     if (url.pathname === "/api/dashboard" && request.method === "GET") {
       const tenantContext = await getTenantContext();
+      const gate = requireNonAdminContext(tenantContext);
+      if (gate) return gate;
 
       if (env.CQRS_DASHBOARD_READ === "1") {
         const dashRow = await queryDashboardSummaryRow(tenantContext.tenantId);
@@ -3738,9 +3803,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
       const config = await loadRuntimeConfig(env, tenantContext.tenantId, {
         isAdmin: tenantContext.isAdmin,
         updatedByUserId: tenantContext.userId,
-        // Dashboard can derive admin shared-inventory metrics without fully
-        // expanding every registry company into runtime config first.
-        expandAdminCompanies: tenantContext.isAdmin ? false : undefined,
       });
       const runtimeConfigLoadMs = Date.now() - configLoadStartedAt;
 
@@ -3791,38 +3853,6 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         // critical path on a cold miss.
         void saveCachedDashboardPayload(env, tenantContext.tenantId, cacheFingerprint, payload).catch((error) => {
           console.error("[dashboard.summary] failed to write cache", error);
-        });
-      }
-      if (tenantContext.isAdmin && config.adminRegistryMode !== "none") {
-        const adminSummaryStartedAt = Date.now();
-        const [registryEntries, rawScanSummary] = await Promise.all([
-          loadRegistryCache().then(() => listAll()),
-          summarizeCurrentRawScans(),
-        ]);
-        companiesByAts = summarizeCompaniesByAts(
-          registryEntries.map((entry) => ({
-            company: entry.company,
-            enabled: true,
-            source: normalizeSource(entry.ats) ?? inferSourceFromUrl(entry.board_url || entry.sample_url || undefined),
-            registryAts: entry.ats ?? undefined,
-            registryTier: entry.tier ?? undefined,
-          })),
-        );
-        payload.kpis = {
-          ...payload.kpis,
-          // For admins, "companies covered" should mean how many configured
-          // registry companies currently have a successful shared raw fetch.
-          companiesConfigured: registryEntries.length,
-          companiesDetected: rawScanSummary.currentCompanies,
-          totalFetched: rawScanSummary.currentJobs,
-        };
-        payload.companiesByAts = companiesByAts;
-        console.info("[dashboard.admin.summary]", {
-          tenantId: tenantContext.tenantId,
-          registryCompanies: registryEntries.length,
-          rawScanCompanies: rawScanSummary.currentCompanies,
-          rawScanJobs: rawScanSummary.currentJobs,
-          adminSummaryMs: Date.now() - adminSummaryStartedAt,
         });
       }
       console.info("[dashboard.summary]", {

@@ -276,7 +276,15 @@ export function useRemoveBrokenLinks() {
 }
 
 export function useToggleAllCompanies() {
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (paused: boolean) => api.post<{ ok: boolean }>("/api/companies/toggle-all", { paused }),
+    onSuccess: async () => {
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ["config"] }),
+        qc.invalidateQueries({ queryKey: ["jobs"] }),
+        qc.invalidateQueries({ queryKey: ["dashboard"] }),
+      ]);
+    },
   });
 }

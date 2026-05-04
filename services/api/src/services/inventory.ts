@@ -1225,12 +1225,12 @@ export async function buildInventory(
     let registryAdapterId: string | null = company.source ?? null;
     let fetchStartedAt = Date.now();
     if (runId) {
-      await ensureActiveRunOwnership(env, runId);
+      await ensureActiveRunOwnership(env, tenantId, runId);
     }
     if (runId && !options.disableActiveRunHeartbeat) {
       // Publish a heartbeat before each company so the UI can show live scan
       // progress instead of only a one-time "scan started" toast.
-      await heartbeatActiveRun(env, runId, {
+      await heartbeatActiveRun(env, tenantId, runId, {
         totalCompanies: enabledCompanies.length,
         fetchedCompanies: index,
         currentCompany: company.company,
@@ -1291,10 +1291,10 @@ export async function buildInventory(
           details: { progress: { current: index + 1, total: enabledCompanies.length } },
         });
         if (runId) {
-          await ensureActiveRunOwnership(env, runId);
+          await ensureActiveRunOwnership(env, tenantId, runId);
         }
         if (runId && !options.disableActiveRunHeartbeat) {
-          await heartbeatActiveRun(env, runId, {
+          await heartbeatActiveRun(env, tenantId, runId, {
             totalCompanies: enabledCompanies.length,
             fetchedCompanies: index + 1,
             currentCompany: company.company,
@@ -1570,10 +1570,10 @@ export async function buildInventory(
         },
       });
       if (runId) {
-        await ensureActiveRunOwnership(env, runId);
+        await ensureActiveRunOwnership(env, tenantId, runId);
       }
       if (runId && !options.disableActiveRunHeartbeat) {
-        await heartbeatActiveRun(env, runId, {
+        await heartbeatActiveRun(env, tenantId, runId, {
           totalCompanies: enabledCompanies.length,
           fetchedCompanies: index + 1,
           currentCompany: company.company,
@@ -1655,7 +1655,7 @@ export async function buildInventory(
         },
       });
       if (runId && !options.disableActiveRunHeartbeat && !isOwnershipLost) {
-        await heartbeatActiveRun(env, runId, {
+        await heartbeatActiveRun(env, tenantId, runId, {
           totalCompanies: enabledCompanies.length,
           fetchedCompanies: index + 1,
           currentCompany: company.company,
@@ -2265,7 +2265,7 @@ export async function runScan(
     isAdmin: options.isAdmin,
   });
   if (runId) {
-    await ensureActiveRunOwnership(env, runId);
+    await ensureActiveRunOwnership(env, tenantId, runId);
   }
   const storageInventory = await pruneInventoryForStorage(env, inventory, tenantId);
   const diff = getInventoryDiff(previousInventory, storageInventory);

@@ -42,6 +42,12 @@ const JOB_NOTE_ROW_PREFIX = `${JOB_NOTES_KEY}:row:`;
 const RUN_ABORT_PREFIX = "run-abort:";
 const TENANT_JOB_ENTITY_TYPE = "TENANT_JOB";
 
+// Active run progress must be isolated per tenant so one user's scan cannot
+// leak into another tenant's shell or abort flow.
+function activeRunLockKey(tenantId?: string): string {
+  return tenantScopedKey(tenantId, ACTIVE_RUN_LOCK_KEY);
+}
+
 type TenantJobRow = {
   pk: string;
   sk: string;
@@ -679,8 +685,8 @@ export async function setCompanyScanOverrides(
   return overrides;
 }
 
-export async function loadActiveRunLock(env: Env): Promise<ActiveRunLock | null> {
-  const raw = await jobStateKv(env).get(ACTIVE_RUN_LOCK_KEY, "json");
+export async function loadActiveRunLock(env: Env, tenantId?: string): Promise<ActiveRunLock | null> {
+  const raw = await jobStateKv(env).get(activeRunLockKey(tenantId), "json");
   if (!raw || typeof raw !== "object") return null;
   const lock = raw as Partial<ActiveRunLock>;
   if (!lock.runId || !lock.triggerType || !lock.startedAt || !lock.expiresAt) return null;
@@ -868,6 +874,7 @@ export async function updateEmailSendAttempt(
 
 export async function acquireActiveRunLock(
   env: Env,
+  tenantId: string | undefined,
   input: { runId: string; triggerType: "manual" | "scheduled" }
 ): Promise<
   | { ok: true; lock: ActiveRunLock; recoveredLock?: ActiveRunLock }
@@ -891,7 +898,7 @@ export async function acquireActiveRunLock(
   const atomicStore = atomicActiveRunLockStore(env);
   if (atomicStore) {
     const acquired = await atomicStore.putActiveRunLockIfAvailable(
-      ACTIVE_RUN_LOCK_KEY,
+      activeRunLockKey(tenantId),
       JSON.stringify(lock),
       {
         expirationTtl: ACTIVE_RUN_LOCK_TTL_SECONDS,
@@ -908,17 +915,17 @@ export async function acquireActiveRunLock(
       };
     }
 
-    const existing = await loadActiveRunLock(env);
+    const existing = await loadActiveRunLock(env, tenantId);
     if (existing) return { ok: false, lock: existing };
-    return acquireActiveRunLock(env, input);
+    return acquireActiveRunLock(env, tenantId, input);
   }
 
-  const existing = await loadActiveRunLock(env);
+  const existing = await loadActiveRunLock(env, tenantId);
   if (existing && !isRunLockExpired(existing) && !isRunLockStale(existing) && existing.runId !== input.runId) {
     return { ok: false, lock: existing };
   }
 
-  await jobStateKv(env).put(ACTIVE_RUN_LOCK_KEY, JSON.stringify(lock), {
+  await jobStateKv(env).put(activeRunLockKey(tenantId), JSON.stringify(lock), {
     expirationTtl: ACTIVE_RUN_LOCK_TTL_SECONDS,
   });
 
@@ -929,20 +936,20 @@ export async function acquireActiveRunLock(
   };
 }
 
-export async function releaseActiveRunLock(env: Env, runId: string): Promise<void> {
+export async function releaseActiveRunLock(env: Env, tenantId: string | undefined, runId: string): Promise<void> {
   const atomicStore = atomicActiveRunLockStore(env);
   if (atomicStore) {
-    await atomicStore.deleteActiveRunLockIfOwned(ACTIVE_RUN_LOCK_KEY, runId);
+    await atomicStore.deleteActiveRunLockIfOwned(activeRunLockKey(tenantId), runId);
     return;
   }
 
-  const existing = await loadActiveRunLock(env);
+  const existing = await loadActiveRunLock(env, tenantId);
   if (!existing || existing.runId !== runId) return;
-  await jobStateKv(env).delete(ACTIVE_RUN_LOCK_KEY);
+  await jobStateKv(env).delete(activeRunLockKey(tenantId));
 }
 
-export async function clearActiveRunLock(env: Env): Promise<void> {
-  await jobStateKv(env).delete(ACTIVE_RUN_LOCK_KEY);
+export async function clearActiveRunLock(env: Env, tenantId?: string): Promise<void> {
+  await jobStateKv(env).delete(activeRunLockKey(tenantId));
 }
 
 function runAbortKey(runId: string): string {
@@ -968,11 +975,11 @@ export async function clearRunAbortRequest(env: Env, runId: string): Promise<voi
   await jobStateKv(env).delete(runAbortKey(runId));
 }
 
-export async function ensureActiveRunOwnership(env: Env, runId: string): Promise<void> {
+export async function ensureActiveRunOwnership(env: Env, tenantId: string | undefined, runId: string): Promise<void> {
   if (await isRunAbortRequested(env, runId)) {
     throw new ActiveRunOwnershipError(runId, null);
   }
-  const existing = await loadActiveRunLock(env);
+  const existing = await loadActiveRunLock(env, tenantId);
   if (!existing || existing.runId !== runId || isRunLockExpired(existing)) {
     throw new ActiveRunOwnershipError(runId, existing?.runId ?? null);
   }
@@ -980,10 +987,11 @@ export async function ensureActiveRunOwnership(env: Env, runId: string): Promise
 
 export async function heartbeatActiveRun(
   env: Env,
+  tenantId: string | undefined,
   runId: string,
   patch?: Partial<Pick<ActiveRunLock, "totalCompanies" | "fetchedCompanies" | "currentCompany" | "currentSource" | "currentStage" | "currentPage" | "lastEvent">>
 ): Promise<ActiveRunLock> {
-  const existing = await loadActiveRunLock(env);
+  const existing = await loadActiveRunLock(env, tenantId);
   if (!existing || existing.runId !== runId || isRunLockExpired(existing)) {
     throw new ActiveRunOwnershipError(runId, existing?.runId ?? null);
   }
@@ -1001,7 +1009,7 @@ export async function heartbeatActiveRun(
   const atomicStore = atomicActiveRunLockStore(env);
   if (atomicStore) {
     const updated = await atomicStore.putActiveRunLockIfAvailable(
-      ACTIVE_RUN_LOCK_KEY,
+      activeRunLockKey(tenantId),
       JSON.stringify(next),
       {
         expirationTtl: ACTIVE_RUN_LOCK_TTL_SECONDS,
@@ -1011,11 +1019,11 @@ export async function heartbeatActiveRun(
       }
     );
     if (!updated) {
-      const activeRun = await loadActiveRunLock(env);
+      const activeRun = await loadActiveRunLock(env, tenantId);
       throw new ActiveRunOwnershipError(runId, activeRun?.runId ?? null);
     }
   } else {
-    await jobStateKv(env).put(ACTIVE_RUN_LOCK_KEY, JSON.stringify(next), {
+    await jobStateKv(env).put(activeRunLockKey(tenantId), JSON.stringify(next), {
       expirationTtl: ACTIVE_RUN_LOCK_TTL_SECONDS,
     });
   }

@@ -41,6 +41,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
   const runId = event.runId ?? makeRunId(triggerType);
   const scanFunctionName = process.env.SCAN_COMPANY_FUNCTION_NAME;
   if (!scanFunctionName) throw new Error("SCAN_COMPANY_FUNCTION_NAME is not configured");
+  const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
 
   if (await isRunAbortRequested(env, runId)) {
     await logAppEvent(env, {
@@ -53,7 +54,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
     return { ok: false, runId };
   }
 
-  const lockResult = await acquireActiveRunLock(env, { runId, triggerType });
+  const lockResult = await acquireActiveRunLock(env, tenantContext.tenantId, { runId, triggerType });
   if (!lockResult.ok) {
     await logAppEvent(env, {
       level: "warn",
@@ -71,11 +72,10 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
 
   try {
     if (await isRunAbortRequested(env, runId)) {
-      await releaseActiveRunLock(env, runId);
+      await releaseActiveRunLock(env, tenantContext.tenantId, runId);
       return { ok: false, runId };
     }
 
-    const tenantContext = eventTenantContext(event) ?? await resolveSystemTenantContext(env);
     const config = await applyCompanyScanOverrides(
       env,
       await loadRuntimeConfig(env, tenantContext.tenantId, {
@@ -113,7 +113,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
     });
 
     if (!companies.length) {
-      await releaseActiveRunLock(env, runId);
+      await releaseActiveRunLock(env, tenantContext.tenantId, runId);
       return { ok: true, runId, expectedCompanies: 0 };
     }
 
@@ -130,7 +130,7 @@ export async function handler(event: OrchestratorEvent = {}): Promise<{ ok: bool
 
     return { ok: true, runId, expectedCompanies: companies.length };
   } catch (error) {
-    await releaseActiveRunLock(env, runId);
+    await releaseActiveRunLock(env, tenantContext.tenantId, runId);
     await logErrorEvent(env, {
       event: "aws_orchestrator_failed",
       message: error instanceof Error ? error.message : String(error),
